@@ -120,3 +120,44 @@ func TestInitHeadlessRejectsAnInvalidMapping(t *testing.T) {
 		t.Fatal("init accepted a property that does not exist")
 	}
 }
+
+// ticket, status and title are load-bearing: internal/service/doctor.go
+// treats an unmapped one as a "fail", and get/list/upsert key every lookup
+// off them. Writing a profile with any of the three blank produces a config
+// that is broken on first use, so init must refuse before it ever writes.
+func TestInitHeadlessRequiresTicketStatusAndTitle(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaJSON))
+	})
+
+	code := executeArgs([]string{
+		"init", "--data-source-id", "ds1", "--profile", "broken", "--config", cfg,
+	})
+	if code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+	}
+
+	loaded, err := loadConfigFrom(cfg)
+	if err != nil {
+		t.Fatalf("reloading config: %v", err)
+	}
+	if _, err := loaded.Resolve("broken"); err == nil {
+		t.Fatal("init wrote a profile despite missing required property mappings (ticket/status/title)")
+	}
+}
+
+// --list only reads and prints the data sources shared with the integration;
+// it never writes a profile, so it must not demand the mapping flags that
+// only matter once a config is about to be written.
+func TestInitListDoesNotRequireMappingFlags(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"results":[
+			{"id":"ds1","title":[{"plain_text":"Tasks"}],"parent":{"database_id":"db1"}}
+		],"has_more":false}`))
+	})
+
+	code := executeArgs([]string{"init", "--list", "--config", cfg})
+	if code != ExitOK {
+		t.Fatalf("exit code = %d, want %d (ExitOK)", code, ExitOK)
+	}
+}

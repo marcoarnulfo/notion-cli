@@ -109,9 +109,19 @@ func newInitCmd() *cobra.Command {
 
 // validateMapping checks each mapped property against the schema and returns
 // the status property's actual type.
+//
+// ticket, status and title are required: internal/service/doctor.go reports
+// each of them as a "fail" when unmapped, and get/list/upsert key every
+// lookup off them, so writing a profile with one left blank produces a
+// config that is broken on first use. due is the only role doctor treats as
+// optional, so it is the only one that may be left unmapped here too.
 func validateMapping(schema *notion.Schema, ticket, status, title, due string) (string, error) {
-	check := func(role, name string, want ...string) (string, error) {
+	check := func(role, flag, name string, required bool, want ...string) (string, error) {
 		if name == "" {
+			if required {
+				return "", fmt.Errorf("--%s is required: map the %s property before init writes a profile",
+					flag, role)
+			}
 			return "", nil
 		}
 		p, ok := schema.Properties[name]
@@ -127,16 +137,16 @@ func validateMapping(schema *notion.Schema, ticket, status, title, due string) (
 			role, name, p.Type, role)
 	}
 
-	if _, err := check("ticket", ticket, "rich_text", "title"); err != nil {
+	if _, err := check("ticket", "ticket-prop", ticket, true, "rich_text", "title"); err != nil {
 		return "", err
 	}
-	if _, err := check("title", title, "title"); err != nil {
+	if _, err := check("title", "title-prop", title, true, "title"); err != nil {
 		return "", err
 	}
-	if _, err := check("due", due, "date"); err != nil {
+	if _, err := check("due", "due-prop", due, false, "date"); err != nil {
 		return "", err
 	}
-	statusType, err := check("status", status, "status", "select")
+	statusType, err := check("status", "status-prop", status, true, "status", "select")
 	if err != nil {
 		return "", err
 	}
