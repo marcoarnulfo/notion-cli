@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/marcoarnulfo/notion-cli/internal/config"
@@ -171,6 +172,51 @@ func TestInitInteractiveDeclinesSave(t *testing.T) {
 	}
 	if _, err := os.Stat(credPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("credentials file was written despite declining to save (stat err = %v)", err)
+	}
+}
+
+// A command bound to fail anyway must fail before it asks for a secret.
+// Previously an interactive user running init without --data-source-id was
+// prompted for the token — and could save it — before ever hearing that the
+// invocation was unusable; the flag validation only ran afterwards. Missing
+// --data-source-id has nothing to do with the token, so there is no reason
+// the prompt should ever have been reachable on this path.
+func TestInitValidatesFlagsBeforePromptingForAToken(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaJSON))
+	})
+	t.Setenv(config.TokenEnv, "")
+	withIsolatedUserConfigDir(t)
+	// readTokenInterruptible calls readToken from its own goroutine, where
+	// t.Fatal is unsafe to call directly (it must run on the test's own
+	// goroutine) — record the call instead and assert on it afterwards.
+	var readTokenCalled, readLineCalled atomic.Bool
+	withInteractivePrompt(t, true,
+		func() (string, error) { readTokenCalled.Store(true); return "", nil },
+		func() (string, error) { readLineCalled.Store(true); return "", nil },
+	)
+
+	code := executeArgs([]string{
+		"init",
+		"--ticket-prop", "Ticket", "--status-prop", "Stato", "--title-prop", "Name",
+		"--config", cfg,
+	})
+	if code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+	}
+	if readTokenCalled.Load() {
+		t.Error("readToken was called before flags were validated")
+	}
+	if readLineCalled.Load() {
+		t.Error("readLine was called before flags were validated")
+	}
+
+	credPath, err := config.CredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(credPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("credentials file was written despite the command being doomed to fail (stat err = %v)", err)
 	}
 }
 

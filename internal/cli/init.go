@@ -139,6 +139,18 @@ func newInitCmd() *cobra.Command {
 		Short: "Configure a profile",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Usage must be validated before anything that could prompt for
+			// and persist a secret: an interactive user running init without
+			// --data-source-id used to be asked for the token, and could
+			// save it, before ever hearing the invocation was unusable.
+			// --data-source-id has nothing to do with the token, so nothing
+			// here should depend on one to reach this check.
+			if !list && dataSourceID == "" {
+				return Errorf(ExitUsage,
+					"--data-source-id is required\n"+
+						"  run 'notion-track init --list' to see the data sources shared with your integration")
+			}
+
 			token, err := resolveInitToken(cmd)
 			if err != nil {
 				return err
@@ -161,12 +173,6 @@ func newInitCmd() *cobra.Command {
 					cmd.Printf("%s\t%s\n", r.ID, r.Title)
 				}
 				return nil
-			}
-
-			if dataSourceID == "" {
-				return Errorf(ExitUsage,
-					"--data-source-id is required\n"+
-						"  run 'notion-track init --list' to see the data sources shared with your integration")
 			}
 
 			// Validate the mapping against the live schema before writing a
