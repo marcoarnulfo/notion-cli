@@ -27,6 +27,14 @@ func TestPrintJSONUsesSnakeCaseKeys(t *testing.T) {
 	}
 }
 
+// Deferred from Task 16: no command took a required flag until upsert did.
+// A missing flag is invalid usage, not a generic failure.
+func TestMissingRequiredFlagExitsUsage(t *testing.T) {
+	if code := executeArgs([]string{"upsert"}); code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d", code, ExitUsage)
+	}
+}
+
 func TestExitCodeForMapsDomainErrors(t *testing.T) {
 	tests := []struct {
 		name string
