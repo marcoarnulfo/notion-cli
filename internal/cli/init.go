@@ -64,7 +64,11 @@ func promptForToken(cmd *cobra.Command) (string, error) {
 	cmd.Println("No Notion integration token found.")
 	cmd.Println("Create one at https://www.notion.so/my-integrations")
 	cmd.Print("Token: ")
-	token, err := readToken()
+	// readTokenInterruptible, not readToken directly: a bare Ctrl-C here
+	// terminates the process before term.ReadPassword's defer can restore
+	// local echo, leaving the terminal broken until the user runs
+	// `stty sane`. See internal/cli/interrupt.go.
+	token, err := readTokenInterruptible()
 	// term.ReadPassword echoes nothing, not even the Enter that ended input,
 	// so the cursor is still sitting on the prompt line without this.
 	cmd.Println()
