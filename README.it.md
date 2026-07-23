@@ -198,7 +198,7 @@ schema_version: 1
 token: ntn_...
 ```
 
-Entrambi i file sono scritti con permessi `0600` e sostituiti in modo atomico (un file temporaneo nella stessa directory, poi un rename) — `config.yml` non contiene segreti propri, ma vive accanto a uno.
+Entrambi i file sono sostituiti in modo atomico (un file temporaneo nella stessa directory, poi un rename), ma solo `credentials.yml` è garantito a `0600`: il suo file temporaneo ha un suffisso casuale e i permessi vengono impostati esplicitamente, immune a qualunque cosa sia già presente a un percorso temporaneo prevedibile. Il file temporaneo di `config.yml` ha invece un nome fisso e i suoi permessi non vengono forzati su un file già esistente in quel punto, quindi un `config.yml.tmp` residuo di un'esecuzione precedente può lasciarlo con qualunque permesso avesse quel residuo (es. `0644`) — accettabile solo perché, a differenza di `credentials.yml`, non contiene segreti propri.
 
 `credentials.yml` viene scritto in un solo punto: `init`, quando gira in un terminale interattivo, non trova nessun token né in `NOTION_TOKEN` né nel file già esistente, e accetti il prompt "salvarlo?" (il default — vedi [Avvio rapido](#avvio-rapido)). Nulla scrive mai un token in `config.yml`.
 
