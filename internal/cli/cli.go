@@ -6,7 +6,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
@@ -84,12 +83,6 @@ func executeArgs(args []string) int {
 	if err == nil {
 		return ExitOK
 	}
-
 	fmt.Fprintf(os.Stderr, "error: %v\n", err)
-
-	var coded *codedError
-	if errors.As(err, &coded) {
-		return coded.code
-	}
-	return ExitUsage
+	return exitCodeFor(err)
 }
