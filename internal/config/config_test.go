@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,4 +116,82 @@ func TestTokenAbsent(t *testing.T) {
 	if tok, fromEnv := Token(); tok != "" || fromEnv {
 		t.Fatalf("Token() = %q, %v", tok, fromEnv)
 	}
+}
+
+// migrate had no test at all: emptying it left the whole suite green.
+func TestLoadNormalisesAMissingSchemaVersion(t *testing.T) {
+	path := withTempConfig(t)
+	os.WriteFile(path, []byte("default_profile: work\nprofiles:\n  work:\n    data_source_id: ds1\n"), 0o600)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.SchemaVersion != CurrentSchemaVersion {
+		t.Fatalf("schema_version = %d, want %d", cfg.SchemaVersion, CurrentSchemaVersion)
+	}
+}
+
+// A config written by a newer build must still load: refusing to work would be
+// worse than ignoring settings we do not understand.
+func TestLoadAcceptsAFutureSchemaVersion(t *testing.T) {
+	path := withTempConfig(t)
+	body := fmt.Sprintf(
+		"schema_version: %d\ndefault_profile: work\nprofiles:\n  work:\n    data_source_id: ds1\n",
+		CurrentSchemaVersion+1)
+	os.WriteFile(path, []byte(body), 0o600)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	p, err := cfg.Resolve("")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if p.DataSourceID != "ds1" {
+		t.Fatalf("profile = %+v", p)
+	}
+}
+
+func TestResolvePrecedence(t *testing.T) {
+	withTempConfig(t)
+	cfg := &Config{DefaultProfile: "work", Profiles: map[string]Profile{
+		"work": {DataSourceID: "ds-work"},
+		"env":  {DataSourceID: "ds-env"},
+		"flag": {DataSourceID: "ds-flag"},
+	}}
+
+	t.Run("default profile when nothing is set", func(t *testing.T) {
+		t.Setenv(ProfileEnv, "")
+		p, err := cfg.Resolve("")
+		if err != nil || p.DataSourceID != "ds-work" {
+			t.Fatalf("got %+v, err %v", p, err)
+		}
+	})
+
+	t.Run("env beats the default profile", func(t *testing.T) {
+		t.Setenv(ProfileEnv, "env")
+		p, err := cfg.Resolve("")
+		if err != nil || p.DataSourceID != "ds-env" {
+			t.Fatalf("got %+v, err %v", p, err)
+		}
+	})
+
+	t.Run("an explicit name beats the env", func(t *testing.T) {
+		t.Setenv(ProfileEnv, "env")
+		p, err := cfg.Resolve("flag")
+		if err != nil || p.DataSourceID != "ds-flag" {
+			t.Fatalf("got %+v, err %v", p, err)
+		}
+	})
+
+	t.Run("a per-value env var overrides the resolved profile", func(t *testing.T) {
+		t.Setenv(ProfileEnv, "")
+		t.Setenv(DataSourceEnv, "ds-override")
+		p, err := cfg.Resolve("")
+		if err != nil || p.DataSourceID != "ds-override" {
+			t.Fatalf("got %+v, err %v", p, err)
+		}
+	})
 }
