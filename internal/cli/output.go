@@ -58,6 +58,16 @@ func exitCodeFor(err error) int {
 	// MarkFlagRequired cannot catch it, so service.Upsert/Set/Get do.
 	case errors.Is(err, service.ErrEmptyTicket):
 		return ExitUsage
+	// --page-id "" is the same shape of mistake as an empty --ticket, and a
+	// malformed one (any input NormalizePageID could not recognize) is a
+	// usage error caught before any request is even made.
+	case errors.Is(err, service.ErrEmptyPageID), errors.Is(err, notion.ErrMalformedPageID):
+		return ExitUsage
+	// A page addressed by id that resolves but belongs to another data
+	// source is a usage mistake (the wrong id, or the wrong --profile), not
+	// a network or auth failure.
+	case errors.Is(err, service.ErrPageOutsideProfile):
+		return ExitUsage
 	case errors.Is(err, notion.ErrUnauthorized):
 		return ExitAuth
 	// A credentials.yml nobody can read is an authentication failure like
@@ -78,6 +88,12 @@ func exitCodeFor(err error) int {
 	// Cobra reports missing required flags with this exact prefix and no typed
 	// error to match on.
 	if strings.HasPrefix(err.Error(), `required flag(s) `) {
+		return ExitUsage
+	}
+	// MarkFlagsMutuallyExclusive/MarkFlagsOneRequired (--ticket vs --page-id)
+	// fail validation with a plain fmt.Errorf, no typed error either; every
+	// message cobra's flag_groups.go produces contains this exact phrase.
+	if strings.Contains(err.Error(), "the group [") {
 		return ExitUsage
 	}
 	return ExitError

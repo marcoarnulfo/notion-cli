@@ -8,19 +8,41 @@ import (
 // writeFlags are the fields upsert and set share.
 type writeFlags struct {
 	ticket string
+	pageID string
 	title  string
 	status string
 	due    string
 	asJSON bool
 }
 
-func (wf *writeFlags) bind(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&wf.ticket, "ticket", "", "ticket key (required)")
+// bindShared registers the flags that carry no addressing semantics, common
+// to every write command's binding.
+func (wf *writeFlags) bindShared(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&wf.title, "title", "", "title to set")
 	cmd.Flags().StringVar(&wf.status, "status", "", "status to set")
 	cmd.Flags().StringVar(&wf.due, "due", "", "due date, YYYY-MM-DD")
 	cmd.Flags().BoolVar(&wf.asJSON, "json", false, "print machine-readable JSON")
+}
+
+// bind is upsert's binding: a page id cannot exist before the row does, so
+// --ticket is the only way to address one.
+func (wf *writeFlags) bind(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&wf.ticket, "ticket", "", "ticket key (required)")
+	wf.bindShared(cmd)
 	cmd.MarkFlagRequired("ticket")
+}
+
+// bindWithPageID is set's binding: --ticket and --page-id are alternate,
+// mutually exclusive ways to address an existing row, and exactly one of
+// them is required.
+func (wf *writeFlags) bindWithPageID(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&wf.ticket, "ticket", "", "ticket key")
+	cmd.Flags().StringVar(&wf.pageID, "page-id", "",
+		"Notion page id to address directly, bypassing the ticket lookup; "+
+			"accepts the full page URL copied from Notion, a bare 32-hex id, or a dashed UUID")
+	wf.bindShared(cmd)
+	cmd.MarkFlagsMutuallyExclusive("ticket", "page-id")
+	cmd.MarkFlagsOneRequired("ticket", "page-id")
 }
 
 func (wf *writeFlags) fields() tracker.Fields {
