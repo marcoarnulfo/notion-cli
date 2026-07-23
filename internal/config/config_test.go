@@ -287,6 +287,29 @@ func TestLoadTokenUnreadableFileErrorNamesThePathOnlyOnce(t *testing.T) {
 	}
 }
 
+// SaveToken moved from a fixed temp name (credentials.yml.tmp) to
+// os.CreateTemp's random-suffixed one, so that fixed name is no longer read
+// from or written to by anything — but a build from before that change
+// could have left one behind, world-readable (WriteFile does not apply its
+// mode to a file that already exists), sitting next to credentials.yml
+// forever since nothing ever looks at it again. A successful SaveToken must
+// clean it up.
+func TestSaveTokenRemovesAStaleFixedNameTempFile(t *testing.T) {
+	path := withTempCredentials(t)
+	legacyTmp := path + ".tmp"
+	if err := os.WriteFile(legacyTmp, []byte("token: ntn_old_leftover\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SaveToken("ntn_secret"); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+
+	if _, err := os.Stat(legacyTmp); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale legacy temp file %s still present after a successful save (stat err = %v)", legacyTmp, err)
+	}
+}
+
 func TestSaveTokenThenLoadTokenRoundTrips(t *testing.T) {
 	withTempCredentials(t)
 

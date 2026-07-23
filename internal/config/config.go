@@ -287,6 +287,16 @@ func SaveToken(token string) error {
 		return fmt.Errorf("config: encoding credentials: %w", err)
 	}
 
+	// A build from before CreateTemp's random suffix replaced this fixed
+	// name may have left one behind — os.WriteFile does not apply its mode
+	// to a file that already exists, so a leftover here can be
+	// world-readable, holding a token in the clear right next to
+	// credentials.yml. Nothing reads this fixed name any more (LoadToken
+	// never has), so nothing would ever notice or remove it otherwise;
+	// best-effort, since a missing or unremovable leftover must never block
+	// persisting the token this call exists to save.
+	_ = os.Remove(path + ".tmp")
+
 	f, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("config: creating temp file: %w", err)
