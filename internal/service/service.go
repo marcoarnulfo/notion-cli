@@ -164,8 +164,12 @@ func (s *Service) Get(ctx context.Context, ticket string) (notion.Page, error) {
 	if len(matches) == 0 {
 		return notion.Page{}, fmt.Errorf("%w: %s", ErrNotFound, ticket)
 	}
-	if len(matches) > 1 {
-		return notion.Page{}, &tracker.DuplicateError{Ticket: ticket, Pages: matches}
+	// Decide already makes exactly this 0/1/N choice for Upsert and produces
+	// the same DuplicateError; the zero case is handled above because Get's
+	// "not found" wraps ErrNotFound with the ticket key, which Decide has no
+	// way to do generically.
+	if _, err := tracker.Decide(ticket, matches); err != nil {
+		return notion.Page{}, err
 	}
 	return matches[0], nil
 }

@@ -191,6 +191,24 @@ func TestSetFailsWhenTheRowDoesNotExist(t *testing.T) {
 	}
 }
 
+// Get re-implemented the same 0/1/N choice tracker.Decide already makes for
+// Upsert, instead of calling it. There was no coverage pinning Get's
+// duplicate behaviour specifically, so this guards against the two
+// diverging — e.g. a future edit to Decide's DuplicateError shape silently
+// not reaching Get because Get never calls it.
+func TestGetFailsOnDuplicates(t *testing.T) {
+	var seen []string
+	srv := routes(t, rowJSON+","+rowJSON, &seen)
+	defer srv.Close()
+
+	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile())
+	_, err := s.Get(context.Background(), "BDF-231")
+	var dup *tracker.DuplicateError
+	if !errors.As(err, &dup) {
+		t.Fatalf("got %v, want *tracker.DuplicateError", err)
+	}
+}
+
 func TestListFiltersByStatus(t *testing.T) {
 	var gotFilter map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
