@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"os/signal"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -13,20 +14,20 @@ import (
 // withInterruptSeams swaps the signal-handling seams and restores them on
 // cleanup, mirroring withInteractivePrompt's pattern for the prompt seams.
 func withInterruptSeams(t *testing.T, state func(int) (*term.State, error),
-	restore func(int, *term.State) error, raise func(os.Signal)) {
+	restore func(int, *term.State) error, terminate func(os.Signal)) {
 	t.Helper()
-	oldState, oldRestore, oldRaise := termState, termRestore, raiseAndWait
+	oldState, oldRestore, oldTerminate := termState, termRestore, terminateSelf
 	if state != nil {
 		termState = state
 	}
 	if restore != nil {
 		termRestore = restore
 	}
-	if raise != nil {
-		raiseAndWait = raise
+	if terminate != nil {
+		terminateSelf = terminate
 	}
 	t.Cleanup(func() {
-		termState, termRestore, raiseAndWait = oldState, oldRestore, oldRaise
+		termState, termRestore, terminateSelf = oldState, oldRestore, oldTerminate
 	})
 }
 
@@ -57,9 +58,9 @@ func TestReadTokenInterruptibleRestoresTerminalBeforeDying(t *testing.T) {
 	fakeState := &term.State{}
 	var restored atomic.Bool
 	var restoredWithRightState atomic.Bool
-	var raisedSig atomic.Value // os.Signal
+	var terminatedWith atomic.Value // os.Signal
 
-	raised := make(chan struct{})
+	terminated := make(chan struct{})
 	withInterruptSeams(t,
 		func(fd int) (*term.State, error) { return fakeState, nil },
 		func(fd int, s *term.State) error {
@@ -68,8 +69,8 @@ func TestReadTokenInterruptibleRestoresTerminalBeforeDying(t *testing.T) {
 			return nil
 		},
 		func(sig os.Signal) {
-			raisedSig.Store(sig)
-			close(raised)
+			terminatedWith.Store(sig)
+			close(terminated)
 		},
 	)
 
@@ -90,7 +91,7 @@ func TestReadTokenInterruptibleRestoresTerminalBeforeDying(t *testing.T) {
 	}
 
 	select {
-	case <-raised:
+	case <-terminated:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for the SIGINT to reach readTokenInterruptible")
 	}
@@ -102,14 +103,14 @@ func TestReadTokenInterruptibleRestoresTerminalBeforeDying(t *testing.T) {
 	if !restoredWithRightState.Load() {
 		t.Fatal("termRestore was called with a different state than termState returned")
 	}
-	if sig, _ := raisedSig.Load().(os.Signal); sig != syscall.SIGINT {
-		t.Fatalf("raiseAndWait received %v, want SIGINT", sig)
+	if sig, _ := terminatedWith.Load().(os.Signal); sig != syscall.SIGINT {
+		t.Fatalf("terminateSelf received %v, want SIGINT", sig)
 	}
 
 	select {
 	case <-resultCh:
 	case <-time.After(2 * time.Second):
-		t.Fatal("readTokenInterruptible never returned after the stubbed raiseAndWait")
+		t.Fatal("readTokenInterruptible never returned after the stubbed terminateSelf")
 	}
 }
 
@@ -122,7 +123,7 @@ func TestReadTokenInterruptibleReturnsTheTokenWhenUninterrupted(t *testing.T) {
 	readToken = func() (string, error) { return "ntn_typed", nil }
 
 	withInterruptSeams(t, nil, nil, func(os.Signal) {
-		t.Fatal("raiseAndWait must not be called when no signal arrives")
+		t.Fatal("terminateSelf must not be called when no signal arrives")
 	})
 
 	tok, err := readTokenInterruptible()
@@ -131,5 +132,119 @@ func TestReadTokenInterruptibleReturnsTheTokenWhenUninterrupted(t *testing.T) {
 	}
 	if tok != "ntn_typed" {
 		t.Fatalf("token = %q, want ntn_typed", tok)
+	}
+}
+
+// Regression test for the "signal with an ignored disposition" defect: the
+// old raiseAndWait called signal.Reset(sig) and re-raised sig, trusting the
+// OS to kill the process via sig's default action. That default action is
+// not always "terminate" — a background job started from a non-interactive
+// shell, or a wrapper doing `trap "" INT`, commonly inherits SIG_IGN for
+// SIGINT. signal.Reset restores exactly that disposition, the re-raise is a
+// no-op, and the old code then blocked in select{} forever: the terminal's
+// echo had already been turned back on, and the token-reading goroutine was
+// still parked on the blocked read, wide open to leak whatever the user
+// typed next. Verified against a real binary: still alive after two minutes,
+// with a second SIGTERM swallowed too because sigCh was no longer read.
+//
+// signal.Ignore(SIGINT) reproduces the same disposition Go's runtime would
+// see for an inherited SIG_IGN: it is what a call to signal.Reset/Stop with
+// no other watcher left would unwind back to, exactly the scenario that broke
+// the old code. terminateSelf is stubbed only so the test process itself
+// survives the call — the real fix is that terminateSelf no longer depends
+// on the signal's disposition to do its job (it calls os.Exit directly), so
+// this test also passes as proof that the fix does not merely narrow the old
+// window: readTokenInterruptible returns promptly instead of hanging, and it
+// does so having never relied on the OS re-raise/default-action path at all.
+func TestReadTokenInterruptibleDoesNotHangWhenSIGINTWasIgnoredBeforeNotify(t *testing.T) {
+	oldReadToken := readToken
+	t.Cleanup(func() { readToken = oldReadToken })
+
+	started := make(chan struct{})
+	readToken = func() (string, error) {
+		close(started)
+		select {} // blocks like a real term.ReadPassword call waiting on stdin
+	}
+
+	// Simulate the inherited-SIG_IGN scenario: SIGINT ignored before this
+	// process's own signal-handling machinery (Notify, inside
+	// readTokenInterruptible) ever touches it.
+	signal.Ignore(syscall.SIGINT)
+	t.Cleanup(func() { signal.Reset(syscall.SIGINT) })
+
+	var restored atomic.Bool
+	var terminatedWith atomic.Value // os.Signal
+	terminated := make(chan struct{})
+	withInterruptSeams(t,
+		func(fd int) (*term.State, error) { return &term.State{}, nil },
+		func(fd int, s *term.State) error { restored.Store(true); return nil },
+		func(sig os.Signal) {
+			terminatedWith.Store(sig)
+			close(terminated)
+		},
+	)
+
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := readTokenInterruptible()
+		resultCh <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the read to start blocking")
+	}
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatalf("sending SIGINT to self: %v", err)
+	}
+
+	// The whole point of the fix: this must not take anywhere near the ~2
+	// minutes the unpatched binary was observed to hang for.
+	select {
+	case <-terminated:
+	case <-time.After(2 * time.Second):
+		t.Fatal("readTokenInterruptible hung: a signal with an ignored " +
+			"disposition must not leave the process blocked in select{}")
+	}
+	if !restored.Load() {
+		t.Fatal("the terminal state was never restored")
+	}
+	if sig, _ := terminatedWith.Load().(os.Signal); sig != syscall.SIGINT {
+		t.Fatalf("terminateSelf received %v, want SIGINT", sig)
+	}
+
+	select {
+	case <-resultCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("readTokenInterruptible never returned after the stubbed terminateSelf")
+	}
+}
+
+// terminateSelf must compute the conventional 128+signal exit status itself,
+// rather than depending on the OS's default action for sig (which, as the
+// test above demonstrates, is not always "terminate"). osExit is the seam
+// that lets this be checked without ending the test binary.
+func TestTerminateSelfUsesConventionalSignalExitStatus(t *testing.T) {
+	oldExit := osExit
+	t.Cleanup(func() { osExit = oldExit })
+
+	var gotCode int
+	var callCount int
+	osExit = func(code int) { gotCode = code; callCount++ }
+
+	terminateSelf(syscall.SIGINT)
+	if gotCode != 128+int(syscall.SIGINT) {
+		t.Fatalf("exit code for SIGINT = %d, want %d", gotCode, 128+int(syscall.SIGINT))
+	}
+
+	terminateSelf(syscall.SIGTERM)
+	if gotCode != 128+int(syscall.SIGTERM) {
+		t.Fatalf("exit code for SIGTERM = %d, want %d", gotCode, 128+int(syscall.SIGTERM))
+	}
+
+	if callCount != 2 {
+		t.Fatalf("osExit called %d times, want 2", callCount)
 	}
 }
