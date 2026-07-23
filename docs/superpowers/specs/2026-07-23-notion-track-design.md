@@ -100,10 +100,12 @@ internal/tracker  internal/notion  internal/config  internal/markdown
  (PURO, no I/O)    (net/http)       (YAML, profili)  (PURO, no I/O)
 ```
 
-**`internal/tracker`** — dominio puro, non importa né `notion` né `config`. Riceve dati,
-restituisce decisioni: dato l'insieme di righe trovate decide create/update/errore; dato un
-mapping e dei flag costruisce il payload delle proprietà; valida uno stato contro le opzioni
-ammesse. Testabile senza rete e senza mock.
+**`internal/tracker`** — dominio puro: nessun I/O, nessuna dipendenza da `internal/service` o
+`internal/cli`. Può importare `internal/notion` e `internal/config`, ma solo per i loro tipi di
+dato (`notion.Schema`, `notion.Page`, `config.Properties`, ...), non per invocarne le funzioni di
+rete o di file. Riceve dati, restituisce decisioni: dato l'insieme di righe trovate decide
+create/update/errore; dato un mapping e dei flag costruisce il payload delle proprietà; valida uno
+stato contro le opzioni ammesse. Testabile senza rete e senza mock.
 
 **`internal/markdown`** — dominio puro. Markdown in, albero di blocchi Notion out. Ci vive tutto
 il chunking: massimo 100 blocchi per chiamata, massimo 2000 caratteri per `rich_text`. Nessuna
@@ -348,10 +350,14 @@ con header `Retry-After` in secondi ([request limits](https://developers.notion.
 Il vincolo è più stretto di quanto sembri: un solo token è condiviso tra tre persone, i job CI e
 la TUI che pagina. È **un unico bucket**.
 
-`internal/notion` implementa dal giorno 1: retry con backoff esponenziale sui `429` rispettando
-`Retry-After`, retry sui `502`/`503`/`504`, numero massimo di tentativi configurabile, timeout e
-`context.Context` propagato su ogni chiamata. Senza questo, la promessa "safe to put in a retried
-CI job" è falsa.
+Esiste un secondo codice da trattare allo stesso modo: **`529` (`service_overload`)**, che la
+documentazione ufficiale accosta esplicitamente al `429` — "handling HTTP 429 and 529 responses
+and respecting the `Retry-After` response header value".
+
+`internal/notion` implementa dal giorno 1: retry con backoff esponenziale sui `429` e sui `529`
+rispettando `Retry-After`, retry sui `502`/`503`/`504`, numero massimo di tentativi
+configurabile, timeout e `context.Context` propagato su ogni chiamata. Senza questo, la promessa
+"safe to put in a retried CI job" è falsa.
 
 ---
 

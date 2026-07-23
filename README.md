@@ -1,139 +1,304 @@
+**English** · [Italiano](README.it.md)
+
 # notion-track
 
-> A small, opinionated Go CLI to keep a Notion task-tracking database in sync from your terminal — and from CI.
+[![CI](https://github.com/marcoarnulfo/notion-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/marcoarnulfo/notion-cli/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/marcoarnulfo/notion-cli)](https://github.com/marcoarnulfo/notion-cli/releases)
+[![Go version](https://img.shields.io/github/go-mod/go-version/marcoarnulfo/notion-cli)](go.mod)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-**Proposed binary name: `notion-track`** (repo: `notion-cli`). The repo name is generic, but the binary must not collide with the existing ecosystem: `ntn` is taken by Notion's official CLI and `notion-cli` is taken by the main community CLI (which even installs as `notion-cli` via Homebrew and npm). `notion-track` is unambiguous, self-describing (it tracks tasks, it does not "do Notion"), and greppable in CI logs. A shorter alias (`ntk`?) can be decided later — see [Open questions](#open-questions).
+> A small, opinionated Go CLI to keep a Notion task-tracking database in sync from your terminal — and from CI. Free and open-source (MIT).
 
-## The problem
+`notion-track` knows about one thing: a Notion database where each row is a ticket, identified by a ticket key, with a status and a handful of other properties. Its core operation is an **idempotent upsert** — given a ticket key, find the row and update it, or create it if it doesn't exist. Run it twice, get one row.
 
-Our team (Head of Tech + 2 developers) tracks work in a Notion database — one row per ticket or sub-task, with a Status property (`In corso`, `Fatto`, ...). Updating those rows by hand is repetitive and easy to forget; we want a repeatable way to do it from the command line, and eventually from CI pipelines, so that "flip the card to Done" is one command (or zero, when a pipeline does it).
+It authenticates with a Notion **internal integration token** only — no browser OAuth. That token is a bot with its own, narrowly-shared permissions, which is what makes it work identically for workspace members and workspace guests alike, and what keeps it usable behind firewalls that block Notion's hosted MCP endpoint.
 
-The obvious modern answers don't work for us, for concrete reasons:
+## Features
 
-- **Notion MCP / user OAuth is broken for workspace guests.** The OAuth consent flow asks for workspace-level authorization that a *guest* user cannot grant. Two of us access the workspace as guests, so any tool built on user login is a non-starter.
-- **The MCP endpoint is blocked by corporate firewalls.** Some firewalls (e.g. Cato Networks) categorize Notion's MCP endpoint under "Generative AI Tools / Remote MCP" and block it outright.
-- **Plain `api.notion.com` passes those same firewalls** and is reachable from everywhere we work.
-- **A Notion internal integration token (`ntn_...`) sidesteps all of this.** The integration is a *bot with its own permissions*: it works identically for guests and members, requires no browser login, and — least-privilege by design — only sees the databases a Workspace Owner explicitly shares with it. One owner creates the integration once, shares the tracking database with it, and everyone (humans and CI) uses the token.
+- **Idempotent upsert** (`upsert`) — create-or-update a ticket row by ticket key. Two runs, one row.
+- **Update-only write** (`set`) — fails with a distinct exit code if the ticket doesn't exist yet, instead of silently creating it.
+- **Read** (`get`, `list`) — one row or many, optionally filtered by status, human-readable or `--json`.
+- **Diagnostics** (`doctor`) — checks the token, data source access, the property mapping (including type drift since `init`), and scans the whole data source for duplicate ticket keys.
+- **Guided setup** (`init`) — writes a profile from flags, validated against the data source's live schema before anything is saved; `init --list` discovers the data source ids your integration can see.
+- **Profiles** — several named database configurations in one YAML config file, selectable by flag, environment variable, or a configured default.
+- **`--json` everywhere** — every command that produces output (`get`, `list`, `doctor`, `upsert`, `set`) can emit machine-readable JSON with a documented, stable shape.
+- **CI-friendly by design** — quiet on success, a distinct exit code per failure class (auth, not found, duplicate, usage, generic), no interactive prompts.
+- **Retries with backoff** on Notion's rate limiting (429) and transient 502/503/504/529 responses, honoring `Retry-After` when Notion sends one.
+- **A single static Go binary** — no Node runtime, no Python venv.
 
-So the constraint set is clear: **HTTPS to `api.notion.com`, authenticated with an integration token from an environment variable or config file, never committed.** That is exactly what this tool is built around.
+## Requirements
 
-## What it is
+- **[Go](https://go.dev/dl/) 1.26 or newer** — needed to build or install from source; prebuilt binaries are not published yet (see [Roadmap](#roadmap)).
+- A **Notion internal integration token** (`ntn_...`), created by a **Workspace Owner** at <https://www.notion.so/my-integrations>.
+- A Notion database **shared with that integration**.
 
-`notion-track` is a **task-tracking client for Notion**, not a Notion client. It knows about one thing: a database where each row is a ticket, identified by a ticket key (e.g. `BDF-231-SubD`), with a Status and a handful of other properties. Its core operation is an **idempotent upsert**: given a ticket key, find the row and update it, or create it if it doesn't exist. Run it twice, get one row.
+## Installation
 
-Vision:
-
-- **One command per intent.** "Mark BDF-231 done" is one line, not a `curl` with a JSON filter body.
-- **Idempotent by construction.** Safe to re-run, safe to put in a retried CI job.
-- **Zero config beyond the token and the database ID.** Sensible defaults, a tiny config file, no project scaffolding.
-- **CI-first output.** Quiet on success, meaningful exit codes, `--json` when a machine is reading.
-- **A single static binary.** Written in Go: no Node runtime, no Python venv, `scp` it anywhere. It's also the team's project for consolidating our Go skills in the open.
-
-## Non-goals
-
-- **Not a general-purpose Notion CLI.** No blocks API, no comments, no search, no user management, no arbitrary page trees. [`4ier/notion-cli`](https://github.com/4ier/notion-cli) already covers the full API surface well; we won't re-implement it.
-- **No Notion Workers.** Deploying/managing Workers is the official [`ntn`](https://developers.notion.com/cli/get-started/overview) CLI's territory.
-- **No browser-based OAuth, ever.** Auth is a token in the environment or a config file, full stop (see [The problem](#the-problem)).
-- **Not a sync engine.** It pushes single-row changes on demand; it does not mirror Jira/GitHub into Notion or watch for changes.
-
-## Core features (MVP)
-
-1. **Idempotent upsert of a ticket row** — query the database for the row whose Ticket property equals the key; update it if found, create it otherwise. `0 → create`, `1 → update`, `>1 → error` (duplicates are a data problem the tool refuses to worsen).
-2. **Property setting** — Status (select), title, dates, plain-text fields; page body from a Markdown file.
-3. **Token auth** — `NOTION_TOKEN` env var, or config file fallback.
-4. **CI-friendly behavior** — non-zero exit on failure, `--json` output, no interactive prompts.
-
-### Planned commands
-
-```sh
-# Create-or-update the row for a ticket (the flagship command)
-notion-track upsert --ticket BDF-231-SubD \
-  --title "Hardening rotaia AI" \
-  --status "In corso" \
-  --body-file notes.md
-
-# Just flip a property on an existing row (errors if the row doesn't exist)
-notion-track set --ticket BDF-231-SubD --status "Fatto"
-
-# Read a row (human-readable, or --json for scripts)
-notion-track get --ticket BDF-231-SubD
-
-# List rows by status
-notion-track list --status "In corso"
-
-# Sanity-check token, database access, and required properties
-notion-track doctor
+```bash
+go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest
 ```
 
-```sh
-# Typical CI usage (GitHub Actions step)
-- run: notion-track upsert --ticket "$TICKET" --status "Fatto"
+This installs the `notion-track` binary into `$(go env GOPATH)/bin` (make sure it's on your `PATH`).
+
+<details>
+<summary>Build from source</summary>
+
+```bash
+git clone https://github.com/marcoarnulfo/notion-cli.git
+cd notion-cli
+go build -o notion-track ./cmd/notion-track
+./notion-track --help
+```
+</details>
+
+There is no `go get`-able prebuilt binary release yet — GoReleaser and GitHub Releases are on the [roadmap](#roadmap).
+
+## Quick start
+
+1. **Create the integration.** A Workspace Owner goes to <https://www.notion.so/my-integrations>, creates a new **internal** integration, and copies its token (`ntn_...`). Only a Workspace Owner can do this step.
+2. **Share the database with it.** Still as a Workspace Owner, open the tracking database in Notion → **•••** (top right) → **Connections** → add the integration. Without this step every request `notion-track` makes will 404, token or no token.
+3. **Export the token** (never write it to a config file):
+   ```bash
+   export NOTION_TOKEN=ntn_...
+   ```
+4. **Find the data source id.** A database can hold more than one data source, so ask the integration what it can see:
+   ```bash
+   notion-track init --list
+   ```
+5. **Configure a profile**, mapping notion-track's concepts onto your database's real property names — `init` validates every property against the live schema before writing anything:
+   ```bash
+   notion-track init \
+     --data-source-id <id> \
+     --ticket-prop Ticket \
+     --status-prop Status \
+     --title-prop Name
+   ```
+6. **Sanity-check the setup:**
+   ```bash
+   notion-track doctor
+   ```
+7. **Create or update a row** — this is the command you'll actually run day to day:
+   ```bash
+   notion-track upsert --ticket BDF-231 --title "Hardening" --status "In progress"
+   notion-track upsert --ticket BDF-231 --status "Done"   # updates the same row, no duplicate
+   ```
+
+## Usage
+
+Global flags, available on every command:
+
+| Flag | Meaning |
+|---|---|
+| `--profile string` | config profile to use (see [Configuration](#configuration)) |
+| `--config string` | path to an explicit config file, instead of the default OS location |
+
+### `init` — configure a profile
+
+```
+notion-track init --data-source-id <id> --ticket-prop <name> --status-prop <name> --title-prop <name> [--due-prop <name>] [--database-id <id>] [--list]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--data-source-id string` | data source id (required, unless `--list`) |
+| `--ticket-prop string` | property holding the ticket key — must be `rich_text` or `title` (required) |
+| `--status-prop string` | property holding the status — must be `status` or `select` (required) |
+| `--title-prop string` | title property (required) |
+| `--due-prop string` | date property (optional) |
+| `--database-id string` | database id, recorded for reference only — every read/write is keyed off `--data-source-id`, not this |
+| `--list` | list the data source ids shared with the integration, and exit |
+
+Each mapped property is checked against the data source's live schema; `init` refuses to write a profile that would break on first use (wrong type, or a property that doesn't exist). `--ticket-prop`, `--status-prop`, and `--title-prop` are required in practice — `init` returns a usage error naming which one is missing — even though `--due-prop` is the only optional one. The profile is written under the name given by `--profile` (default `"default"`); if this is the first profile in the file it also becomes `default_profile`. Running `init` again with the same `--profile` name overwrites that profile without touching the others.
+
+### `upsert` — create or update a row by ticket key
+
+```
+notion-track upsert --ticket <key> [--title <title>] [--status <status>] [--due YYYY-MM-DD] [--json]
+```
+
+The flagship command. Queries the data source for the row whose ticket property equals `--ticket`: updates it if found, creates it otherwise. `0` matches → create, `1` match → update, `>1` matches → fails with exit code 4 (see [Limitations](#limitations)). Silent on success; with `--json` it prints `{"action": "created"|"updated", "page": {...}}`.
+
+### `set` — update an existing row only
+
+```
+notion-track set --ticket <key> [--title <title>] [--status <status>] [--due YYYY-MM-DD] [--json]
+```
+
+Same fields as `upsert`, but fails with exit code 3 if the ticket doesn't exist yet, instead of creating it. Use this where a missing row is a symptom worth surfacing rather than something to paper over.
+
+### `get` — read one row
+
+```
+notion-track get --ticket <key> [--json]
+```
+
+Prints the row's ticket, title, status and URL. Fails with exit code 3 if not found, or 4 if the ticket key matches more than one row (see [Limitations](#limitations)).
+
+### `list` — read many rows
+
+```
+notion-track list [--status <status>] [--json]
+```
+
+Lists every row, or only those matching `--status`. An unknown status value fails fast with exit code 2, naming the values Notion actually allows for that property.
+
+### `doctor` — check the setup
+
+```
+notion-track doctor [--json]
+```
+
+Runs four checks — `token`, `data_source`, `properties`, `duplicates` — and prints each as `ok`, `warn`, or `fail` with an actionable detail message. A `warn` (e.g. the status property's type changed since `init` ran) does not fail the command; any `fail` makes it exit non-zero. `properties` and `duplicates` still run even when `data_source` fails, so a broken setup gets diagnosed in one pass instead of one symptom at a time.
+
+## Configuration
+
+The config file lives at `os.UserConfigDir()/notion-track/config.yml` — respecting `$XDG_CONFIG_HOME` on Linux:
+
+| OS | Default path |
+|---|---|
+| macOS | `~/Library/Application Support/notion-track/config.yml` |
+| Linux | `~/.config/notion-track/config.yml` |
+| Windows | `%AppData%\notion-track\config.yml` |
+
+Pass `--config /path/to/file.yml` to point at a different file entirely — this is how you use a config file **committed to a project repo** instead of the per-user default (see [CI usage](#ci-usage)).
+
+```yaml
+schema_version: 1        # written by `init`; don't hand-edit it
+default_profile: work    # used when --profile and NOTION_TRACK_PROFILE are both unset
+profiles:
+  work:
+    database_id: "1a2b3c4d..."     # optional, informational only — nothing reads it
+    data_source_id: "5e6f7a8b..."  # required — every query, create and update is keyed off this
+    status_type: status            # "status" or "select", recorded by `init`; see doctor's "properties" check
+    properties:
+      ticket: Ticket   # rich_text or title property holding the ticket key
+      status: Status   # status or select property
+      title: Name      # title property
+      due: Due         # optional: date property
+```
+
+The file holds **no secret** and is safe to commit to a repository — that's the point: it lets CI (and every teammate) share the same property mapping without re-running `init`. The token is never read from it; `init` never writes one there.
+
+`init` still writes it with `0600` permissions, and replaces it atomically through a temporary file in the same directory: it holds no secret of its own, but it sits next to one.
+
+### Environment variables
+
+| Variable | Effect |
+|---|---|
+| `NOTION_TOKEN` | the integration token. This is the **only** source `notion-track` reads a token from — there is no config-file fallback and no flag. |
+| `NOTION_TRACK_PROFILE` | which profile to resolve, unless `--profile` is also given |
+| `NOTION_TRACK_DB` | overrides the resolved profile's `database_id` |
+| `NOTION_TRACK_DATA_SOURCE` | overrides the resolved profile's `data_source_id` |
+
+Precedence:
+
+- **Profile selection:** `--profile` flag → `NOTION_TRACK_PROFILE` → `default_profile` in the config file.
+- **`database_id` / `data_source_id`:** the env vars above always override whatever the resolved profile has on file, regardless of how that profile was chosen — this is what lets a CI job point an existing profile at a different data source without touching the committed file.
+- **Token:** `NOTION_TOKEN`, full stop.
+- **Config file location:** `--config` flag → the OS default path above. There is no environment variable for the path itself.
+
+## JSON output
+
+Every `--json` shape below is a **documented, stable scripting contract**: a key is never renamed or removed without a breaking-change announcement.
+
+A row (`get --json`, and each entry of `list --json`):
+
+```json
+{
+  "ticket": "BDF-231",
+  "title": "Hardening",
+  "status": "In progress",
+  "page_id": "1a2b3c4d-...",
+  "url": "https://www.notion.so/...",
+  "last_edited_time": "2026-07-23T10:15:00Z"
+}
+```
+
+If the configured property mapping names a column the row doesn't actually carry, the corresponding field comes back as an empty string rather than an error — a broken mapping is `doctor`'s job to report, not a reason to fail every read.
+
+`upsert --json` / `set --json`:
+
+```json
+{
+  "action": "created",
+  "page": { "ticket": "BDF-231", "title": "Hardening", "status": "In progress", "page_id": "...", "url": "...", "last_edited_time": "..." }
+}
+```
+
+`action` is `"created"` or `"updated"`.
+
+`doctor --json` — an array of checks, one per `token` / `data_source` / `properties` / `duplicates`:
+
+```json
+[
+  { "name": "token", "status": "ok", "detail": "authenticated as notion-track" },
+  { "name": "data_source", "status": "ok", "detail": "reachable: Tasks" },
+  { "name": "properties", "status": "ok", "detail": "all mapped properties exist with the expected types" },
+  { "name": "duplicates", "status": "ok", "detail": "42 rows, no repeated ticket keys" }
+]
+```
+
+`status` is `"ok"`, `"warn"`, or `"fail"`; `detail` is omitted only when empty, which does not happen in practice.
+
+## Exit codes
+
+Pipelines can branch on these without parsing any message text:
+
+| Code | Name | Meaning |
+|---|---|---|
+| `0` | OK | success |
+| `1` | Error | a generic failure — a network/API error, or `doctor` reporting a failed check other than `token` |
+| `2` | Usage | the invocation cannot work as written: a missing/invalid flag, an unknown command, no config yet (`notion-track init` was never run), or a status value the data source doesn't allow |
+| `3` | Not found | the requested ticket has no matching row (`get`, `set`) |
+| `4` | Duplicate | the ticket key matches more than one row (`upsert`, `set`, `get`) |
+| `5` | Auth | no token was found, or Notion rejected it (401/403) — including `doctor`, when its `token` check is the only one that failed |
+
+## CI usage
+
+Because the config file has no secret in it, the common pattern is to **commit it to the repository** and point at it explicitly with `--config`, while the token comes from a CI secret:
+
+```yaml
+# .github/workflows/notion.yml
+- name: Install notion-track
+  run: go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest
+
+- name: Mark the ticket done
+  run: notion-track upsert --ticket "$TICKET" --status "Done" --config notion-track.yml
   env:
     NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-    NOTION_TRACK_DB: ${{ vars.NOTION_TRACK_DB }}
+    TICKET: ${{ github.event.inputs.ticket }}
 ```
 
-## Design & tech decisions
+A thin composite GitHub Action wrapping this is on the [roadmap](#roadmap); today, `go install` + the two lines above is the whole integration.
 
-**Language: Go.** Single static cross-platform binary, trivial distribution to teammates and CI runners, and a deliberate team investment in learning Go on a real open-source project.
+## Limitations
 
-**CLI framework: [`urfave/cli`](https://github.com/urfave/cli) (v3).** For a tool with a flat set of five-ish commands, urfave/cli's declarative, single-file style keeps the code small and readable. [`spf13/cobra`](https://github.com/spf13/cobra) is the heavyweight standard (nested commands, generators, Viper integration) and would be the right call for a large CLI, but its per-command-file scaffolding is overhead we don't need; community comparisons consistently position urfave/cli as the lighter fit for simple tools. If the command tree ever grows deep, migrating is mechanical.
+These are current, deliberate tradeoffs — not bugs to be surprised by:
 
-**Notion API: [`jomei/notionapi`](https://github.com/jomei/notionapi) behind a thin internal interface.** It's an actively maintained, typed Go SDK with **zero dependencies beyond the standard library** — the typed property-value models (select, date, rich text) are exactly the fiddly part we don't want to hand-roll. Caveat, stated honestly: it targets Notion API version `2022-06-28`, while Notion's 2025+ API versions introduced multi-source databases ("data sources"). Our MVP touches only three endpoints (database query, page create, page update), all stable on the pinned version — and by keeping the SDK behind a small internal `tracker` interface, swapping in a hand-rolled `net/http` client with a newer `Notion-Version` header later is a contained change, not a rewrite.
+1. **Every change is attributed to the integration, not to you.** Notion records edits made through the API as made by the integration's bot identity. If you check a page's edit history in Notion, you will see the integration's name, never the human or CI job that ran the command.
+2. **`upsert` and `get` fail on duplicate ticket keys instead of picking one.** If more than one row shares the same ticket key, `notion-track` refuses to guess which one you meant — it exits with code 4 and lists the offending rows. Run `notion-track doctor` to find and clean them up.
+3. **Two concurrent jobs creating the same new ticket can race into a duplicate.** `upsert`'s create-or-update decision reads the current rows, then writes; the Notion API offers no unique-constraint or compare-and-swap primitive to close that window. This is not preventable client-side — `doctor`'s duplicate scan is the mitigation, not a fix.
+4. **Only a Workspace Owner can set this up.** Creating the integration and sharing a database with it both require Workspace Owner permissions in Notion. A workspace guest — one of the reasons this tool exists in the first place — cannot do either step, but can use the tool freely once someone with Owner rights has.
+5. **No Markdown page body, and no interactive TUI yet.** `upsert`/`set` only touch the properties documented above — there is no `--body-file` to write page content, and there is no wizard or browsing UI; every command here is flag-driven. Both are tracked in the [Roadmap](#roadmap).
 
-**Config & token handling.**
+## Contributing
 
-- Token: `NOTION_TOKEN` env var first; fallback to `~/.config/notion-track/config.toml` (`XDG_CONFIG_HOME` respected). **Never in the repo** — `doctor` will warn if it finds a token-looking string in a tracked file.
-- Database: `NOTION_TRACK_DB` env var or `database_id` in the config file.
-- The integration token is created by a Workspace Owner and shared **only with the tracking database** (Notion's integration model enforces this) — the blast radius of a leaked token is one database, not the workspace.
-
-**Idempotency.** The ticket key is the natural key. `upsert` runs a database query filtered on the Ticket property, then updates or creates. No local state, no cache file: the database itself is the source of truth, so concurrent runs from a laptop and a CI job converge.
-
-## Prior art & alternatives
-
-We looked hard at the existing tools before starting this. Both are good; neither is shaped like our problem.
-
-| | [`ntn`](https://developers.notion.com/cli/get-started/overview) (official) | [`4ier/notion-cli`](https://github.com/4ier/notion-cli) | `notion-track` (this project) |
-|---|---|---|---|
-| Origin | Notion, 2026 Developer Platform (beta) | Community, Go | Us |
-| Scope | API requests, Workers, data sources, markdown pages | Full Notion API, 39 commands ("`gh` for Notion") | Task-tracking rows only |
-| Database-row ergonomics | Low-level (raw API requests for row upserts) | High-level generic CRUD (`page create`, `db query`) | Purpose-built `upsert`/`set` per ticket |
-| Idempotent upsert by key | No — compose it yourself | No — compose it yourself | **Yes, the core primitive** |
-| Auth | `ntn login` via browser (guest problem); `NOTION_API_TOKEN` as workaround | Integration token | Integration token, **only** mode |
-| Windows | Not supported (macOS/Linux) | Yes | Yes (Go cross-compile) |
-| Fit for our CI/guest/firewall constraints | Partial, with workarounds | Workable but generic | Designed for them |
-
-The honest summary: if you need the whole Notion API from a terminal, use `4ier/notion-cli`; if you build Notion Workers, use `ntn`. If you want `upsert --ticket X --status Done` to be one safe, repeatable command for a tracking database — that's us.
-
-## Distribution
-
-- **GitHub Releases** — prebuilt static binaries for macOS/Linux/Windows (amd64/arm64), built with GoReleaser.
-- **`go install github.com/<org>/notion-cli/cmd/notion-track@latest`** — for Go-equipped machines.
-- **Homebrew tap** — candidate for after v1, if there's demand beyond the team.
-- **CI** — a thin composite GitHub Action wrapping the binary (`uses: <org>/notion-cli/action@v1`), so pipelines get `upsert` without install boilerplate.
+Contributions are welcome — this is a free, open-source project. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the development setup, the checks to run before opening a PR, and the project's non-negotiable architectural rules. Please also read the [Code of Conduct](CODE_OF_CONDUCT.md). Found a security issue? See [SECURITY.md](SECURITY.md) instead of opening a public issue.
 
 ## Roadmap
 
-- **v0.1 (MVP)** — `upsert`, `set`, `get`, `doctor`; token/config handling; single database.
-- **v0.2** — `list`, `--json` everywhere, GitHub Action, GoReleaser pipeline.
-- **v0.3** — multi-database profiles in config (`--profile work`), body templating (ticket key/date placeholders in the Markdown body).
-- **Later / maybe** — bulk operations from a CSV/JSON manifest, `--dry-run`, native support for newer Notion API versions (data sources) if/when we outgrow the pinned SDK version.
+Implemented today: `init` (flag-driven, with `--list`), `upsert`, `set`, `get`, `list`, `doctor`; `--json` on every command that produces output; profiles; retry with backoff.
 
-## Open questions
+Not yet built:
 
-- **Binary name** — `notion-track` proposed here; do we also ship a short alias (`ntk`)? Decide before v0.1 tags.
-- **v1 property set** — Ticket (title or rich_text?), Status (select vs Notion's native status type), Title, due date, free-text notes. Which are required vs optional flags?
-- **Duplicate policy** — `upsert` errors on >1 match (current proposal). Alternative: update the most recent and warn. Erroring is safer; confirm.
-- **Homebrew tap** — worth the maintenance for a 3-person team + open-source users? Defer until someone asks.
-- **License** — **MIT proposed**: permissive, zero-friction for a small tool we want people to embed in CI, consistent with the Go CLI ecosystem (cobra, urfave/cli are MIT/Apache-family). Confirm before first public release.
+- **Interactive `init` wizard** — a guided TUI alternative to today's flag-only form.
+- **Browsing TUI** — an interactive view over the tracked rows.
+- **Markdown page body** (`--body-file` on `upsert`/`set`) — currently only the properties listed under [Usage](#usage) can be written.
+- **Prebuilt binaries** — a GoReleaser pipeline publishing GitHub Releases for macOS/Linux/Windows; today, `go install` or building from source are the only options.
+- **A composite GitHub Action** wrapping the binary, so a workflow step doesn't need its own `go install`.
+- **An MCP server adapter** over the same `internal/service` layer the CLI uses today.
 
-## References
+## License
 
-- Notion CLI (`ntn`) — official docs: <https://developers.notion.com/cli/get-started/overview>
-- Notion 3.5 release notes (Developer Platform / `ntn` launch, May 13 2026): <https://www.notion.com/releases/2026-05-13>
-- `4ier/notion-cli` (community Go CLI, full API coverage): <https://github.com/4ier/notion-cli>
-- `jomei/notionapi` (Go SDK for the Notion API): <https://github.com/jomei/notionapi> — package docs: <https://pkg.go.dev/github.com/jomei/notionapi>
-- `urfave/cli`: <https://github.com/urfave/cli>
-- `spf13/cobra`: <https://github.com/spf13/cobra>
-- Go CLI library comparison: <https://github.com/gschauer/go-cli-comparison>
-- Notion authorization model (internal integrations & tokens): <https://developers.notion.com/docs/authorization>
+[MIT](LICENSE)

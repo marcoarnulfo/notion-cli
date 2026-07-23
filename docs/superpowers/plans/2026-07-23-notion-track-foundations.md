@@ -25,7 +25,9 @@
 - Conventional Commits con scope (`feat(notion):`, `fix(config):`). **MAI** `Co-Authored-By` nei messaggi di commit.
 - `Notion-Version` minima `2025-09-03`, definita in **una sola costante** in `internal/notion`. Valore esatto fissato dal Task 1.
 - Il token non deve **mai** comparire in output, log, errori o dump di debug.
-- `internal/tracker` non importa `internal/notion` né `internal/config`. Se un test di `tracker` ha bisogno di un server HTTP, il design è sbagliato.
+- `internal/tracker` non fa I/O e non dipende da `internal/service` né da `internal/cli`; può
+  importare `internal/notion` e `internal/config`, ma solo per i loro tipi di dato. Se un test di
+  `tracker` ha bisogno di un server HTTP, il design è sbagliato.
 - Dati su stdout, errori e warning su stderr. `cli.Execute()` ritorna `int` e non chiama mai `os.Exit`.
 - Exit code: 0 successo · 1 generico · 2 uso errato · 3 non trovato · 4 duplicati · 5 auth.
 - Chiavi JSON in `snake_case`, timestamp RFC3339.
@@ -79,7 +81,9 @@ go mod init github.com/marcoarnulfo/notion-cli
 - [ ] **Step 2: Crea `.gitignore`**
 
 ```
-notion-track
+# The leading slash matters: an unanchored "notion-track" would also match the
+# cmd/notion-track/ source directory and silently exclude the entry point.
+/notion-track
 /dist/
 *.test
 *.out
@@ -683,6 +687,35 @@ func TestDoRetriesOn503WithExponentialBackoff(t *testing.T) {
 	}
 }
 
+// 529 is service_overload. Notion documents it next to 429 and asks for the
+// same treatment, and it has no net/http constant, so it is easy to miss.
+func TestDoRetriesOn529(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(529)
+			w.Write([]byte(`{"code":"service_overload","message":"overloaded"}`))
+			return
+		}
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	var slept []time.Duration
+	c := New("t", WithBaseURL(srv.URL), WithSleep(func(d time.Duration) { slept = append(slept, d) }))
+
+	if err := c.do(context.Background(), http.MethodGet, "/v1/x", nil, nil); err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("made %d calls, want 2", calls)
+	}
+	if len(slept) != 1 || slept[0] != time.Second {
+		t.Fatalf("slept %v, want one 1s wait from Retry-After", slept)
+	}
+}
+
 func TestDoGivesUpAfterMaxRetries(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -755,9 +788,16 @@ func WithMaxRetries(n int) Option { return func(c *Client) { c.maxRetries = n } 
 // WithSleep replaces the sleep function. Tests use it to run instantly.
 func WithSleep(f func(time.Duration)) Option { return func(c *Client) { c.sleep = f } }
 
+// statusServiceOverload is Notion's 529. It has no net/http constant: the code
+// is outside the registered range, and Notion documents it alongside 429 —
+// "handling HTTP 429 and 529 responses and respecting the Retry-After response
+// header value".
+const statusServiceOverload = 529
+
 // retryable reports whether a status code is worth another attempt.
 func retryable(status int) bool {
 	return status == http.StatusTooManyRequests ||
+		status == statusServiceOverload ||
 		status == http.StatusBadGateway ||
 		status == http.StatusServiceUnavailable ||
 		status == http.StatusGatewayTimeout
@@ -1427,7 +1467,9 @@ package notion
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -1457,7 +1499,9 @@ func (c *Client) QueryPages(ctx context.Context, dataSourceID string, filter Fil
 			NextCursor string            `json:"next_cursor"`
 		}
 		req := queryReq{Filter: filter, StartCursor: cursor, PageSize: 100}
-		path := "/v1/data_sources/" + dataSourceID + "/query"
+		// url.PathEscape: the id comes from config or a flag, and an unescaped
+		// "/" would silently retarget the request.
+		path := "/v1/data_sources/" + url.PathEscape(dataSourceID) + "/query"
 		if err := c.do(ctx, http.MethodPost, path, req, &resp); err != nil {
 			return nil, err
 		}
@@ -1470,6 +1514,12 @@ func (c *Client) QueryPages(ctx context.Context, dataSourceID string, filter Fil
 		}
 		if !resp.HasMore || resp.NextCursor == "" {
 			return out, nil
+		}
+		// Same guard as ListDataSources: a cursor that does not advance would
+		// loop forever, appending the same page every time.
+		if resp.NextCursor == cursor {
+			return nil, fmt.Errorf(
+				"notion: query pagination stalled, cursor %q repeated", resp.NextCursor)
 		}
 		cursor = resp.NextCursor
 	}
@@ -1651,6 +1701,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 )
 
 // CreatePage adds a row to a data source. props holds already-built Notion
@@ -1674,7 +1725,7 @@ func (c *Client) CreatePage(ctx context.Context, dataSourceID string, props map[
 func (c *Client) UpdatePage(ctx context.Context, pageID string, props map[string]any) (Page, error) {
 	var raw json.RawMessage
 	body := map[string]any{"properties": props}
-	if err := c.do(ctx, http.MethodPatch, "/v1/pages/"+pageID, body, &raw); err != nil {
+	if err := c.do(ctx, http.MethodPatch, "/v1/pages/"+url.PathEscape(pageID), body, &raw); err != nil {
 		return Page{}, err
 	}
 	return decodePage(raw)

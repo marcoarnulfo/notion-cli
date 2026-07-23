@@ -1,5 +1,6 @@
-# Build output
-notion-track
+# Build output. The leading slash matters: an unanchored "notion-track" would
+# also match the cmd/notion-track/ source directory.
+/notion-track
 /dist/
 
 # Go test artifacts
