@@ -62,7 +62,8 @@ func newUpsertCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			res, err := svc.Upsert(cmd.Context(), wf.fields())
+			// TODO(task 9): wire --body-file into a *service.BodyRequest here.
+			res, err := svc.Upsert(cmd.Context(), wf.fields(), nil)
 			if err != nil {
 				return err
 			}

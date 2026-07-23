@@ -24,9 +24,9 @@ func newSetCmd() *cobra.Command {
 			// See get.go: branch on Changed, not on the value, so an empty
 			// --page-id still takes the by-id path.
 			if cmd.Flags().Changed("page-id") {
-				res, err = svc.SetByID(cmd.Context(), wf.pageID, wf.fields())
+				res, err = svc.SetByID(cmd.Context(), wf.pageID, wf.fields(), nil)
 			} else {
-				res, err = svc.Set(cmd.Context(), wf.fields())
+				res, err = svc.Set(cmd.Context(), wf.fields(), nil)
 			}
 			if err != nil {
 				return err

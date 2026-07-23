@@ -6,8 +6,10 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/marcoarnulfo/notion-cli/internal/config"
 	"github.com/marcoarnulfo/notion-cli/internal/notion"
@@ -58,13 +60,139 @@ func routes(t *testing.T, queryResults string, seen *[]string) *httptest.Server 
 	}))
 }
 
+// bodyRoutes answers schema/query/create/update plus the three block endpoints,
+// recording "METHOD path" order so a test can assert snapshot→append→delete.
+func bodyRoutes(t *testing.T, queryResults, children string, seen *[]string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*seen = append(*seen, r.Method+" "+r.URL.Path)
+		switch {
+		case r.URL.Path == "/v1/data_sources/ds1":
+			w.Write([]byte(schemaJSON))
+		case r.URL.Path == "/v1/data_sources/ds1/query":
+			w.Write([]byte(`{"results":[` + queryResults + `],"has_more":false}`))
+		case r.URL.Path == "/v1/pages":
+			w.Write([]byte(rowJSON))
+		case strings.HasSuffix(r.URL.Path, "/children") && r.Method == http.MethodGet:
+			w.Write([]byte(`{"results":[` + children + `],"has_more":false}`))
+		case strings.HasSuffix(r.URL.Path, "/children") && r.Method == http.MethodPatch:
+			w.Write([]byte(`{}`))
+		default: // PATCH /v1/pages/{id}, DELETE /v1/blocks/{id}
+			w.Write([]byte(rowJSON))
+		}
+	}))
+}
+
+func TestReplaceBodyOrdersSnapshotAppendDelete(t *testing.T) {
+	var seen []string
+	srv := bodyRoutes(t, rowJSON, `{"id":"old1","type":"paragraph"}`, &seen)
+	defer srv.Close()
+
+	s := New(notion.New("t", notion.WithBaseURL(srv.URL), notion.WithSleep(func(time.Duration) {})), testProfile())
+	body := &BodyRequest{Blocks: []notion.Block{{Type: "paragraph", RichText: []notion.Span{{Content: "new"}}}}}
+	res, err := s.Set(context.Background(), tracker.Fields{Ticket: "BDF-231"}, body)
+	if err != nil {
+		t.Fatalf("Set with body: %v", err)
+	}
+	// Assert relative order: children GET (snapshot) before children PATCH
+	// (append) before /v1/blocks/old1 DELETE.
+	iGet := indexOf(seen, "GET", "/children")
+	iPatch := indexOf(seen, "PATCH", "/children")
+	iDel := indexOf(seen, "DELETE", "/blocks/old1")
+	if !(iGet >= 0 && iGet < iPatch && iPatch < iDel) {
+		t.Fatalf("order wrong: %v (get=%d patch=%d del=%d)", seen, iGet, iPatch, iDel)
+	}
+	if res.Body == nil || res.Body.BlocksWritten != 1 || res.Body.BlocksDeleted != 1 {
+		t.Fatalf("body result = %+v", res.Body)
+	}
+}
+
+func TestReplaceBodySkipsChildPageOnDelete(t *testing.T) {
+	var seen []string
+	srv := bodyRoutes(t, rowJSON, `{"id":"sub1","type":"child_page"}`, &seen)
+	defer srv.Close()
+
+	s := New(notion.New("t", notion.WithBaseURL(srv.URL), notion.WithSleep(func(time.Duration) {})), testProfile())
+	res, err := s.Set(context.Background(), tracker.Fields{Ticket: "BDF-231"},
+		&BodyRequest{Blocks: []notion.Block{{Type: "paragraph", RichText: []notion.Span{{Content: "x"}}}}})
+	if err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if indexOf(seen, "DELETE", "/blocks/sub1") >= 0 {
+		t.Fatal("child_page must NOT be deleted")
+	}
+	if len(res.Body.Warnings) == 0 {
+		t.Fatal("skipping a child_page must produce a warning")
+	}
+}
+
+func TestUpsertWithNilBodyLeavesBodyUntouched(t *testing.T) {
+	var seen []string
+	srv := bodyRoutes(t, "", "", &seen)
+	defer srv.Close()
+	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile())
+	if _, err := s.Upsert(context.Background(), tracker.Fields{Ticket: "BDF-231"}, nil); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	for _, e := range seen {
+		if strings.Contains(e, "/children") || strings.Contains(e, "/blocks/") {
+			t.Fatalf("nil body must touch no block endpoint, saw %q", e)
+		}
+	}
+}
+
+func TestSetBodyAppendFailureKeepsPropertiesApplied(t *testing.T) {
+	// The children PATCH (append) 400s. Properties were already written, so
+	// the caller must get a *BodyWriteError with the page still populated.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/data_sources/ds1":
+			w.Write([]byte(schemaJSON))
+		case r.URL.Path == "/v1/data_sources/ds1/query":
+			w.Write([]byte(`{"results":[` + rowJSON + `],"has_more":false}`))
+		case strings.HasSuffix(r.URL.Path, "/children") && r.Method == http.MethodGet:
+			w.Write([]byte(`{"results":[],"has_more":false}`))
+		case strings.HasSuffix(r.URL.Path, "/children") && r.Method == http.MethodPatch:
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"code":"validation_error","message":"bad block"}`))
+		default: // PATCH /v1/pages/{id}
+			w.Write([]byte(rowJSON))
+		}
+	}))
+	defer srv.Close()
+
+	s := New(notion.New("t", notion.WithBaseURL(srv.URL), notion.WithSleep(func(time.Duration) {})), testProfile())
+	res, err := s.Set(context.Background(), tracker.Fields{Ticket: "BDF-231"},
+		&BodyRequest{Blocks: []notion.Block{{Type: "paragraph", RichText: []notion.Span{{Content: "x"}}}}})
+	var bwe *BodyWriteError
+	if !errors.As(err, &bwe) {
+		t.Fatalf("append failure must be a *BodyWriteError, got %v", err)
+	}
+	if res.Page.ID == "" {
+		t.Fatal("properties were written, so Result.Page must be populated")
+	}
+	if res.Action != "updated" {
+		t.Fatalf("action = %q, want updated", res.Action)
+	}
+}
+
+// indexOf returns the position of the first "METHOD …suffix" entry, or -1.
+func indexOf(seen []string, method, suffix string) int {
+	for i, e := range seen {
+		if strings.HasPrefix(e, method+" ") && strings.Contains(e, suffix) {
+			return i
+		}
+	}
+	return -1
+}
+
 func TestUpsertCreatesWhenNoRowMatches(t *testing.T) {
 	var seen []string
 	srv := routes(t, "", &seen)
 	defer srv.Close()
 
 	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile())
-	got, err := s.Upsert(context.Background(), tracker.Fields{Ticket: "BDF-231", Status: "Fatto"})
+	got, err := s.Upsert(context.Background(), tracker.Fields{Ticket: "BDF-231", Status: "Fatto"}, nil)
 	if err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
@@ -82,7 +210,7 @@ func TestUpsertUpdatesWhenOneRowMatches(t *testing.T) {
 	defer srv.Close()
 
 	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile())
-	got, err := s.Upsert(context.Background(), tracker.Fields{Ticket: "BDF-231", Status: "Fatto"})
+	got, err := s.Upsert(context.Background(), tracker.Fields{Ticket: "BDF-231", Status: "Fatto"}, nil)
 	if err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
@@ -102,7 +230,7 @@ func TestUpsertIsIdempotent(t *testing.T) {
 	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile())
 	f := tracker.Fields{Ticket: "BDF-231", Status: "Fatto"}
 	for i := 0; i < 2; i++ {
-		if _, err := s.Upsert(context.Background(), f); err != nil {
+		if _, err := s.Upsert(context.Background(), f, nil); err != nil {
 			t.Fatalf("Upsert %d: %v", i, err)
 		}
 	}
@@ -117,7 +245,7 @@ func TestUpsertFailsOnDuplicates(t *testing.T) {
 	defer srv.Close()
 
 	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile())
-	_, err := s.Upsert(context.Background(), tracker.Fields{Ticket: "BDF-231"})
+	_, err := s.Upsert(context.Background(), tracker.Fields{Ticket: "BDF-231"}, nil)
 	var dup *tracker.DuplicateError
 	if !errors.As(err, &dup) {
 		t.Fatalf("got %v, want *tracker.DuplicateError", err)
@@ -137,7 +265,7 @@ func TestUpsertRejectsEmptyTicket(t *testing.T) {
 	defer srv.Close()
 
 	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile())
-	_, err := s.Upsert(context.Background(), tracker.Fields{Ticket: "", Title: "Ghost"})
+	_, err := s.Upsert(context.Background(), tracker.Fields{Ticket: "", Title: "Ghost"}, nil)
 	if !errors.Is(err, ErrEmptyTicket) {
 		t.Fatalf("got %v, want ErrEmptyTicket", err)
 	}
@@ -152,7 +280,7 @@ func TestSetRejectsEmptyTicket(t *testing.T) {
 	defer srv.Close()
 
 	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile())
-	_, err := s.Set(context.Background(), tracker.Fields{Ticket: "", Status: "Fatto"})
+	_, err := s.Set(context.Background(), tracker.Fields{Ticket: "", Status: "Fatto"}, nil)
 	if !errors.Is(err, ErrEmptyTicket) {
 		t.Fatalf("got %v, want ErrEmptyTicket", err)
 	}
@@ -182,7 +310,7 @@ func TestSetFailsWhenTheRowDoesNotExist(t *testing.T) {
 	defer srv.Close()
 
 	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile())
-	_, err := s.Set(context.Background(), tracker.Fields{Ticket: "BDF-999", Status: "Fatto"})
+	_, err := s.Set(context.Background(), tracker.Fields{Ticket: "BDF-999", Status: "Fatto"}, nil)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("got %v, want ErrNotFound", err)
 	}

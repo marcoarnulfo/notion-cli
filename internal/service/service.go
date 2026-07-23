@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 
 	"github.com/marcoarnulfo/notion-cli/internal/config"
@@ -91,6 +92,90 @@ func (s *Service) Schema(ctx context.Context) (*notion.Schema, error) {
 type Result struct {
 	Action string // "created" or "updated"
 	Page   notion.Page
+	Body   *BodyResult // non-nil only when a body was written
+}
+
+// BodyRequest carries an optional Markdown body to replace on a page. A nil
+// *BodyRequest means "leave the page body untouched" (the pre-body behavior).
+type BodyRequest struct {
+	Blocks   []notion.Block
+	Progress io.Writer // optional; ephemeral progress lines go here (stderr)
+}
+
+// BodyResult reports what replaceBody did, for --json and stderr warnings.
+type BodyResult struct {
+	BlocksWritten int
+	BlocksDeleted int
+	Warnings      []string // e.g. skipped child_page/child_database
+}
+
+// BodyWriteError marks a failure that happened AFTER the row's properties were
+// written (or the row created): properties are applied, only the body replace
+// failed. It unwraps to the underlying error so exitCodeFor and
+// errors.Is(…, notion.ErrAmbiguousWrite) keep working.
+type BodyWriteError struct{ err error }
+
+func (e *BodyWriteError) Error() string { return e.err.Error() }
+func (e *BodyWriteError) Unwrap() error { return e.err }
+
+// replaceBody makes the page body equal to req.Blocks with replace semantics:
+// snapshot existing children, append the new body at the end, then delete the
+// snapshotted children — skipping child_page/child_database so sub-pages are
+// never archived. The order converges on re-run if append fails midway. On a
+// failed DELETE, res already carries the real BlocksWritten (the append DID
+// happen), which the CLI surfaces even in the partial-failure JSON (spec §8).
+func (s *Service) replaceBody(ctx context.Context, pageID string, req *BodyRequest) (BodyResult, error) {
+	var res BodyResult
+	old, err := s.client.ListBlockChildren(ctx, pageID)
+	if err != nil {
+		return res, err
+	}
+	// Count how many of the snapshot we will actually delete (sub-pages are kept).
+	toDelete := 0
+	for _, ch := range old {
+		if ch.Type != "child_page" && ch.Type != "child_database" {
+			toDelete++
+		}
+	}
+	progress(req.Progress, "appending %d block(s)…", len(req.Blocks))
+	if err := s.client.AppendBlockChildren(ctx, pageID, req.Blocks); err != nil {
+		return res, err
+	}
+	res.BlocksWritten = len(req.Blocks)
+	for _, ch := range old {
+		if ch.Type == "child_page" || ch.Type == "child_database" {
+			res.Warnings = append(res.Warnings,
+				fmt.Sprintf("kept a %s (%s): deleting it would archive a sub-page or database", ch.Type, ch.ID))
+			continue
+		}
+		if err := s.client.DeleteBlock(ctx, ch.ID); err != nil {
+			return res, err // res.BlocksWritten is already set: the append succeeded
+		}
+		res.BlocksDeleted++
+		progress(req.Progress, "deleted %d/%d old block(s)", res.BlocksDeleted, toDelete)
+	}
+	return res, nil
+}
+
+func progress(w io.Writer, format string, args ...any) {
+	if w != nil {
+		fmt.Fprintf(w, format+"\n", args...)
+	}
+}
+
+// withBody appends the body (if any) after the properties/row already exist,
+// wrapping a body failure so the caller knows properties were applied.
+func (s *Service) withBody(ctx context.Context, page notion.Page, action string, body *BodyRequest) (Result, error) {
+	res := Result{Action: action, Page: page}
+	if body == nil {
+		return res, nil
+	}
+	br, err := s.replaceBody(ctx, page.ID, body)
+	res.Body = &br
+	if err != nil {
+		return res, &BodyWriteError{err: err}
+	}
+	return res, nil
 }
 
 // findByTicket returns every row whose ticket property equals key.
@@ -110,7 +195,9 @@ func (s *Service) findByTicket(ctx context.Context, key string) ([]notion.Page, 
 }
 
 // Upsert creates the row for a ticket or updates it if it already exists.
-func (s *Service) Upsert(ctx context.Context, f tracker.Fields) (Result, error) {
+// body, when non-nil, replaces the page body after the properties are
+// written; a nil body leaves the page body untouched.
+func (s *Service) Upsert(ctx context.Context, f tracker.Fields, body *BodyRequest) (Result, error) {
 	if f.Ticket == "" {
 		return Result{}, ErrEmptyTicket
 	}
@@ -132,17 +219,25 @@ func (s *Service) Upsert(ctx context.Context, f tracker.Fields) (Result, error) 
 		return Result{}, err
 	}
 
+	var page notion.Page
+	action := "updated"
 	if decision.Action == tracker.ActionCreate {
-		page, err := s.client.CreatePage(ctx, s.profile.DataSourceID, props)
-		return Result{Action: "created", Page: page}, err
+		page, err = s.client.CreatePage(ctx, s.profile.DataSourceID, props)
+		action = "created"
+	} else {
+		page, err = s.client.UpdatePage(ctx, decision.PageID, props)
 	}
-	page, err := s.client.UpdatePage(ctx, decision.PageID, props)
-	return Result{Action: "updated", Page: page}, err
+	if err != nil {
+		return Result{Action: action}, err
+	}
+	return s.withBody(ctx, page, action, body)
 }
 
 // Set updates an existing row and fails if it does not exist. In CI a missing
-// ticket is usually a symptom worth surfacing, not a row to conjure up.
-func (s *Service) Set(ctx context.Context, f tracker.Fields) (Result, error) {
+// ticket is usually a symptom worth surfacing, not a row to conjure up. body,
+// when non-nil, replaces the page body after the properties are written; a
+// nil body leaves the page body untouched.
+func (s *Service) Set(ctx context.Context, f tracker.Fields, body *BodyRequest) (Result, error) {
 	if f.Ticket == "" {
 		return Result{}, ErrEmptyTicket
 	}
@@ -167,7 +262,10 @@ func (s *Service) Set(ctx context.Context, f tracker.Fields) (Result, error) {
 		return Result{}, err
 	}
 	page, err := s.client.UpdatePage(ctx, decision.PageID, props)
-	return Result{Action: "updated", Page: page}, err
+	if err != nil {
+		return Result{Action: "updated"}, err
+	}
+	return s.withBody(ctx, page, "updated", body)
 }
 
 // Get returns the row for a ticket.
@@ -250,8 +348,10 @@ func (s *Service) GetByID(ctx context.Context, pageID string) (notion.Page, erro
 // identifies exactly one row. f.Ticket is expected to be empty here — the
 // caller addresses by id, not by key — and BuildProperties' "empty means
 // leave alone" rule already does the right thing with that, exactly as it
-// does for Set's other optional fields.
-func (s *Service) SetByID(ctx context.Context, pageID string, f tracker.Fields) (Result, error) {
+// does for Set's other optional fields. body, when non-nil, replaces the
+// page body after the properties are written; a nil body leaves the page
+// body untouched.
+func (s *Service) SetByID(ctx context.Context, pageID string, f tracker.Fields, body *BodyRequest) (Result, error) {
 	page, err := s.resolvePage(ctx, pageID, true)
 	if err != nil {
 		return Result{}, err
@@ -265,7 +365,10 @@ func (s *Service) SetByID(ctx context.Context, pageID string, f tracker.Fields) 
 		return Result{}, err
 	}
 	updated, err := s.client.UpdatePage(ctx, page.ID, props)
-	return Result{Action: "updated", Page: updated}, err
+	if err != nil {
+		return Result{Action: "updated"}, err
+	}
+	return s.withBody(ctx, updated, "updated", body)
 }
 
 // List returns rows, optionally filtered by status.
