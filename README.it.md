@@ -128,18 +128,20 @@ Il comando principale. Interroga la data source per la riga la cui proprietà ti
 ### `set` — aggiorna solo una riga esistente
 
 ```
-notion-track set --ticket <chiave> [--title <titolo>] [--status <stato>] [--due YYYY-MM-DD] [--json]
+notion-track set (--ticket <chiave> | --page-id <id>) [--title <titolo>] [--status <stato>] [--due YYYY-MM-DD] [--json]
 ```
 
-Stessi campi di `upsert`, ma fallisce con exit code 3 se il ticket non esiste ancora, invece di crearlo. Usalo dove un ticket mancante è un sintomo da far emergere, non un dettaglio da ignorare.
+Stessi campi di `upsert`, ma fallisce con exit code 3 se la riga non esiste ancora, invece di crearla. Usalo dove una riga mancante è un sintomo da far emergere, non un dettaglio da ignorare.
+
+`--ticket` e `--page-id` sono mutuamente esclusivi ed è obbligatorio esattamente uno dei due. `--page-id` indirizza una riga direttamente tramite il suo page id di Notion — nessuna query per chiave ticket — il che è più rapido e privo di ambiguità quando lo si ha già a disposizione (ad es. dal `page_id` restituito da una precedente chiamata `--json`, vedi [Output JSON](#output-json)). Accetta l'URL completo della pagina copiato dalla barra degli indirizzi di Notion, un id esadecimale nudo di 32 caratteri, o un UUID con trattini; qualsiasi altro input fallisce immediatamente con exit code 2, prima di qualunque chiamata di rete. Poiché leggere una pagina per id funziona per qualsiasi pagina condivisa con l'integrazione — non solo per le righe della data source configurata — un page id che risolve verso una data source *diversa* da quella del profilo attivo viene rifiutato con exit code 2 invece di fallire più avanti con un criptico errore sui nomi delle proprietà da parte di Notion.
 
 ### `get` — legge una riga
 
 ```
-notion-track get --ticket <chiave> [--json]
+notion-track get (--ticket <chiave> | --page-id <id>) [--json]
 ```
 
-Stampa ticket, titolo, stato e URL della riga. Fallisce con exit code 3 se non trovata, o 4 se la chiave corrisponde a più di una riga (vedi [Limitazioni](#limitazioni)).
+Stampa ticket, titolo, stato e URL della riga. `--ticket` e `--page-id` sono mutuamente esclusivi ed è obbligatorio esattamente uno dei due — vedi `set` sopra per cosa accetta `--page-id` e come viene validato. Fallisce con exit code 3 se non trovata (il 404 di Notion non distingue "pagina inesistente" da "mai condivisa con questa integrazione" — il messaggio d'errore lo dice esplicitamente), 4 se una chiave ticket corrisponde a più di una riga (vedi [Limitazioni](#limitazioni)), o 2 per un page id malformato o esterno alla data source del profilo attivo.
 
 ### `list` — legge più righe
 
@@ -269,8 +271,8 @@ Le pipeline possono ramificare su questi valori senza fare parsing di alcun mess
 |---|---|---|
 | `0` | OK | successo |
 | `1` | Error | un errore generico — un errore di rete/API, oppure `doctor` che segnala un check fallito diverso da `token` |
-| `2` | Usage | l'invocazione non può funzionare così com'è: un flag mancante o non valido, un comando sconosciuto, nessuna configurazione ancora presente (`notion-track init` non è mai stato eseguito), o un valore di stato che la data source non ammette |
-| `3` | Not found | il ticket richiesto non ha una riga corrispondente (`get`, `set`) |
+| `2` | Usage | l'invocazione non può funzionare così com'è: un flag mancante o non valido, `--ticket` e `--page-id` passati insieme o nessuno dei due, un comando sconosciuto, nessuna configurazione ancora presente (`notion-track init` non è mai stato eseguito), un valore di stato che la data source non ammette, un `--page-id` malformato, o un `--page-id` che risolve fuori dalla data source del profilo attivo |
+| `3` | Not found | il ticket richiesto non ha una riga corrispondente, oppure il page id non corrisponde a nessuna pagina (o a una non condivisa con questa integrazione) (`get`, `set`) |
 | `4` | Duplicate | la chiave del ticket corrisponde a più di una riga (`upsert`, `set`, `get`) |
 | `5` | Auth | nessun token trovato (incluso il caso in cui `credentials.yml` esiste ma non è leggibile), oppure Notion lo ha rifiutato (401/403) — incluso `doctor`, quando il suo check `token` è l'unico fallito |
 

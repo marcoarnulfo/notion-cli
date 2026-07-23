@@ -128,18 +128,20 @@ The flagship command. Queries the data source for the row whose ticket property 
 ### `set` — update an existing row only
 
 ```
-notion-track set --ticket <key> [--title <title>] [--status <status>] [--due YYYY-MM-DD] [--json]
+notion-track set (--ticket <key> | --page-id <id>) [--title <title>] [--status <status>] [--due YYYY-MM-DD] [--json]
 ```
 
-Same fields as `upsert`, but fails with exit code 3 if the ticket doesn't exist yet, instead of creating it. Use this where a missing row is a symptom worth surfacing rather than something to paper over.
+Same fields as `upsert`, but fails with exit code 3 if the row doesn't exist yet, instead of creating it. Use this where a missing row is a symptom worth surfacing rather than something to paper over.
+
+`--ticket` and `--page-id` are mutually exclusive and exactly one is required. `--page-id` addresses a row directly by its Notion page id — no query by ticket key at all — which is faster and unambiguous when you already have it (e.g. from a prior `--json` call's `page_id`, see [JSON output](#json-output)). It accepts the full page URL you'd copy out of Notion's browser address bar, a bare 32-character hex id, or a dashed UUID; any other input fails immediately with exit code 2, before any request is made. Because `GET`ting a page by id works for anything shared with the integration — not just rows of the configured data source — a page id that resolves to a *different* data source than the active profile is rejected with exit code 2 rather than left to fail later with a confusing property-name error from Notion.
 
 ### `get` — read one row
 
 ```
-notion-track get --ticket <key> [--json]
+notion-track get (--ticket <key> | --page-id <id>) [--json]
 ```
 
-Prints the row's ticket, title, status and URL. Fails with exit code 3 if not found, or 4 if the ticket key matches more than one row (see [Limitations](#limitations)).
+Prints the row's ticket, title, status and URL. `--ticket` and `--page-id` are mutually exclusive and exactly one is required — see `set` above for what `--page-id` accepts and how it's validated. Fails with exit code 3 if not found (Notion's 404 doesn't distinguish "no such page" from "never shared with this integration" — the error message says so), 4 if a ticket key matches more than one row (see [Limitations](#limitations)), or 2 for a malformed page id or one outside the active profile's data source.
 
 ### `list` — read many rows
 
@@ -269,8 +271,8 @@ Pipelines can branch on these without parsing any message text:
 |---|---|---|
 | `0` | OK | success |
 | `1` | Error | a generic failure — a network/API error, or `doctor` reporting a failed check other than `token` |
-| `2` | Usage | the invocation cannot work as written: a missing/invalid flag, an unknown command, no config yet (`notion-track init` was never run), or a status value the data source doesn't allow |
-| `3` | Not found | the requested ticket has no matching row (`get`, `set`) |
+| `2` | Usage | the invocation cannot work as written: a missing/invalid flag, `--ticket` and `--page-id` both given or neither given, an unknown command, no config yet (`notion-track init` was never run), a status value the data source doesn't allow, a malformed `--page-id`, or a `--page-id` that resolves outside the active profile's data source |
+| `3` | Not found | the requested ticket has no matching row, or the page id has no matching page (or one not shared with this integration) (`get`, `set`) |
 | `4` | Duplicate | the ticket key matches more than one row (`upsert`, `set`, `get`) |
 | `5` | Auth | no token was found (including a `credentials.yml` that exists but can't be read), or Notion rejected it (401/403) — including `doctor`, when its `token` check is the only one that failed |
 
