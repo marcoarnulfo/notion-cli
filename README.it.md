@@ -164,7 +164,7 @@ Il file di configurazione vive in `os.UserConfigDir()/notion-track/config.yml` �
 Passa `--config /percorso/al/file.yml` per puntare a un file diverso — è così che si usa un file di configurazione **committato in un repository di progetto** invece del default per-utente (vedi [Uso in CI](#uso-in-ci)).
 
 ```yaml
-schema_version: 1        # scritto automaticamente da `init`/`upsert`/`set`; non modificarlo a mano
+schema_version: 1        # scritto da `init`; non modificarlo a mano
 default_profile: work    # usato quando --profile e NOTION_TRACK_PROFILE sono entrambi assenti
 profiles:
   work:
@@ -179,6 +179,8 @@ profiles:
 ```
 
 Il file **non contiene alcun segreto** ed è sicuro da committare in un repository — è proprio questo il punto: permette alla CI (e a ogni collega) di condividere lo stesso mapping delle proprietà senza rilanciare `init`. Il token non viene mai letto da questo file; `init` non ce lo scrive mai.
+
+`init` lo scrive comunque con permessi `0600` e lo sostituisce in modo atomico tramite un file temporaneo nella stessa directory: non contiene segreti propri, ma vive accanto a uno.
 
 ### Variabili d'ambiente
 

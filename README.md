@@ -164,7 +164,7 @@ The config file lives at `os.UserConfigDir()/notion-track/config.yml` — respec
 Pass `--config /path/to/file.yml` to point at a different file entirely — this is how you use a config file **committed to a project repo** instead of the per-user default (see [CI usage](#ci-usage)).
 
 ```yaml
-schema_version: 1        # written automatically by `init`/`upsert`/`set`; don't hand-edit it
+schema_version: 1        # written by `init`; don't hand-edit it
 default_profile: work    # used when --profile and NOTION_TRACK_PROFILE are both unset
 profiles:
   work:
@@ -179,6 +179,8 @@ profiles:
 ```
 
 The file holds **no secret** and is safe to commit to a repository — that's the point: it lets CI (and every teammate) share the same property mapping without re-running `init`. The token is never read from it; `init` never writes one there.
+
+`init` still writes it with `0600` permissions, and replaces it atomically through a temporary file in the same directory: it holds no secret of its own, but it sits next to one.
 
 ### Environment variables
 
