@@ -35,11 +35,18 @@ func exitCodeFor(err error) int {
 	var (
 		dup     *tracker.DuplicateError
 		invalid *tracker.ValidationError
+		apiErr  *notion.APIError
 	)
 	switch {
 	case errors.As(err, &dup):
 		return ExitDuplicate
 	case errors.As(err, &invalid):
+		return ExitUsage
+	// A 400 from Notion is, by construction, a value the API rejected (e.g.
+	// an unparseable date passed to --due) — invalid usage, same as
+	// tracker.ValidationError, not the network/API catch-all every other
+	// APIError status falls into below.
+	case errors.As(err, &apiErr) && apiErr.Status == 400:
 		return ExitUsage
 	case errors.Is(err, service.ErrNotFound), errors.Is(err, notion.ErrNotFound):
 		return ExitNotFound

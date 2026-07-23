@@ -48,6 +48,12 @@ func TestExitCodeForMapsDomainErrors(t *testing.T) {
 		{"unauthorized", fmt.Errorf("wrapped: %w", notion.ErrUnauthorized), ExitAuth},
 		{"not configured", fmt.Errorf("wrapped: %w", config.ErrNotConfigured), ExitUsage},
 		{"empty ticket", fmt.Errorf("wrapped: %w", service.ErrEmptyTicket), ExitUsage},
+		// A 400 from Notion is, by construction, a value the API rejected —
+		// e.g. --due "yesterday" is not a valid ISO date. That is invalid
+		// usage, not a generic failure, and must land in the same bucket as
+		// tracker.ValidationError rather than the network/API catch-all.
+		{"API rejects the value", &notion.APIError{Status: 400, Code: "validation_error", Message: "bad"}, ExitUsage},
+		{"API server error", &notion.APIError{Status: 500, Code: "internal_server_error", Message: "boom"}, ExitError},
 		{"anything else", errors.New("boom"), ExitError},
 	}
 	for _, tc := range tests {
