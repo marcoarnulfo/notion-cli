@@ -9,6 +9,11 @@ import (
 
 // CreatePage adds a row to a data source. props holds already-built Notion
 // property values, keyed by property name; building them is tracker's job.
+//
+// Unlike every other request this client makes, this one is not idempotent:
+// each successful call creates a new row. It therefore goes through
+// doNonRetryable rather than do — see that method for why retrying it would
+// risk creating a duplicate row instead of recovering from a transient error.
 func (c *Client) CreatePage(ctx context.Context, dataSourceID string, props map[string]any) (Page, error) {
 	body := map[string]any{
 		"parent": map[string]string{
@@ -18,7 +23,7 @@ func (c *Client) CreatePage(ctx context.Context, dataSourceID string, props map[
 		"properties": props,
 	}
 	var raw json.RawMessage
-	if err := c.do(ctx, http.MethodPost, "/v1/pages", body, &raw); err != nil {
+	if err := c.doNonRetryable(ctx, http.MethodPost, "/v1/pages", body, &raw); err != nil {
 		return Page{}, err
 	}
 	return decodePage(raw)

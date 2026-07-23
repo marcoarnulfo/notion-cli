@@ -132,6 +132,21 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	return lastErr
 }
 
+// doNonRetryable performs one request and never retries it, even on a status
+// retryable() would otherwise accept.
+//
+// do's retry loop assumes idempotency: on a retryable failure it cannot tell
+// "the server never received the request" from "the server received it,
+// executed it, and only the response was lost" apart, so retrying is safe
+// only when repeating the request has no extra effect. POST /v1/pages breaks
+// that assumption — a gateway can 502 *after* Notion has already written the
+// row, and retrying would then create a second one. CreatePage is the only
+// caller: every other endpoint this client calls (query, schema, search,
+// update, users/me) is idempotent and goes through do instead.
+func (c *Client) doNonRetryable(ctx context.Context, method, path string, body, out any) error {
+	return c.doOnce(ctx, method, path, body, out)
+}
+
 // doOnce performs one request. body and out may be nil. Non-2xx responses are
 // decoded into an *APIError.
 func (c *Client) doOnce(ctx context.Context, method, path string, body, out any) error {

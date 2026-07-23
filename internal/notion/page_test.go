@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestCreatePageUsesDataSourceParent(t *testing.T) {
@@ -32,6 +34,31 @@ func TestCreatePageUsesDataSourceParent(t *testing.T) {
 	}
 	if got.ID != "page1" {
 		t.Errorf("page id = %q", got.ID)
+	}
+}
+
+// A gateway can time out *after* Notion has already written the row: the
+// row is created server-side on every hit, but the client only ever sees
+// the 502. POST /v1/pages is the client's one non-idempotent call, so
+// retrying it here — as the generic 5xx retry loop would — creates a
+// second row instead of recovering. CreatePage must accept the single
+// failure instead of ever making a second attempt.
+func TestCreatePageDoesNotRetryOnGatewayError(t *testing.T) {
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte(`{"code":"gateway_error","message":"bad gateway"}`))
+	}))
+	defer srv.Close()
+
+	c := New("t", WithBaseURL(srv.URL), WithSleep(func(time.Duration) {}))
+	_, err := c.CreatePage(context.Background(), "ds1", map[string]any{})
+	if err == nil {
+		t.Fatal("expected the 502 to surface as an error")
+	}
+	if attempts != 1 {
+		t.Fatalf("the server saw %d requests, want 1: retrying a create risks a duplicate row", attempts)
 	}
 }
 
