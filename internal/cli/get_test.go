@@ -99,9 +99,43 @@ func TestGetMissingTicketExitsNotFound(t *testing.T) {
 func TestGetWithoutTokenExitsAuth(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {})
 	t.Setenv(config.TokenEnv, "")
+	withIsolatedUserConfigDir(t)
 
 	if code := executeArgs([]string{"get", "--ticket", "X", "--config", cfg}); code != ExitAuth {
 		t.Fatalf("exit code = %d, want %d", code, ExitAuth)
+	}
+}
+
+// A credentials.yml the developer running these tests happens to have in
+// their real home directory must never leak into a test that expects "no
+// token found": withIsolatedUserConfigDir points os.UserConfigDir() (and so
+// config.CredentialsPath) at an empty temp directory instead.
+func withIsolatedUserConfigDir(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("HOME", dir)
+	t.Setenv("AppData", dir)
+}
+
+// A token saved by init (or any prior session) must be picked up by every
+// other command, not just init itself.
+func TestGetUsesTokenFromCredentialsFile(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(cliSchemaJSON))
+			return
+		}
+		w.Write([]byte(`{"results":[` + cliRowJSON + `],"has_more":false}`))
+	})
+	t.Setenv(config.TokenEnv, "")
+	withIsolatedUserConfigDir(t)
+	if err := config.SaveToken("ntn_from_file"); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+
+	if code := executeArgs([]string{"get", "--ticket", "BDF-231", "--config", cfg}); code != ExitOK {
+		t.Fatalf("exit code = %d", code)
 	}
 }
 
