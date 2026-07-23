@@ -198,7 +198,19 @@ func (s *Service) Get(ctx context.Context, ticket string) (notion.Page, error) {
 // this one guard so a page merely shared with the integration (rather than
 // a row of the configured data source) is rejected clearly instead of
 // producing a confusing failure later.
-func (s *Service) resolvePage(ctx context.Context, pageID string) (notion.Page, error) {
+//
+// forWrite tells resolvePage which of the two callers it is serving, because
+// they disagree on what to do when the page's parent carries no
+// data_source_id at all (page.DataSourceID == ""): a read cannot do any harm
+// with an unconfirmed page, so GetByID stays permissive, but a write must
+// never proceed against a page whose membership it could not confirm — a
+// PATCH is not reversible the way a GET is, and a page merely shared with the
+// integration could coincidentally carry a property with the same name and
+// type as one of the profile's, letting the write silently land on a row
+// outside the configured data source. The comparison itself lives in one
+// place either way, so the two callers cannot drift apart on how a confirmed
+// mismatch is judged.
+func (s *Service) resolvePage(ctx context.Context, pageID string, forWrite bool) (notion.Page, error) {
 	if pageID == "" {
 		return notion.Page{}, ErrEmptyPageID
 	}
@@ -217,10 +229,9 @@ func (s *Service) resolvePage(ctx context.Context, pageID string) (notion.Page, 
 		}
 		return notion.Page{}, err
 	}
-	// Defensive rather than fatal: a page whose parent is not a data source
-	// (or whose shape omits it) leaves DataSourceID empty, and that must not
-	// block addressing it by id.
-	if page.DataSourceID != "" && page.DataSourceID != s.profile.DataSourceID {
+	confirmedMatch := page.DataSourceID == s.profile.DataSourceID
+	unconfirmedButReadOnly := page.DataSourceID == "" && !forWrite
+	if !confirmedMatch && !unconfirmedButReadOnly {
 		return notion.Page{}, fmt.Errorf("%w (page %s, profile data source %s)",
 			ErrPageOutsideProfile, pageID, s.profile.DataSourceID)
 	}
@@ -230,7 +241,7 @@ func (s *Service) resolvePage(ctx context.Context, pageID string) (notion.Page, 
 // GetByID returns the row with the given Notion page id, bypassing the
 // ticket lookup that Get performs.
 func (s *Service) GetByID(ctx context.Context, pageID string) (notion.Page, error) {
-	return s.resolvePage(ctx, pageID)
+	return s.resolvePage(ctx, pageID, false)
 }
 
 // SetByID updates the row with the given Notion page id directly.
@@ -241,7 +252,7 @@ func (s *Service) GetByID(ctx context.Context, pageID string) (notion.Page, erro
 // leave alone" rule already does the right thing with that, exactly as it
 // does for Set's other optional fields.
 func (s *Service) SetByID(ctx context.Context, pageID string, f tracker.Fields) (Result, error) {
-	page, err := s.resolvePage(ctx, pageID)
+	page, err := s.resolvePage(ctx, pageID, true)
 	if err != nil {
 		return Result{}, err
 	}

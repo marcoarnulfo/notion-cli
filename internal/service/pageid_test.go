@@ -37,6 +37,18 @@ const rowJSONOtherDataSource = `{
   "properties":{}
 }`
 
+// rowJSONNoParent carries no parent object at all, so decodePage leaves
+// DataSourceID empty — the same shape a page whose parent Notion reports as
+// something other than a data source (e.g. another page) would take.
+// Membership in this profile's data source can never be confirmed for it.
+const rowJSONNoParent = `{
+  "id":"23fb4e5c-8a5f-4d21-b7c9-d0e1f2a3b4c5","url":"https://notion.so/page1","last_edited_time":"2026-07-20T10:00:00.000Z",
+  "properties":{
+    "Name":{"type":"title","title":[{"plain_text":"Hardening"}]},
+    "Ticket":{"type":"rich_text","rich_text":[{"plain_text":"BDF-231"}]},
+    "Stato":{"type":"status","status":{"name":"In corso"}}
+  }}`
+
 func TestGetByIDReadsThePageDirectlyWithoutQuerying(t *testing.T) {
 	var seen []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -122,6 +134,53 @@ func TestSetByIDRejectsAPageFromAnotherDataSource(t *testing.T) {
 	}
 	if contains(seen, "PATCH /v1/pages/"+testPageIDCanonical) {
 		t.Fatal("a page outside the profile must never be patched")
+	}
+}
+
+// GetByID is read-only, so a page whose membership cannot be confirmed (no
+// parent.data_source_id at all) is still let through: nothing is at risk of
+// being written to the wrong row.
+func TestGetByIDAcceptsAPageWithNoParentDataSource(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(rowJSONNoParent))
+	}))
+	defer srv.Close()
+
+	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile())
+	got, err := s.GetByID(context.Background(), testPageID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.ID != testPageIDCanonical {
+		t.Fatalf("id = %q", got.ID)
+	}
+}
+
+// SetByID is a write: unlike GetByID, it must refuse a page whose membership
+// in this profile's data source cannot be confirmed, even though the only
+// reason it cannot be confirmed is a missing parent.data_source_id rather
+// than an explicit mismatch. A page like this happening to carry a property
+// with the same name and type as one of the profile's must not let the PATCH
+// through onto a row outside the configured data source.
+func TestSetByIDRejectsAPageWithNoParentDataSource(t *testing.T) {
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(schemaJSON))
+			return
+		}
+		w.Write([]byte(rowJSONNoParent))
+	}))
+	defer srv.Close()
+
+	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile())
+	_, err := s.SetByID(context.Background(), testPageID, tracker.Fields{Status: "Fatto"})
+	if !errors.Is(err, ErrPageOutsideProfile) {
+		t.Fatalf("got %v, want ErrPageOutsideProfile", err)
+	}
+	if contains(seen, "PATCH /v1/pages/"+testPageIDCanonical) {
+		t.Fatal("a page whose data source membership cannot be confirmed must never be patched")
 	}
 }
 

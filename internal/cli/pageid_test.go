@@ -23,6 +23,14 @@ const cliRowJSONWithParent = `{"id":"23fb4e5c-8a5f-4d21-b7c9-d0e1f2a3b4c5","url"
 const cliRowJSONOtherDataSource = `{"id":"23fb4e5c-8a5f-4d21-b7c9-d0e1f2a3b4c5","url":"https://notion.so/page1",
 	"last_edited_time":"2026-07-20T10:00:00.000Z","parent":{"type":"data_source_id","data_source_id":"ds-other"},"properties":{}}`
 
+// cliRowJSONNoParent carries no parent object at all, so the page's
+// membership in the profile's data source can never be confirmed.
+const cliRowJSONNoParent = `{"id":"23fb4e5c-8a5f-4d21-b7c9-d0e1f2a3b4c5","url":"https://notion.so/page1",
+	"last_edited_time":"2026-07-20T10:00:00.000Z","properties":{
+	"Name":{"type":"title","title":[{"plain_text":"Hardening"}]},
+	"Ticket":{"type":"rich_text","rich_text":[{"plain_text":"BDF-231"}]},
+	"Stato":{"type":"status","status":{"name":"Fatto"}}}}`
+
 func containsRequest(seen []string, want string) bool {
 	for _, s := range seen {
 		if s == want {
@@ -129,6 +137,38 @@ func TestGetByPageIDRejectsAPageOutsideTheProfile(t *testing.T) {
 	})
 	if code := executeArgs([]string{"get", "--page-id", testPageID, "--config", cfg}); code != ExitUsage {
 		t.Fatalf("exit code = %d, want %d", code, ExitUsage)
+	}
+}
+
+// get is read-only, so a page whose parent data source cannot be confirmed
+// (no parent.data_source_id at all) is still allowed through.
+func TestGetByPageIDAcceptsAPageWithNoParentDataSource(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliRowJSONNoParent))
+	})
+	if code := executeArgs([]string{"get", "--page-id", testPageID, "--config", cfg}); code != ExitOK {
+		t.Fatalf("exit code = %d, want %d", code, ExitOK)
+	}
+}
+
+// set is a write: unlike get, it must reject a page whose data source
+// membership cannot be confirmed, and the PATCH must never be sent.
+func TestSetByPageIDRejectsAPageWithNoParentDataSource(t *testing.T) {
+	var seen []string
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(cliSchemaJSON))
+			return
+		}
+		w.Write([]byte(cliRowJSONNoParent))
+	})
+	code := executeArgs([]string{"set", "--page-id", testPageID, "--status", "Fatto", "--config", cfg})
+	if code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d", code, ExitUsage)
+	}
+	if containsRequest(seen, "PATCH /v1/pages/"+testPageIDCanonical) {
+		t.Fatal("a page whose data source membership cannot be confirmed must never be patched")
 	}
 }
 
