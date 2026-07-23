@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,9 +33,11 @@ const maxErrorMessageBytes = 2 << 10 // 2 KiB
 
 // Client talks to the Notion API on behalf of an internal integration.
 type Client struct {
-	token   string
-	baseURL string
-	http    *http.Client
+	token      string
+	baseURL    string
+	http       *http.Client
+	maxRetries int
+	sleep      func(time.Duration)
 }
 
 // Option customises a Client.
@@ -67,6 +70,8 @@ func New(token string, opts ...Option) *Client {
 		http: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		maxRetries: defaultMaxRetries,
+		sleep:      time.Sleep,
 	}
 	for _, o := range opts {
 		o(c)
@@ -103,9 +108,33 @@ func truncateMessage(raw []byte) string {
 	return string(raw[:maxErrorMessageBytes]) + "...(truncated)"
 }
 
-// do performs one request. body and out may be nil. Non-2xx responses are
-// decoded into an *APIError.
+// do performs a request, retrying rate limits and transient server errors.
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
+	var lastErr error
+	for attempt := 0; attempt <= c.maxRetries; attempt++ {
+		err := c.doOnce(ctx, method, path, body, out)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || !retryable(apiErr.Status) || attempt == c.maxRetries {
+			return err
+		}
+
+		// Sleep through the seam so tests run instantly, but let a cancelled
+		// context win: a 30s backoff must not outlive a Ctrl-C.
+		if err := c.wait(ctx, backoffFor(attempt, apiErr.RetryAfter)); err != nil {
+			return err
+		}
+	}
+	return lastErr
+}
+
+// doOnce performs one request. body and out may be nil. Non-2xx responses are
+// decoded into an *APIError.
+func (c *Client) doOnce(ctx context.Context, method, path string, body, out any) error {
 	var payload io.Reader
 	if body != nil {
 		buf, err := json.Marshal(body)
@@ -136,7 +165,12 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		apiErr := &APIError{Status: resp.StatusCode, Code: "unknown", Message: truncateMessage(raw)}
+		apiErr := &APIError{
+			Status:     resp.StatusCode,
+			Code:       "unknown",
+			Message:    truncateMessage(raw),
+			RetryAfter: resp.Header.Get("Retry-After"),
+		}
 		var decoded struct {
 			Code    string `json:"code"`
 			Message string `json:"message"`

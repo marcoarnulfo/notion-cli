@@ -13,12 +13,13 @@ var (
 )
 
 // APIError is a structured Notion error response. It deliberately carries no
-// request context beyond status, code and message so that a token can never
-// end up inside it.
+// request context beyond status, code, message and the Retry-After header so
+// that a token can never end up inside it.
 type APIError struct {
-	Status  int
-	Code    string
-	Message string
+	Status     int
+	Code       string
+	Message    string
+	RetryAfter string // raw Retry-After header, seconds, empty when absent
 }
 
 func (e *APIError) Error() string {

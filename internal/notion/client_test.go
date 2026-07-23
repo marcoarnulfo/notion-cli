@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDoSendsAuthAndVersionHeaders(t *testing.T) {
@@ -181,6 +182,10 @@ func TestDoRefusesToFollowRedirectsWithCustomHTTPClient(t *testing.T) {
 // An oversized, non-JSON error body (e.g. a WAF or proxy error page) must
 // not be buffered and echoed back verbatim: that would let a misbehaving
 // intermediary balloon memory use and log size for every failed request.
+//
+// 502 is retryable (see retry.go), so this test disables sleeping: it is
+// exercising body-size bounding, not backoff, and must not pay for real
+// wall-clock retries just because the client now retries transient errors.
 func TestDoBoundsOversizedErrorBody(t *testing.T) {
 	const hugeBodySize = 5 << 20 // 5 MiB, well above any real Notion payload.
 
@@ -190,7 +195,7 @@ func TestDoBoundsOversizedErrorBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := New("t", WithBaseURL(srv.URL)).do(context.Background(), http.MethodGet, "/v1/x", nil, nil)
+	err := New("t", WithBaseURL(srv.URL), WithSleep(func(time.Duration) {})).do(context.Background(), http.MethodGet, "/v1/x", nil, nil)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
