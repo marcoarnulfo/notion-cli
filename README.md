@@ -304,6 +304,10 @@ These are current, deliberate tradeoffs — not bugs to be surprised by:
 4. **Only a Workspace Owner can set this up.** Creating the integration and sharing a database with it both require Workspace Owner permissions in Notion. A workspace guest — one of the reasons this tool exists in the first place — cannot do either step, but can use the tool freely once someone with Owner rights has.
 5. **No Markdown page body, and no interactive TUI yet.** `upsert`/`set` only touch the properties documented above — there is no `--body-file` to write page content, and there is no wizard or browsing UI; every command here is flag-driven. Both are tracked in the [Roadmap](#roadmap).
 
+## Use it from an AI agent
+
+Because the tool is quiet on success, speaks `--json` with a stable schema, and returns [differentiated exit codes](#exit-codes), an agent can drive it as reliably as a script does — no scraping of human output. A ready-made [Claude Code](https://claude.com/claude-code) skill lives in **[`skills/notion-track/`](skills/notion-track/)**: it teaches an agent which command to reach for and how to stay safe (read before writing, never invent a status, branch on exit codes). Install it by copying its `SKILL.md` into `~/.claude/skills/notion-track/`, then ask your agent to "mark that task done on Notion". A `notion-track mcp` server is on the [roadmap](#roadmap) for hosts that speak MCP rather than the shell.
+
 ## Contributing
 
 Contributions are welcome — this is a free, open-source project. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the development setup, the checks to run before opening a PR, and the project's non-negotiable architectural rules. Please also read the [Code of Conduct](CODE_OF_CONDUCT.md). Found a security issue? See [SECURITY.md](SECURITY.md) instead of opening a public issue.

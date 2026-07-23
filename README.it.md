@@ -304,6 +304,10 @@ Sono tradeoff attuali e deliberati — non bug di cui sorprendersi:
 4. **Solo un Workspace Owner può fare questa configurazione.** Creare l'integrazione e condividere un database con essa richiedono entrambi permessi da Workspace Owner in Notion. Un guest del workspace — una delle ragioni per cui questo strumento esiste — non può fare nessuno dei due passaggi, ma può usare liberamente lo strumento una volta che qualcuno con permessi da Owner li ha completati.
 5. **Nessun body Markdown, e nessuna TUI interattiva ancora.** `upsert`/`set` toccano solo le proprietà documentate sopra — non esiste un `--body-file` per scrivere il contenuto della pagina, e non esiste un wizard o un'interfaccia di navigazione: ogni comando qui è guidato da flag. Entrambi sono tracciati nella [Roadmap](#roadmap).
 
+## Usarlo da un agente AI
+
+Poiché il tool è muto in caso di successo, parla `--json` con uno schema stabile e restituisce [exit code differenziati](#exit-code), un agente può guidarlo con la stessa affidabilità di uno script — senza interpretare l'output umano. Nel repo, in **[`skills/notion-track/`](skills/notion-track/)**, c'è una skill pronta per [Claude Code](https://claude.com/claude-code): insegna all'agente quale comando usare e come restare al sicuro (leggere prima di scrivere, non inventare stati, ramificare sugli exit code). Si installa copiando il suo `SKILL.md` in `~/.claude/skills/notion-track/`, poi basta chiedere all'agente di "segnare quel task come fatto su Notion". Un server `notion-track mcp` è nella [roadmap](#roadmap) per gli host che parlano MCP invece della shell.
+
 ## Contribuire
 
 I contributi sono benvenuti — questo è un progetto libero e open-source. Vedi **[CONTRIBUTING.it.md](CONTRIBUTING.it.md)** per la configurazione dell'ambiente di sviluppo, i controlli da eseguire prima di aprire una PR, e le regole architetturali non negoziabili del progetto. Leggi anche il [Codice di condotta](CODE_OF_CONDUCT.md). Hai trovato un problema di sicurezza? Vedi [SECURITY.md](SECURITY.md) invece di aprire una issue pubblica.
