@@ -152,27 +152,37 @@ Answer "what am I working on?":
 notion-track list --status "In corso" --json
 ```
 
-## This workspace (current, verify with `doctor` if in doubt)
+## Know this workspace before acting
 
-The values below describe the user's board *as configured now*. If a command
-fails unexpectedly, the setup may have changed — run `notion-track doctor` and
-`notion-track list --json` to rediscover it rather than trusting this section
-blindly.
+This section is meant to be filled in for the board you're driving — status
+values and the key mapping differ per workspace. **Don't assume; discover.** At
+the start of a task session, or whenever a command fails in a way that suggests
+the setup changed, run:
 
-- **Board**: "Panoramica Task".
-- **Key column = title**: the ticket key and the task title are the same column
-  ("Nome task"). So `--ticket "X"` means the task literally named X, and creating
-  with `upsert --ticket "X"` sets its name to X. Because the key is the name,
-  prefer `--page-id` for any task that might get renamed.
-- **Status values**: `Da fare`, `In corso`, `In revisione`, `Fatto`,
-  `Archiviato`. These are the only accepted `--status` values; anything else is
-  rejected with exit 2.
-- **Other settable fields**: `--due YYYY-MM-DD` (the "Deadline" date). Columns
-  like Referente, Urgenza and URL exist on the board but are not managed by this
-  tool.
-- **Attribution caveat**: every change is recorded by the integration bot
-  ("BDF Automation"), not by the person running the command. If the user asks
-  "who moved this card", that information isn't captured.
+```sh
+notion-track doctor          # token, database, property mapping, duplicates
+notion-track list --json     # real rows, real status values in use
+```
+
+`doctor` reports the mapped columns and flags drift; the statuses actually
+present on the board are whatever `list` returns. Two things to establish up
+front, because they change how you address and create tasks:
+
+- **Is the ticket key its own column, or the title?** If the key column *is* the
+  title, then `--ticket "X"` means the task literally named X, and creating with
+  `upsert --ticket "X"` sets its name to X — so a rename breaks lookup by name,
+  and `--page-id` is the stable way to address such a task.
+- **What status values does the board accept?** `--status` only takes an
+  existing value; anything else is rejected with exit 2. Never invent one — read
+  the allowed set from `doctor`/`list` first.
+
+- **Attribution caveat**: every change is recorded by the integration's bot
+  identity, not by the person running the command. If the user asks "who moved
+  this card", that information isn't captured.
+
+> Using this on a fixed personal board? Replace this section with your board's
+> concrete status values and mapping so the agent doesn't have to rediscover
+> them every session.
 
 ## When NOT to reach for this skill
 
