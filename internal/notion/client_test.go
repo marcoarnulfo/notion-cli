@@ -53,6 +53,18 @@ func TestDoMapsUnauthorized(t *testing.T) {
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("got %v, want ErrUnauthorized", err)
 	}
+	// errors.Is only depends on Status; assert Code/Message too so a
+	// regression in decoding either field from the response body is caught.
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("got %T, want *APIError", err)
+	}
+	if apiErr.Code != "unauthorized" {
+		t.Errorf("Code = %q, want %q", apiErr.Code, "unauthorized")
+	}
+	if apiErr.Message != "API token is invalid." {
+		t.Errorf("Message = %q, want %q", apiErr.Message, "API token is invalid.")
+	}
 }
 
 func TestDoMapsNotFound(t *testing.T) {
@@ -65,6 +77,16 @@ func TestDoMapsNotFound(t *testing.T) {
 	err := New("t", WithBaseURL(srv.URL)).do(context.Background(), http.MethodGet, "/v1/data_sources/x", nil, nil)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("got %v, want ErrNotFound", err)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("got %T, want *APIError", err)
+	}
+	if apiErr.Code != "object_not_found" {
+		t.Errorf("Code = %q, want %q", apiErr.Code, "object_not_found")
+	}
+	if apiErr.Message != "Could not find data source." {
+		t.Errorf("Message = %q, want %q", apiErr.Message, "Could not find data source.")
 	}
 }
 
