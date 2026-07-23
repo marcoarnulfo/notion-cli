@@ -37,12 +37,27 @@ func New(token string, opts ...Option) *Client {
 	c := &Client{
 		token:   token,
 		baseURL: BaseURL,
-		http:    &http.Client{Timeout: 30 * time.Second},
+		http: &http.Client{
+			Timeout: 30 * time.Second,
+			// The stdlib only strips Authorization on redirect when the
+			// hostname changes; it ignores port and scheme, so a same-host
+			// redirect to another port, or an https->http downgrade, would
+			// still carry the token along. The Notion API never redirects,
+			// so refusing every redirect is strictly safer than trusting
+			// that partial protection.
+			CheckRedirect: refuseRedirects,
+		},
 	}
 	for _, o := range opts {
 		o(c)
 	}
 	return c
+}
+
+// refuseRedirects rejects every redirect. It reports only the target URL,
+// never headers, so the error itself cannot carry the Authorization token.
+func refuseRedirects(req *http.Request, via []*http.Request) error {
+	return fmt.Errorf("notion: refusing to follow redirect to %s", req.URL)
 }
 
 // do performs one request. body and out may be nil. Non-2xx responses are

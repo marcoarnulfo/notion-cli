@@ -84,3 +84,35 @@ func TestErrorsNeverLeakTheToken(t *testing.T) {
 		t.Fatalf("error leaked the token: %v", err)
 	}
 }
+
+// net/http's built-in sensitive-header stripping on redirect compares only
+// the hostname, not the port or scheme: a same-host redirect to a different
+// port, or an https->http downgrade, would still carry Authorization along.
+// The Notion API never redirects, so the client must refuse to follow any
+// redirect rather than lean on that partial protection.
+func TestDoRefusesToFollowRedirects(t *testing.T) {
+	const token = "ntn_redirect_secret"
+
+	var targetHit bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHit = true
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer target.Close()
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/v1/elsewhere", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	err := New(token, WithBaseURL(origin.URL)).do(context.Background(), http.MethodGet, "/v1/x", nil, nil)
+	if err == nil {
+		t.Fatal("expected an error when the server issues a redirect")
+	}
+	if targetHit {
+		t.Fatal("client followed the redirect instead of refusing it")
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Fatalf("redirect error leaked the token: %v", err)
+	}
+}
