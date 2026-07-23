@@ -1,6 +1,7 @@
 package notion
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -114,5 +115,27 @@ func TestDoRefusesToFollowRedirects(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), token) {
 		t.Fatalf("redirect error leaked the token: %v", err)
+	}
+}
+
+// An oversized, non-JSON error body (e.g. a WAF or proxy error page) must
+// not be buffered and echoed back verbatim: that would let a misbehaving
+// intermediary balloon memory use and log size for every failed request.
+func TestDoBoundsOversizedErrorBody(t *testing.T) {
+	const hugeBodySize = 5 << 20 // 5 MiB, well above any real Notion payload.
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write(bytes.Repeat([]byte("x"), hugeBodySize))
+	}))
+	defer srv.Close()
+
+	err := New("t", WithBaseURL(srv.URL)).do(context.Background(), http.MethodGet, "/v1/x", nil, nil)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	const maxAcceptableErrorLen = 4096
+	if got := len(err.Error()); got > maxAcceptableErrorLen {
+		t.Fatalf("error message is %d bytes, want <= %d; oversized body was not bounded", got, maxAcceptableErrorLen)
 	}
 }

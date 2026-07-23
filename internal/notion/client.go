@@ -16,6 +16,20 @@ import (
 	"time"
 )
 
+// maxResponseBodyBytes caps how much of any Notion response we buffer in
+// memory. Real Notion payloads, including error bodies, are a few KB at
+// most; this ceiling exists so a misbehaving proxy or WAF sitting in front
+// of the API can't force us to hold megabytes of data just to produce one
+// error line. 1 MiB is comfortably above any legitimate response while
+// still bounding the worst case to a constant, small cost per request.
+const maxResponseBodyBytes = 1 << 20 // 1 MiB
+
+// maxErrorMessageBytes caps how much of a non-JSON error body is quoted
+// verbatim in APIError.Message. It only needs to be long enough for a human
+// to recognise what went wrong (e.g. the start of an HTML error page), not
+// to reproduce the whole body.
+const maxErrorMessageBytes = 2 << 10 // 2 KiB
+
 // Client talks to the Notion API on behalf of an internal integration.
 type Client struct {
 	token   string
@@ -60,6 +74,16 @@ func refuseRedirects(req *http.Request, via []*http.Request) error {
 	return fmt.Errorf("notion: refusing to follow redirect to %s", req.URL)
 }
 
+// truncateMessage bounds a raw, non-JSON error body to maxErrorMessageBytes
+// before it is quoted in APIError.Message, so an oversized body from a
+// misbehaving intermediary can't blow up the size of an error we return.
+func truncateMessage(raw []byte) string {
+	if len(raw) <= maxErrorMessageBytes {
+		return string(raw)
+	}
+	return string(raw[:maxErrorMessageBytes]) + "...(truncated)"
+}
+
 // do performs one request. body and out may be nil. Non-2xx responses are
 // decoded into an *APIError.
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
@@ -87,13 +111,13 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
 	if err != nil {
 		return fmt.Errorf("notion: reading response: %w", err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		apiErr := &APIError{Status: resp.StatusCode, Code: "unknown", Message: string(raw)}
+		apiErr := &APIError{Status: resp.StatusCode, Code: "unknown", Message: truncateMessage(raw)}
 		var decoded struct {
 			Code    string `json:"code"`
 			Message string `json:"message"`
