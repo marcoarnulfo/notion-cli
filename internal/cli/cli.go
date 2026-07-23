@@ -69,6 +69,7 @@ func newRootCmd() *cobra.Command {
 
 	root.PersistentFlags().String("profile", "", "config profile to use")
 	root.PersistentFlags().String("config", "", "path to config file")
+	root.AddCommand(newGetCmd(), newListCmd())
 	return root
 }
 

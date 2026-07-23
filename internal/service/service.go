@@ -35,6 +35,10 @@ func New(client *notion.Client, profile config.Profile) *Service {
 	return &Service{client: client, profile: profile}
 }
 
+// Profile exposes the profile this service was built for, so that callers can
+// map property names back onto output fields.
+func (s *Service) Profile() config.Profile { return s.profile }
+
 // Schema returns the data source schema, fetching it at most once.
 // A mutex rather than sync.Once: Once would memoise a network failure forever,
 // leaving the Service permanently broken after one transient error.
