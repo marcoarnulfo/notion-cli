@@ -74,7 +74,10 @@ func decodePage(raw json.RawMessage) (Page, error) {
 		ID             string    `json:"id"`
 		URL            string    `json:"url"`
 		LastEditedTime time.Time `json:"last_edited_time"`
-		Properties     map[string]struct {
+		Parent         struct {
+			DataSourceID string `json:"data_source_id"`
+		} `json:"parent"`
+		Properties map[string]struct {
 			Type     string     `json:"type"`
 			Title    []RichText `json:"title"`
 			RichText []RichText `json:"rich_text"`
@@ -98,6 +101,7 @@ func decodePage(raw json.RawMessage) (Page, error) {
 		ID:             envelope.ID,
 		URL:            envelope.URL,
 		LastEditedTime: envelope.LastEditedTime,
+		DataSourceID:   envelope.Parent.DataSourceID,
 		Properties:     make(map[string]PropertyValue, len(envelope.Properties)),
 	}
 	for name, v := range envelope.Properties {
