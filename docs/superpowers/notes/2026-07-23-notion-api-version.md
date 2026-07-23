@@ -176,3 +176,21 @@ children endpoint), 1000 is the overall per-payload block cap, 2000 is the rich-
   of a single field. The practical conclusion is unchanged and still correct — the
   endpoint is live, its response now carries `data_sources[]` instead of `properties`,
   and it remains required by the two-step discovery flow in design doc §2/§5.
+
+## 6. Property value write shapes (added after Task 12 review)
+
+The sections above documented `title` only, via the create-page example. Verified
+against <https://developers.notion.com/reference/page-property-values> (consulted
+2026-07-23), these are the write shapes `internal/tracker` builds:
+
+| Type | Payload |
+|---|---|
+| `title` | `{"title": [{"text": {"content": "..."}}]}` |
+| `rich_text` | `{"rich_text": [{"text": {"content": "..."}}]}` |
+| `select` | `{"select": {"name": "..."}}` |
+| `status` | `{"status": {"name": "..."}}` |
+| `date` | `{"date": {"start": "YYYY-MM-DD"}}` |
+
+The documented examples also carry `"type": "text"` and a full `annotations`
+object on rich text fragments. Both are optional on write — Notion fills in the
+defaults — so notion-track sends the minimal form.

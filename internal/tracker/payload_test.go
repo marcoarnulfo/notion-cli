@@ -108,3 +108,34 @@ func TestBuildPropertiesTicketCanBeTheTitle(t *testing.T) {
 		t.Errorf("Key payload = %v", got["Key"])
 	}
 }
+
+// The ticket must win when both land on the same column, which is only true
+// because title is added first. Swapping the two add() calls leaves every other
+// test in this file green, so this is the one that pins the order.
+func TestBuildPropertiesTicketBeatsTitleOnASharedColumn(t *testing.T) {
+	schema := &notion.Schema{Properties: map[string]notion.Property{
+		"Key": {Name: "Key", Type: "title"},
+	}}
+	props := config.Properties{Ticket: "Key", Title: "Key"}
+
+	got, err := BuildProperties(Fields{Ticket: "BDF-231", Title: "Some other title"}, props, schema)
+	if err != nil {
+		t.Fatalf("BuildProperties: %v", err)
+	}
+	title := got["Key"].(map[string]any)["title"].([]map[string]any)
+	if content := title[0]["text"].(map[string]string)["content"]; content != "BDF-231" {
+		t.Fatalf("content = %q, want the ticket key to win", content)
+	}
+}
+
+func TestBuildPropertiesRejectsAnUnsupportedPropertyType(t *testing.T) {
+	schema := &notion.Schema{Properties: map[string]notion.Property{
+		"Name":  {Name: "Name", Type: "title"},
+		"Count": {Name: "Count", Type: "number"},
+	}}
+	props := config.Properties{Title: "Name", Due: "Count"}
+
+	if _, err := BuildProperties(Fields{Due: "3"}, props, schema); err == nil {
+		t.Fatal("expected an unsupported property type to be rejected")
+	}
+}
