@@ -44,9 +44,10 @@ func newRootCmd() *cobra.Command {
 		Short:         "Keep a Notion task database in sync from your terminal and CI",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		// ArbitraryArgs matters: with cobra's default arg validation an unknown
-		// command is rejected inside Find() with a plain error, before RunE ever
-		// runs, and we lose the ability to give it exit code 2. Taking the args
+		// ArbitraryArgs is inert while the root has no subcommands, and becomes
+		// load-bearing as soon as it does: cobra's legacyArgs then rejects an
+		// unknown command inside Find() with a plain error, before RunE runs,
+		// and we lose the chance to give it exit code 2. Taking the args
 		// ourselves keeps that decision here.
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -57,8 +58,9 @@ func newRootCmd() *cobra.Command {
 			return cmd.Help()
 		},
 	}
-	// Without this, cobra's Print* helpers write to stderr, which would put
-	// human-readable results on the wrong stream.
+	// cobra's Print* helpers fall back to stderr when no out writer is set,
+	// which would put human-readable results on the wrong stream. No command
+	// calls them yet; this is here so the first one that does is already safe.
 	root.SetOut(os.Stdout)
 	root.SetErr(os.Stderr)
 
