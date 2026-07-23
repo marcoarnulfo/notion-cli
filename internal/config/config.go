@@ -202,6 +202,15 @@ func CredentialsPath() (string, error) { return credentialsPath() }
 // deliberately carries no detail from the file itself: see LoadToken.
 var ErrInvalidCredentials = errors.New("credentials file is not valid YAML; delete it and rerun 'notion-track init'")
 
+// ErrCredentialsUnreadable signals a credentials.yml that exists but could
+// not be read (permissions, a directory in its place, and so on) — distinct
+// from simply being absent, which LoadToken treats as "no token here" and
+// is not an error at all. Callers map this to the same exit code every
+// other authentication failure uses: without a readable credentials file
+// there may be a token nobody can prove exists, and that is an auth
+// problem, not a generic one.
+var ErrCredentialsUnreadable = errors.New("credentials file unreadable")
+
 // LoadToken resolves the integration token the way every command does:
 // NOTION_TOKEN first, then credentials.yml. source is "env" or "file"
 // (empty when no token was found anywhere), which is what lets doctor tell
@@ -220,7 +229,13 @@ func LoadToken() (token string, source string, err error) {
 		return "", "", nil
 	}
 	if err != nil {
-		return "", "", fmt.Errorf("config: reading %s: %w", path, err)
+		// err is already a *fs.PathError that names path itself (e.g. "open
+		// /…/credentials.yml: permission denied"); wrapping it inside
+		// another "reading %s:" prefix would repeat that path a second
+		// time. %v here keeps the underlying reason once; %w on
+		// ErrCredentialsUnreadable is what lets callers map this to
+		// ExitAuth via errors.Is.
+		return "", "", fmt.Errorf("config: %w: %v", ErrCredentialsUnreadable, err)
 	}
 
 	var creds Credentials

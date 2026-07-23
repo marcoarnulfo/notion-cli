@@ -263,6 +263,30 @@ func TestLoadTokenParseErrorNeverContainsFileContent(t *testing.T) {
 	}
 }
 
+// A credentials.yml that exists but can't be read (permission denied, or —
+// as here, portably across who's running the test — a directory sitting
+// where the file should be) used to produce a message that named the path
+// twice: LoadToken's own "reading %s" wrapper, plus os.ReadFile's
+// underlying *PathError, which already names the path itself.
+func TestLoadTokenUnreadableFileErrorNamesThePathOnlyOnce(t *testing.T) {
+	path := withTempCredentials(t)
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := LoadToken()
+	if err == nil {
+		t.Fatal("expected an error reading a directory as the credentials file")
+	}
+	msg := err.Error()
+	if n := strings.Count(msg, path); n != 1 {
+		t.Fatalf("error %q names the path %d times, want 1", msg, n)
+	}
+	if !errors.Is(err, ErrCredentialsUnreadable) {
+		t.Fatalf("error %q does not wrap ErrCredentialsUnreadable", msg)
+	}
+}
+
 func TestSaveTokenThenLoadTokenRoundTrips(t *testing.T) {
 	withTempCredentials(t)
 

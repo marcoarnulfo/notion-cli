@@ -47,6 +47,10 @@ func TestExitCodeForMapsDomainErrors(t *testing.T) {
 		{"rejected value", &tracker.ValidationError{Field: "status", Value: "X"}, ExitUsage},
 		{"unauthorized", fmt.Errorf("wrapped: %w", notion.ErrUnauthorized), ExitAuth},
 		{"not configured", fmt.Errorf("wrapped: %w", config.ErrNotConfigured), ExitUsage},
+		// An unreadable credentials.yml (bad permissions, a directory in its
+		// place) used to fall through to the generic ExitError instead of
+		// the ExitAuth every other missing/broken-token path already uses.
+		{"credentials unreadable", fmt.Errorf("wrapped: %w", config.ErrCredentialsUnreadable), ExitAuth},
 		{"empty ticket", fmt.Errorf("wrapped: %w", service.ErrEmptyTicket), ExitUsage},
 		// A 400 from Notion is, by construction, a value the API rejected —
 		// e.g. --due "yesterday" is not a valid ISO date. That is invalid

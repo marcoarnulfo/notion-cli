@@ -118,6 +118,30 @@ func withIsolatedUserConfigDir(t *testing.T) {
 	t.Setenv("AppData", dir)
 }
 
+// An unreadable credentials.yml (here: a directory sitting where the file
+// should be, which reproduces "exists but can't be read as YAML" without
+// depending on how permissions behave for whoever runs the test suite) used
+// to exit 1 like a generic failure. It is an authentication problem exactly
+// like a missing or invalid token, so it must exit ExitAuth like the rest
+// of them.
+func TestGetWithUnreadableCredentialsExitsAuth(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {})
+	t.Setenv(config.TokenEnv, "")
+	withIsolatedUserConfigDir(t)
+
+	credPath, err := config.CredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(credPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := executeArgs([]string{"get", "--ticket", "X", "--config", cfg}); code != ExitAuth {
+		t.Fatalf("exit code = %d, want %d (ExitAuth)", code, ExitAuth)
+	}
+}
+
 // A token saved by init (or any prior session) must be picked up by every
 // other command, not just init itself.
 func TestGetUsesTokenFromCredentialsFile(t *testing.T) {

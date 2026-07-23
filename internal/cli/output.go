@@ -60,6 +60,12 @@ func exitCodeFor(err error) int {
 		return ExitUsage
 	case errors.Is(err, notion.ErrUnauthorized):
 		return ExitAuth
+	// A credentials.yml nobody can read is an authentication failure like
+	// any other: there may be a token in there, but nothing can prove it,
+	// which is exactly the situation ExitAuth already describes for every
+	// other command.
+	case errors.Is(err, config.ErrCredentialsUnreadable):
+		return ExitAuth
 	}
 	var coded *codedError
 	if errors.As(err, &coded) {
