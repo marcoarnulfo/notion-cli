@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 )
 
 // Per-request Notion limits for the block-children endpoints. maxBytesPerRequest
@@ -154,4 +155,79 @@ func (c *Client) doRejectRetryable(ctx context.Context, method, path string, bod
 		return fmt.Errorf("%w: %w", ErrAmbiguousWrite, err)
 	}
 	return nil // unreachable: the loop returns on the last attempt
+}
+
+// ChildBlock is a direct child of a page, flattened to what replace needs: its
+// id (to delete) and its type (to skip child_page/child_database).
+type ChildBlock struct {
+	ID   string
+	Type string
+}
+
+// ListBlockChildren returns the direct children of blockID, following
+// pagination to has_more=false. GET is idempotent → do.
+func (c *Client) ListBlockChildren(ctx context.Context, blockID string) ([]ChildBlock, error) {
+	var out []ChildBlock
+	cursor := ""
+	for {
+		var resp struct {
+			Results []struct {
+				ID   string `json:"id"`
+				Type string `json:"type"`
+			} `json:"results"`
+			HasMore    bool   `json:"has_more"`
+			NextCursor string `json:"next_cursor"`
+		}
+		path := "/v1/blocks/" + url.PathEscape(blockID) + "/children?page_size=100"
+		if cursor != "" {
+			path += "&start_cursor=" + url.QueryEscape(cursor)
+		}
+		if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
+			return nil, err
+		}
+		for _, r := range resp.Results {
+			out = append(out, ChildBlock{ID: r.ID, Type: r.Type})
+		}
+		if !resp.HasMore || resp.NextCursor == "" {
+			return out, nil
+		}
+		if resp.NextCursor == cursor {
+			return nil, fmt.Errorf("notion: block children pagination stalled, cursor %q repeated", resp.NextCursor)
+		}
+		cursor = resp.NextCursor
+	}
+}
+
+// AppendBlockChildren appends blocks as children of blockID, in document order.
+// It validates the whole slice first and returns before any network I/O if a
+// single element cannot fit one request. It then PATCHes each request-sized
+// batch with position end, STRICTLY SEQUENTIALLY — order holds only because
+// each batch lands after the previous one. Each batch uses doRejectRetryable.
+func (c *Client) AppendBlockChildren(ctx context.Context, blockID string, blocks []Block) error {
+	if err := ValidateAppendable(blocks); err != nil {
+		return err
+	}
+	path := "/v1/blocks/" + url.PathEscape(blockID) + "/children"
+	for _, batch := range splitIntoRequests(blocks) {
+		body := map[string]any{
+			"children": batch,
+			"position": map[string]string{"type": "end"},
+		}
+		if err := c.doRejectRetryable(ctx, http.MethodPatch, path, body, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DeleteBlock archives a block. A 404 means the block is already gone, which
+// satisfies the goal, so it is success; every other error propagates. DELETE
+// is idempotent → do.
+func (c *Client) DeleteBlock(ctx context.Context, blockID string) error {
+	path := "/v1/blocks/" + url.PathEscape(blockID)
+	err := c.do(ctx, http.MethodDelete, path, nil, nil)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	return err
 }

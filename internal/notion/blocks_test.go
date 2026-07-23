@@ -2,6 +2,7 @@ package notion
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -139,5 +140,85 @@ func TestDoRejectRetryableReturns400AsIsNotAmbiguous(t *testing.T) {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.Status != 400 {
 		t.Fatalf("want APIError 400, got %v", err)
+	}
+}
+
+func TestAppendBlockChildrenChunksSequentiallyWithPositionEnd(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			var b map[string]any
+			json.NewDecoder(r.Body).Decode(&b)
+			bodies = append(bodies, b)
+			w.Write([]byte(`{}`))
+		}
+	}))
+	defer srv.Close()
+
+	blocks := make([]Block, 150)
+	for i := range blocks {
+		blocks[i] = Block{Type: "paragraph", RichText: []Span{{Content: "x"}}}
+	}
+	if err := testClient(srv.URL).AppendBlockChildren(context.Background(), "page1", blocks); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("150 blocks want 2 requests (100+50), got %d", len(bodies))
+	}
+	for _, b := range bodies {
+		if pos, ok := b["position"].(map[string]any); !ok || pos["type"] != "end" {
+			t.Fatalf("append must set position end, got %v", b["position"])
+		}
+	}
+	if n := len(bodies[0]["children"].([]any)); n != 100 {
+		t.Fatalf("first batch = %d, want 100", n)
+	}
+}
+
+func TestAppendBlockChildrenValidatesBeforeAnyRequest(t *testing.T) {
+	var called bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
+	defer srv.Close()
+
+	kids := make([]Block, 101)
+	for i := range kids {
+		kids[i] = Block{Type: "paragraph", RichText: []Span{{Content: "x"}}}
+	}
+	bad := []Block{{Type: "bulleted_list_item", RichText: []Span{{Content: "p"}}, Children: kids}}
+	if err := testClient(srv.URL).AppendBlockChildren(context.Background(), "page1", bad); err == nil {
+		t.Fatal("want validation error")
+	}
+	if called {
+		t.Fatal("no request may be sent when validation fails")
+	}
+}
+
+func TestListBlockChildrenPaginatesPastOneHundred(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("start_cursor") == "" {
+			w.Write([]byte(`{"results":[{"id":"a","type":"paragraph"}],"has_more":true,"next_cursor":"c2"}`))
+			return
+		}
+		w.Write([]byte(`{"results":[{"id":"b","type":"child_page"}],"has_more":false}`))
+	}))
+	defer srv.Close()
+
+	got, err := testClient(srv.URL).ListBlockChildren(context.Background(), "page1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "a" || got[1].Type != "child_page" {
+		t.Fatalf("pagination lost content: %+v", got)
+	}
+}
+
+func TestDeleteBlockTreats404AsSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"code":"object_not_found","message":"gone"}`))
+	}))
+	defer srv.Close()
+	if err := testClient(srv.URL).DeleteBlock(context.Background(), "b1"); err != nil {
+		t.Fatalf("404 on delete must be success, got %v", err)
 	}
 }
