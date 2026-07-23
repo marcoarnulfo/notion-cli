@@ -1,5 +1,7 @@
 package notion
 
+import "time"
+
 // RichText is the fragment shape Notion uses for titles and text values.
 type RichText struct {
 	PlainText string `json:"plain_text,omitempty"`
@@ -44,3 +46,23 @@ type Schema struct {
 	Title        string
 	Properties   map[string]Property
 }
+
+// PropertyValue is a property read off a page, flattened to the shapes
+// notion-track needs. Text carries title, rich_text, select and status alike.
+type PropertyValue struct {
+	Type     string
+	Text     string
+	Date     string
+	Checkbox bool
+}
+
+// Page is one row of a data source.
+type Page struct {
+	ID             string
+	URL            string
+	LastEditedTime time.Time
+	Properties     map[string]PropertyValue
+}
+
+// Filter is a raw Notion query filter.
+type Filter map[string]any
