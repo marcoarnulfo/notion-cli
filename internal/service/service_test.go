@@ -124,6 +124,58 @@ func TestUpsertFailsOnDuplicates(t *testing.T) {
 	}
 }
 
+// cmd.MarkFlagRequired only checks that --ticket was passed, not that it
+// carries a value: `upsert --ticket ""` used to sail through with an empty
+// key. BuildProperties then silently drops the ticket property (add()
+// treats "" as "leave this alone"), so the row it creates has no ticket
+// value at all — unreachable by any future get/set/upsert. Rejecting the
+// empty key here, before any request is made, is what closes that hole for
+// every caller (CLI, TUI, a future MCP adapter) at once.
+func TestUpsertRejectsEmptyTicket(t *testing.T) {
+	var seen []string
+	srv := routes(t, "", &seen)
+	defer srv.Close()
+
+	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile())
+	_, err := s.Upsert(context.Background(), tracker.Fields{Ticket: "", Title: "Ghost"})
+	if !errors.Is(err, ErrEmptyTicket) {
+		t.Fatalf("got %v, want ErrEmptyTicket", err)
+	}
+	if len(seen) != 0 {
+		t.Fatalf("an empty ticket reached the API: %v", seen)
+	}
+}
+
+func TestSetRejectsEmptyTicket(t *testing.T) {
+	var seen []string
+	srv := routes(t, "", &seen)
+	defer srv.Close()
+
+	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile())
+	_, err := s.Set(context.Background(), tracker.Fields{Ticket: "", Status: "Fatto"})
+	if !errors.Is(err, ErrEmptyTicket) {
+		t.Fatalf("got %v, want ErrEmptyTicket", err)
+	}
+	if len(seen) != 0 {
+		t.Fatalf("an empty ticket reached the API: %v", seen)
+	}
+}
+
+func TestGetRejectsEmptyTicket(t *testing.T) {
+	var seen []string
+	srv := routes(t, "", &seen)
+	defer srv.Close()
+
+	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile())
+	_, err := s.Get(context.Background(), "")
+	if !errors.Is(err, ErrEmptyTicket) {
+		t.Fatalf("got %v, want ErrEmptyTicket", err)
+	}
+	if len(seen) != 0 {
+		t.Fatalf("an empty ticket reached the API: %v", seen)
+	}
+}
+
 func TestSetFailsWhenTheRowDoesNotExist(t *testing.T) {
 	var seen []string
 	srv := routes(t, "", &seen)

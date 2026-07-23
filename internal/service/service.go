@@ -18,6 +18,18 @@ import (
 // ErrNotFound means no row carries the requested ticket key.
 var ErrNotFound = errors.New("ticket not found")
 
+// ErrEmptyTicket means a ticket key was supplied but is blank.
+//
+// cobra's MarkFlagRequired only checks that a flag was passed, not that it
+// carries a value, so `--ticket ""` reaches here unless it is rejected
+// explicitly. Left unchecked, BuildProperties treats the empty value as
+// "leave this property alone" (the same rule that makes `set --status` a
+// partial update) and silently omits the ticket property from the payload —
+// upsert then creates a row no future get/set/upsert can ever find again.
+// Checked once here rather than in each CLI command so the TUI and any
+// future MCP adapter inherit the guard for free.
+var ErrEmptyTicket = errors.New("ticket key must not be empty")
+
 // Service performs notion-track's operations against one profile.
 //
 // One Service may be shared by concurrent callers — the TUI runs its commands
@@ -81,6 +93,9 @@ func (s *Service) findByTicket(ctx context.Context, key string) ([]notion.Page, 
 
 // Upsert creates the row for a ticket or updates it if it already exists.
 func (s *Service) Upsert(ctx context.Context, f tracker.Fields) (Result, error) {
+	if f.Ticket == "" {
+		return Result{}, ErrEmptyTicket
+	}
 	matches, err := s.findByTicket(ctx, f.Ticket)
 	if err != nil {
 		return Result{}, err
@@ -110,6 +125,9 @@ func (s *Service) Upsert(ctx context.Context, f tracker.Fields) (Result, error) 
 // Set updates an existing row and fails if it does not exist. In CI a missing
 // ticket is usually a symptom worth surfacing, not a row to conjure up.
 func (s *Service) Set(ctx context.Context, f tracker.Fields) (Result, error) {
+	if f.Ticket == "" {
+		return Result{}, ErrEmptyTicket
+	}
 	matches, err := s.findByTicket(ctx, f.Ticket)
 	if err != nil {
 		return Result{}, err
@@ -136,6 +154,9 @@ func (s *Service) Set(ctx context.Context, f tracker.Fields) (Result, error) {
 
 // Get returns the row for a ticket.
 func (s *Service) Get(ctx context.Context, ticket string) (notion.Page, error) {
+	if ticket == "" {
+		return notion.Page{}, ErrEmptyTicket
+	}
 	matches, err := s.findByTicket(ctx, ticket)
 	if err != nil {
 		return notion.Page{}, err

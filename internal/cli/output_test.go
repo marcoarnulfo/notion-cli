@@ -47,6 +47,7 @@ func TestExitCodeForMapsDomainErrors(t *testing.T) {
 		{"rejected value", &tracker.ValidationError{Field: "status", Value: "X"}, ExitUsage},
 		{"unauthorized", fmt.Errorf("wrapped: %w", notion.ErrUnauthorized), ExitAuth},
 		{"not configured", fmt.Errorf("wrapped: %w", config.ErrNotConfigured), ExitUsage},
+		{"empty ticket", fmt.Errorf("wrapped: %w", service.ErrEmptyTicket), ExitUsage},
 		{"anything else", errors.New("boom"), ExitError},
 	}
 	for _, tc := range tests {

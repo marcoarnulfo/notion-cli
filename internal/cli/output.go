@@ -47,6 +47,10 @@ func exitCodeFor(err error) int {
 	// invocation cannot work as written, and the fix is the user's to make.
 	case errors.Is(err, config.ErrNotConfigured):
 		return ExitUsage
+	// --ticket "" is a missing value wearing a passed flag; cobra's
+	// MarkFlagRequired cannot catch it, so service.Upsert/Set/Get do.
+	case errors.Is(err, service.ErrEmptyTicket):
+		return ExitUsage
 	case errors.Is(err, notion.ErrUnauthorized):
 		return ExitAuth
 	}

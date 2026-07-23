@@ -36,6 +36,32 @@ func TestUpsertCreatesAndIsQuietOnSuccess(t *testing.T) {
 	}
 }
 
+// cmd.MarkFlagRequired("ticket") only checks that --ticket was passed, not
+// that it carries a value, so `--ticket ""` used to exit 0 and create a row
+// whose payload never carries the ticket property at all — a ghost row that
+// no future get/set/upsert can ever reach again. A CI script with an
+// unset $TICKET is exactly how this happens in practice.
+func TestUpsertRejectsAnEmptyTicketBeforeCallingTheAPI(t *testing.T) {
+	var wrote bool
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(cliSchemaJSON))
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/pages" {
+			wrote = true
+		}
+		w.Write([]byte(`{"results":[],"has_more":false}`))
+	})
+
+	if code := executeArgs([]string{"upsert", "--ticket", "", "--title", "Ghost", "--config", cfg}); code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+	}
+	if wrote {
+		t.Fatal("an empty ticket reached the API; a ghost row was created")
+	}
+}
+
 func TestUpsertRejectsAnUnknownStatusBeforeCallingTheAPI(t *testing.T) {
 	var wrote bool
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
