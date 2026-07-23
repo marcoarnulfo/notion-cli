@@ -135,7 +135,11 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 			Message string `json:"message"`
 		}
 		if json.Unmarshal(raw, &decoded) == nil && decoded.Code != "" {
-			apiErr.Code, apiErr.Message = decoded.Code, decoded.Message
+			// decoded.Message comes straight from the response body just
+			// like the raw fallback above, so it needs the same cap: a
+			// well-formed {code, message} body is the common shape of a
+			// real Notion error and must not bypass maxErrorMessageBytes.
+			apiErr.Code, apiErr.Message = decoded.Code, truncateMessage([]byte(decoded.Message))
 		}
 		return apiErr
 	}

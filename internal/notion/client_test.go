@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -196,6 +197,39 @@ func TestDoBoundsOversizedErrorBody(t *testing.T) {
 	const maxAcceptableErrorLen = 4096
 	if got := len(err.Error()); got > maxAcceptableErrorLen {
 		t.Fatalf("error message is %d bytes, want <= %d; oversized body was not bounded", got, maxAcceptableErrorLen)
+	}
+}
+
+// APIError.Message must be capped even when it comes from a successfully
+// decoded {code, message} body — the common shape of a real Notion error
+// response — not only from the raw-body fallback used for non-JSON bodies.
+// The message here (64 KiB) is chosen to be well past maxErrorMessageBytes
+// (2 KiB) while staying comfortably under maxResponseBodyBytes (1 MiB), so
+// this test isolates the truncation bug from the separate response-size cap
+// covered by TestDoBoundsOversizedErrorBody.
+func TestDoTruncatesOversizedDecodedErrorMessage(t *testing.T) {
+	const hugeMessageSize = 64 << 10 // 64 KiB
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, `{"code":"validation_error","message":%q}`, strings.Repeat("x", hugeMessageSize))
+	}))
+	defer srv.Close()
+
+	err := New("t", WithBaseURL(srv.URL)).do(context.Background(), http.MethodGet, "/v1/x", nil, nil)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("got %T, want *APIError", err)
+	}
+	if apiErr.Code != "validation_error" {
+		t.Fatalf("Code = %q, want %q", apiErr.Code, "validation_error")
+	}
+	const maxAcceptableMessageLen = maxErrorMessageBytes + len("...(truncated)")
+	if got := len(apiErr.Message); got > maxAcceptableMessageLen {
+		t.Fatalf("Message is %d bytes, want <= %d; maxErrorMessageBytes was not applied to the decoded JSON message", got, maxAcceptableMessageLen)
 	}
 }
 
