@@ -50,7 +50,14 @@ func GuessMapping(schema *notion.Schema) config.Properties {
 		return ""
 	}
 
-	out.Status = pick(append(byType["status"], byType["select"]...), statusNames)
+	// Copy into a fresh slice before concatenating, and re-sort: appending
+	// straight onto byType["status"] would write into its backing array, and
+	// the merged list has to stay alphabetical for the guess to be
+	// reproducible across runs.
+	statusCandidates := append([]string{}, byType["status"]...)
+	statusCandidates = append(statusCandidates, byType["select"]...)
+	sort.Strings(statusCandidates)
+	out.Status = pick(statusCandidates, statusNames)
 	out.Due = pick(byType["date"], dueNames)
 
 	// The ticket key is usually rich_text, but a database may use its title.

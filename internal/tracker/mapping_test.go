@@ -59,3 +59,23 @@ func TestGuessMappingLeavesAmbiguityToTheUser(t *testing.T) {
 		t.Fatalf("ticket = %q, want an empty guess", got.Ticket)
 	}
 }
+
+// Map iteration order is random in Go, so without the sorts a schema with two
+// recognisable candidates in one bucket would propose a different mapping on
+// different runs. Removing any sort.Strings makes this test flap.
+func TestGuessMappingIsDeterministicWithSeveralKnownNames(t *testing.T) {
+	schema := &notion.Schema{Properties: map[string]notion.Property{
+		"Titolo": {Name: "Titolo", Type: "title"},
+		"Status": {Name: "Status", Type: "status"},
+		"Stato":  {Name: "Stato", Type: "select"},
+		"Ticket": {Name: "Ticket", Type: "rich_text"},
+		"Key":    {Name: "Key", Type: "rich_text"},
+	}}
+
+	first := GuessMapping(schema)
+	for i := 0; i < 200; i++ {
+		if got := GuessMapping(schema); got != first {
+			t.Fatalf("run %d proposed %+v, first run proposed %+v", i, got, first)
+		}
+	}
+}
