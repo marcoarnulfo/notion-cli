@@ -139,3 +139,25 @@ func TestDoBoundsOversizedErrorBody(t *testing.T) {
 		t.Fatalf("error message is %d bytes, want <= %d; oversized body was not bounded", got, maxAcceptableErrorLen)
 	}
 }
+
+// A 2xx response with an empty body (e.g. a 204) is not a decoding failure:
+// there is nothing to decode, so out must be left untouched instead of
+// producing a confusing "unexpected end of JSON input" error.
+func TestDoTreatsEmptySuccessBodyAsNoOp(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	out := struct {
+		Sentinel string
+	}{Sentinel: "untouched"}
+
+	err := New("t", WithBaseURL(srv.URL)).do(context.Background(), http.MethodGet, "/v1/x", nil, &out)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	if out.Sentinel != "untouched" {
+		t.Fatalf("out was modified despite an empty response body: %+v", out)
+	}
+}

@@ -128,7 +128,10 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 		return apiErr
 	}
 
-	if out == nil {
+	// An empty body (e.g. a 204) is not a decoding failure: there is simply
+	// nothing to decode, so out is left untouched instead of erroring on
+	// json.Unmarshal's "unexpected end of JSON input".
+	if out == nil || len(raw) == 0 {
 		return nil
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
