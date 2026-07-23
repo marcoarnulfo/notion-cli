@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -98,5 +99,22 @@ func TestEqualsFilterShapesPerPropertyType(t *testing.T) {
 	title := EqualsFilter("Name", "title", "X")
 	if title["title"].(map[string]string)["equals"] != "X" {
 		t.Errorf("title filter = %v", title["title"])
+	}
+}
+
+// Mirrors TestListDataSourcesStopsOnAStalledCursor: without this, a server
+// repeating one cursor would loop forever, appending the same rows each pass.
+func TestQueryPagesStopsOnAStalledCursor(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"results":[` + pageFixture + `],"has_more":true,"next_cursor":"same"}`))
+	}))
+	defer srv.Close()
+
+	_, err := New("t", WithBaseURL(srv.URL)).QueryPages(context.Background(), "ds1", nil)
+	if err == nil {
+		t.Fatal("expected an error instead of an endless loop")
+	}
+	if !strings.Contains(err.Error(), "stalled") {
+		t.Fatalf("error does not explain the stall: %v", err)
 	}
 }

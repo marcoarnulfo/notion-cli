@@ -11,6 +11,13 @@ import (
 
 // EqualsFilter builds an equality filter for one property. The filter body is
 // keyed by property type, so the caller must pass the type from the schema.
+//
+// Only the types notion-track matches on are meaningful here: title,
+// rich_text, select and status. Other types either need a different operator
+// (multi_select and relation want "contains") or a non-string value
+// (checkbox wants a bool), and Notion rejects the resulting filter with a
+// validation error rather than returning wrong rows — loud, but still the
+// caller's mistake to avoid.
 func EqualsFilter(property, propType, value string) Filter {
 	return Filter{
 		"property": property,
