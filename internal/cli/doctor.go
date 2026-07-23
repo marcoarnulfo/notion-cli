@@ -28,12 +28,27 @@ func newDoctorCmd() *cobra.Command {
 				}
 			}
 
+			var failed []string
 			for _, c := range checks {
 				if c.Status == "fail" {
-					return Errorf(ExitError, "one or more checks failed")
+					failed = append(failed, c.Name)
 				}
 			}
-			return nil
+			switch {
+			case len(failed) == 0:
+				return nil
+			// Every other command exits ExitAuth on an invalid token;
+			// Service.Doctor stops at the token check and returns just that
+			// one Check when it fails, so "token is the only failed check"
+			// is exactly "the token check failed" here. Matching that code
+			// makes doctor consistent with the rest of the CLI instead of
+			// being the one command that reports a bad token as a generic
+			// failure.
+			case len(failed) == 1 && failed[0] == "token":
+				return Errorf(ExitAuth, "authentication failed")
+			default:
+				return Errorf(ExitError, "one or more checks failed")
+			}
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print machine-readable JSON")

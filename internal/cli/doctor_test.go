@@ -44,6 +44,49 @@ func TestDoctorExitsNonZeroWhenACheckFails(t *testing.T) {
 	})
 }
 
+// Every other command exits ExitAuth on an invalid token; doctor was the one
+// exception, always exiting ExitError instead. A pipeline branching on 5 to
+// mean "go fix the token" would be lied to by doctor alone. Doctor's own
+// Service.Doctor stops at the token check and returns just that one Check
+// when it fails (see internal/service/doctor.go), so this is exactly "the
+// token check is the only one that failed".
+func TestDoctorExitsAuthWhenOnlyTheTokenCheckFails(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"code":"unauthorized","message":"API token is invalid."}`))
+	})
+
+	captureStdout(t, func() {
+		if code := executeArgs([]string{"doctor", "--config", cfg}); code != ExitAuth {
+			t.Fatalf("exit code = %d, want %d (ExitAuth)", code, ExitAuth)
+		}
+	})
+}
+
+// When something other than (or in addition to) the token fails, doctor must
+// keep reporting the generic ExitError: ExitAuth is reserved for "the fix is
+// to check your token", which is not true when e.g. the data source check
+// also failed.
+func TestDoctorExitsErrorWhenANonTokenCheckFails(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/users/me":
+			w.Write([]byte(`{"name":"notion-track"}`))
+		case "/v1/data_sources/ds1":
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"code":"object_not_found","message":"not shared"}`))
+		default:
+			w.Write([]byte(`{"results":[],"has_more":false}`))
+		}
+	})
+
+	captureStdout(t, func() {
+		if code := executeArgs([]string{"doctor", "--config", cfg}); code != ExitError {
+			t.Fatalf("exit code = %d, want %d (ExitError)", code, ExitError)
+		}
+	})
+}
+
 // warnStatoTypeChangedSchemaJSON matches cliSchemaJSON except Stato is now a
 // "select" property. The stubbed config (from withStubbedAPI) records
 // status_type: status, so this schema drifts the status property's type
