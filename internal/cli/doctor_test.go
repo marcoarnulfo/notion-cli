@@ -161,3 +161,24 @@ func TestInitListDoesNotRequireMappingFlags(t *testing.T) {
 		t.Fatalf("exit code = %d, want %d (ExitOK)", code, ExitOK)
 	}
 }
+
+// The property-type comparison in validateMapping has no dedicated coverage:
+// deleting it would leave the whole suite green while init started accepting
+// a column of the wrong type (e.g. a "select" property as the ticket key,
+// which get/list cannot read as text).
+func TestInitHeadlessRejectsAPropertyOfTheWrongType(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaJSON))
+	})
+
+	// Stato is a "status" property, which is valid for --status-prop but not
+	// for --ticket-prop (which only accepts rich_text or title).
+	code := executeArgs([]string{
+		"init", "--data-source-id", "ds1",
+		"--ticket-prop", "Stato", "--status-prop", "Stato", "--title-prop", "Name",
+		"--config", cfg,
+	})
+	if code == ExitOK {
+		t.Fatal("init accepted a ticket property whose type (status) is not usable as a ticket key")
+	}
+}
