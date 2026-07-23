@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -103,6 +104,49 @@ func TestSetByIDUpdatesTheCorrectPageWithoutQuerying(t *testing.T) {
 	}
 	if contains(seen, "POST /v1/data_sources/ds1/query") {
 		t.Fatal("SetByID must not query by key")
+	}
+}
+
+// SetByID's f.Ticket is always empty (the caller addresses by id, not by
+// key — see the SetByID doc comment), and BuildProperties' "empty means
+// leave this property alone" rule is what makes `set --page-id --status X`
+// a partial update instead of one that clobbers the row's ticket key. That
+// rule was only exercised transitively, through TestBuildProperties*: nothing
+// asserted it end to end for the id-addressing path specifically. This
+// inspects the actual PATCH body, the one thing Notion receives, rather than
+// trusting BuildProperties' unit coverage to still apply once SetByID is the
+// one calling it.
+func TestSetByIDOmitsTheTicketPropertyFromThePatchBody(t *testing.T) {
+	var patchBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/data_sources/ds1":
+			w.Write([]byte(schemaJSON))
+		case r.Method == http.MethodPatch:
+			if err := json.NewDecoder(r.Body).Decode(&patchBody); err != nil {
+				t.Fatalf("decoding PATCH body: %v", err)
+			}
+			w.Write([]byte(rowJSONWithParent))
+		default:
+			w.Write([]byte(rowJSONWithParent))
+		}
+	}))
+	defer srv.Close()
+
+	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile())
+	if _, err := s.SetByID(context.Background(), testPageID, tracker.Fields{Status: "Fatto"}); err != nil {
+		t.Fatalf("SetByID: %v", err)
+	}
+
+	props, ok := patchBody["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("PATCH body has no properties object: %v", patchBody)
+	}
+	if _, ok := props["Ticket"]; ok {
+		t.Fatalf("PATCH body touched the ticket property, want it left alone: %v", props)
+	}
+	if _, ok := props["Stato"]; !ok {
+		t.Fatalf("PATCH body did not carry the status that was passed: %v", props)
 	}
 }
 
