@@ -37,8 +37,10 @@ func TestCreatePageUsesDataSourceParent(t *testing.T) {
 
 func TestUpdatePagePatchesProperties(t *testing.T) {
 	var gotMethod, gotPath string
+	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath = r.Method, r.URL.Path
+		json.NewDecoder(r.Body).Decode(&gotBody)
 		w.Write([]byte(pageFixture))
 	}))
 	defer srv.Close()
@@ -50,6 +52,15 @@ func TestUpdatePagePatchesProperties(t *testing.T) {
 	}
 	if gotMethod != http.MethodPatch || gotPath != "/v1/pages/page1" {
 		t.Fatalf("got %s %s", gotMethod, gotPath)
+	}
+	// The properties must travel wrapped: sending them bare would be accepted
+	// by this test but rejected by Notion.
+	props, ok := gotBody["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("body is not wrapped in \"properties\": %v", gotBody)
+	}
+	if _, ok := props["Stato"]; !ok {
+		t.Fatalf("properties do not carry Stato: %v", props)
 	}
 }
 

@@ -28,7 +28,11 @@ func (c *Client) CreatePage(ctx context.Context, dataSourceID string, props map[
 func (c *Client) UpdatePage(ctx context.Context, pageID string, props map[string]any) (Page, error) {
 	var raw json.RawMessage
 	body := map[string]any{"properties": props}
-	if err := c.do(ctx, http.MethodPatch, "/v1/pages/"+url.PathEscape(pageID), body, &raw); err != nil {
+	// PathEscape for the same reason as elsewhere in this package: the id comes
+	// from a query result or user input, and an unescaped separator would
+	// retarget the request instead of failing.
+	path := "/v1/pages/" + url.PathEscape(pageID)
+	if err := c.do(ctx, http.MethodPatch, path, body, &raw); err != nil {
 		return Page{}, err
 	}
 	return decodePage(raw)
