@@ -86,7 +86,11 @@ func promptForToken(cmd *cobra.Command) (string, error) {
 	}
 	answer = strings.ToLower(strings.TrimSpace(answer))
 
-	if answer == "n" || answer == "no" {
+	// A prompt that persists a secret must be permissive about what counts as
+	// "no": "nope", "N.", a typo, anything starting with n declines. Only
+	// exact "y"/"yes"/empty should ever save; failing open here means a typo
+	// writes a token to disk when the user meant to say no.
+	if strings.HasPrefix(answer, "n") {
 		// Never echo the token itself here (see the package-wide rule that it
 		// must not appear in output): the user just typed it and still has it
 		// wherever they copied it from, so a placeholder is enough to name the

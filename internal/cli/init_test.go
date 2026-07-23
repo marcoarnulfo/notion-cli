@@ -174,6 +174,43 @@ func TestInitInteractiveDeclinesSave(t *testing.T) {
 	}
 }
 
+// A prompt that persists a secret must be permissive about what counts as
+// "no": only "n" and "no" used to decline, so a typo or a slightly longer
+// answer like "nope" fell through to the save branch and silently wrote the
+// token to disk — the opposite of what the user typed to avoid.
+func TestInitInteractiveDeclineAcceptsAnyAnswerStartingWithN(t *testing.T) {
+	for _, answer := range []string{"nope", "N", "N.", "No thanks", "never"} {
+		t.Run(answer, func(t *testing.T) {
+			cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Write([]byte(cliSchemaJSON))
+			})
+			t.Setenv(config.TokenEnv, "")
+			withIsolatedUserConfigDir(t)
+			withInteractivePrompt(t, true,
+				func() (string, error) { return "ntn_typed", nil },
+				func() (string, error) { return answer, nil },
+			)
+
+			code := executeArgs([]string{
+				"init", "--data-source-id", "ds1",
+				"--ticket-prop", "Ticket", "--status-prop", "Stato", "--title-prop", "Name",
+				"--config", cfg,
+			})
+			if code != ExitOK {
+				t.Fatalf("exit code = %d, want %d", code, ExitOK)
+			}
+
+			credPath, err := config.CredentialsPath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(credPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("answer %q was not treated as a decline: credentials file was written (stat err = %v)", answer, err)
+			}
+		})
+	}
+}
+
 // An empty answer to the token prompt means the user still has no usable
 // token: this must fail exactly like every other "no token" path.
 func TestInitInteractiveEmptyTokenExitsAuth(t *testing.T) {
