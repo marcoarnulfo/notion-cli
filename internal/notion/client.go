@@ -43,13 +43,20 @@ type Option func(*Client)
 // WithBaseURL points the client at another host. Tests use it with httptest.
 func WithBaseURL(u string) Option { return func(c *Client) { c.baseURL = u } }
 
-// WithHTTPClient replaces the underlying HTTP client. This is the natural
-// way to plug in a custom proxy or TLS config in production, so New still
-// enforces the redirect-refusal policy below on whatever client is supplied
-// here, provided it leaves CheckRedirect nil. If this client sets its own
-// CheckRedirect, that is treated as an explicit, informed choice and is left
-// untouched — which also means the caller then owns making sure that
-// callback does not let the Authorization header follow a redirect.
+// WithHTTPClient replaces the underlying HTTP client. This is the natural way
+// to plug in a custom proxy or TLS config in production, so New still applies
+// the redirect-refusal policy below to whatever client is supplied here.
+//
+// The extent of that guarantee is worth stating exactly, because the token is
+// a shared secret and the policy only reaches one layer. New sets
+// CheckRedirect when the supplied client leaves it nil; a caller-set
+// CheckRedirect is left alone as an explicit choice, and its owner is then
+// responsible for not letting the Authorization header follow a redirect.
+// Neither case covers a custom Transport: a RoundTripper that resolves
+// redirects on its own never surfaces a 3xx to http.Client, so CheckRedirect
+// is never consulted and the token travels wherever that transport sends it.
+// Supplying a Transport therefore means taking over this guarantee, not
+// inheriting it.
 func WithHTTPClient(h *http.Client) Option { return func(c *Client) { c.http = h } }
 
 // New builds a client authenticated with an integration token.
