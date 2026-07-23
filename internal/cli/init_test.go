@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -115,6 +116,21 @@ func TestInitInteractivePromptsAndSavesTokenByDefault(t *testing.T) {
 	}
 	if tok != "ntn_typed" || source != "file" {
 		t.Fatalf("LoadToken() = %q, %q, want ntn_typed, file", tok, source)
+	}
+
+	// The printed permission claim must describe the file that actually
+	// landed on disk, not a hardcoded string that could go stale.
+	credPath, err := config.CredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(credPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPerm := fmt.Sprintf("%04o", info.Mode().Perm())
+	if !strings.Contains(out, "permissions "+wantPerm) {
+		t.Fatalf("output %q does not report the actual on-disk permissions (%s)", out, wantPerm)
 	}
 }
 

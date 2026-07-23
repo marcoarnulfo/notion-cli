@@ -230,15 +230,28 @@ func LoadToken() (token string, source string, err error) {
 }
 
 // SaveToken writes the token to credentials.yml, atomically (a temp file in
-// the same directory, then rename) and with the same restrictive
-// permissions config.yml uses. Called only from init, and only after an
-// interactive user has explicitly opted in.
+// the same directory, then rename) and with restrictive permissions.
+// Called only from init, and only after an interactive user has explicitly
+// opted in.
+//
+// The temp file is created with os.CreateTemp rather than a fixed name plus
+// os.WriteFile: WriteFile does not apply its mode to a file that already
+// exists (it opens without O_EXCL and truncates, keeping whatever
+// permissions were already there), and a fixed, predictable name invites
+// exactly that — a crash between write and rename, a sync tool, a restore
+// from backup, or another process of the same user can all leave a residual
+// file at a guessable path. CreateTemp picks an unpredictable suffix and
+// opens with O_EXCL, so nothing pre-existing can be reused; the explicit
+// Chmod after that closes the umask gap CreateTemp's own 0600 default still
+// leaves (belt and suspenders, not strictly required, but the cost of
+// skipping it is a leaked secret).
 func SaveToken(token string) error {
 	path, err := credentialsPath()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("config: creating config dir: %w", err)
 	}
 
@@ -247,8 +260,25 @@ func SaveToken(token string) error {
 	if err != nil {
 		return fmt.Errorf("config: encoding credentials: %w", err)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("config: creating temp file: %w", err)
+	}
+	tmp := f.Name()
+	// Any exit from here on must not leave the temp file behind with the
+	// token still in it.
+	defer os.Remove(tmp)
+
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return fmt.Errorf("config: setting permissions on %s: %w", tmp, err)
+	}
+	if _, err := f.Write(raw); err != nil {
+		f.Close()
+		return fmt.Errorf("config: writing %s: %w", tmp, err)
+	}
+	if err := f.Close(); err != nil {
 		return fmt.Errorf("config: writing %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {

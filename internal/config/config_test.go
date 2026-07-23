@@ -205,6 +205,39 @@ func TestSaveTokenUsesRestrictivePermissions(t *testing.T) {
 	}
 }
 
+// os.WriteFile does not apply its mode argument to a file that already
+// exists: it opens (without O_EXCL) and truncates, leaving whatever
+// permissions the file already had. The temp file name SaveToken writes to
+// is fixed and predictable (credentials.yml.tmp), so anything that leaves a
+// residual temp file there — a crash between write and rename, a sync tool,
+// a restore from backup, another process of the same user — can pre-create
+// it wide open, and the secret then lands on disk exactly that way.
+func TestSaveTokenFixesPermissionsEvenWhenATempFilePreExistsWideOpen(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.yml")
+	old := credentialsPath
+	credentialsPath = func() (string, error) { return path, nil }
+	t.Cleanup(func() { credentialsPath = old })
+
+	// Pre-create a permissive file at the exact temp name SaveToken used to
+	// use, simulating a leftover from an interrupted previous run.
+	if err := os.WriteFile(path+".tmp", []byte("stale"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SaveToken("ntn_secret"); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("permissions = %o, want 600", perm)
+	}
+}
+
 func TestSaveTokenThenLoadTokenRoundTrips(t *testing.T) {
 	withTempCredentials(t)
 

@@ -100,7 +100,16 @@ func promptForToken(cmd *cobra.Command) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	cmd.Printf("Saved to %s (permissions 0600). Do not commit this file.\n", credPath)
+	// The permissions claim must describe the file that actually landed on
+	// disk, not a constant that quietly goes stale (or lies) the moment
+	// SaveToken's guarantee ever regresses. A Stat here catches that the
+	// moment it happens instead of printing a false "0600" over a wide-open
+	// secret.
+	perm := "unknown"
+	if info, statErr := os.Stat(credPath); statErr == nil {
+		perm = fmt.Sprintf("%04o", info.Mode().Perm())
+	}
+	cmd.Printf("Saved to %s (permissions %s). Do not commit this file.\n", credPath, perm)
 	return token, nil
 }
 
