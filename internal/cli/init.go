@@ -1,12 +1,108 @@
 package cli
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"strings"
 
 	"github.com/marcoarnulfo/notion-cli/internal/config"
 	"github.com/marcoarnulfo/notion-cli/internal/notion"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
+
+// Interactive-prompt seams, all three replaced together in tests. term.
+// ReadPassword needs a real terminal fd, which a test has no cheap way to
+// fake, so tests swap these for plain functions instead of building one.
+var (
+	isInteractive = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+	readToken     = func() (string, error) {
+		b, err := term.ReadPassword(int(os.Stdin.Fd()))
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(b)), nil
+	}
+	readLine = func() (string, error) {
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return "", err
+		}
+		return strings.TrimSpace(line), nil
+	}
+)
+
+// resolveInitToken finds the token the way every other command does
+// (NOTION_TOKEN, then credentials.yml) and, only at an interactive terminal
+// and only when neither source has it, offers to collect one and save it
+// for next time. A non-interactive run — CI, a pipe, an agent — must never
+// block on a prompt nobody can answer, so it falls straight back to the
+// same ExitAuth error every other command already gives for a missing
+// token.
+func resolveInitToken(cmd *cobra.Command) (string, error) {
+	token, _, err := config.LoadToken()
+	if err != nil {
+		return "", err
+	}
+	if token != "" {
+		return token, nil
+	}
+	if !isInteractive() {
+		return "", Errorf(ExitAuth, "no integration token found; set %s", config.TokenEnv)
+	}
+	return promptForToken(cmd)
+}
+
+// promptForToken asks for a token with no local echo, then asks whether to
+// persist it. Saving is the recommended default (bare Enter accepts it)
+// because the whole point of asking is to spare the user from re-exporting
+// NOTION_TOKEN every session.
+func promptForToken(cmd *cobra.Command) (string, error) {
+	cmd.Println("No Notion integration token found.")
+	cmd.Println("Create one at https://www.notion.so/my-integrations")
+	cmd.Print("Token: ")
+	token, err := readToken()
+	// term.ReadPassword echoes nothing, not even the Enter that ended input,
+	// so the cursor is still sitting on the prompt line without this.
+	cmd.Println()
+	if err != nil {
+		return "", Errorf(ExitError, "reading token: %v", err)
+	}
+	if token == "" {
+		return "", Errorf(ExitAuth, "no integration token found; set %s", config.TokenEnv)
+	}
+
+	cmd.Print("Save it for future sessions? [Y/n] ")
+	answer, err := readLine()
+	if err != nil {
+		return "", Errorf(ExitError, "reading answer: %v", err)
+	}
+	answer = strings.ToLower(strings.TrimSpace(answer))
+
+	if answer == "n" || answer == "no" {
+		// Never echo the token itself here (see the package-wide rule that it
+		// must not appear in output): the user just typed it and still has it
+		// wherever they copied it from, so a placeholder is enough to name the
+		// exact command to run.
+		cmd.Println("Not saved. For this session only, run:")
+		cmd.Printf("  export %s=<paste your token>\n", config.TokenEnv)
+		cmd.Println("  (notion-track can't set it for you: a child process can't modify its parent shell's environment)")
+		return token, nil
+	}
+
+	if err := config.SaveToken(token); err != nil {
+		return "", err
+	}
+	credPath, err := config.CredentialsPath()
+	if err != nil {
+		return "", err
+	}
+	cmd.Printf("Saved to %s (permissions 0600). Do not commit this file.\n", credPath)
+	return token, nil
+}
 
 // newInitCmd writes a profile from flags. The interactive TUI wizard is added
 // separately; this form is what CI and agents use.
@@ -26,9 +122,9 @@ func newInitCmd() *cobra.Command {
 		Short: "Configure a profile",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			token, _ := config.Token()
-			if token == "" {
-				return Errorf(ExitAuth, "no integration token found; set %s", config.TokenEnv)
+			token, err := resolveInitToken(cmd)
+			if err != nil {
+				return err
 			}
 			client := newClient(token)
 
