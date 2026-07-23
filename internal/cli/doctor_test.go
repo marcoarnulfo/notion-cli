@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -41,6 +42,93 @@ func TestDoctorExitsNonZeroWhenACheckFails(t *testing.T) {
 			t.Fatal("doctor exited 0 despite a failing check")
 		}
 	})
+}
+
+// warnStatoTypeChangedSchemaJSON matches cliSchemaJSON except Stato is now a
+// "select" property. The stubbed config (from withStubbedAPI) records
+// status_type: status, so this schema drifts the status property's type
+// without breaking anything else — checkProperties reports that as a "warn",
+// never a "fail".
+const warnStatoTypeChangedSchemaJSON = `{"id":"ds1","title":[{"plain_text":"Tasks"}],"properties":{
+	"Name":{"name":"Name","type":"title","title":{}},
+	"Ticket":{"name":"Ticket","type":"rich_text","rich_text":{}},
+	"Stato":{"name":"Stato","type":"select","select":{"options":[{"name":"Fatto"}]}}}}`
+
+// doctor must only fail the process on a "fail" check; a "warn" is reported
+// but must not flip the exit code, or every drifted-but-still-working setup
+// would look identical to a broken one in CI.
+func TestDoctorExitsZeroWhenOnlyAWarn(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/users/me":
+			w.Write([]byte(`{"name":"notion-track"}`))
+		case "/v1/data_sources/ds1":
+			w.Write([]byte(warnStatoTypeChangedSchemaJSON))
+		default:
+			w.Write([]byte(`{"results":[],"has_more":false}`))
+		}
+	})
+
+	var out string
+	code := 0
+	out = captureStdout(t, func() {
+		code = executeArgs([]string{"doctor", "--config", cfg})
+	})
+	if code != ExitOK {
+		t.Fatalf("exit code = %d, want %d (ExitOK) for a warn-only run: %s", code, ExitOK, out)
+	}
+	// The text renderer maps "warn" to the "!" symbol (see newDoctorCmd), not
+	// the literal word, and must not print the "✗" fail symbol anywhere.
+	if !strings.Contains(out, "!") {
+		t.Fatalf("expected the warn symbol (!) in the output, got: %s", out)
+	}
+	if strings.Contains(out, "✗") {
+		t.Fatalf("expected no fail symbol (✗) in a warn-only run, got: %s", out)
+	}
+}
+
+// Same threshold, --json form: the machine-readable output must also carry
+// the warn through without affecting the exit code.
+func TestDoctorJSONExitsZeroWhenOnlyAWarn(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/users/me":
+			w.Write([]byte(`{"name":"notion-track"}`))
+		case "/v1/data_sources/ds1":
+			w.Write([]byte(warnStatoTypeChangedSchemaJSON))
+		default:
+			w.Write([]byte(`{"results":[],"has_more":false}`))
+		}
+	})
+
+	var out string
+	code := 0
+	out = captureStdout(t, func() {
+		code = executeArgs([]string{"doctor", "--json", "--config", cfg})
+	})
+	if code != ExitOK {
+		t.Fatalf("exit code = %d, want %d (ExitOK) for a warn-only run: %s", code, ExitOK, out)
+	}
+
+	var checks []struct {
+		Name   string `json:"name"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(out), &checks); err != nil {
+		t.Fatalf("output is not JSON: %s", out)
+	}
+	var sawWarn bool
+	for _, c := range checks {
+		if c.Status == "fail" {
+			t.Fatalf("unexpected fail check %q in a warn-only run: %s", c.Name, out)
+		}
+		if c.Status == "warn" {
+			sawWarn = true
+		}
+	}
+	if !sawWarn {
+		t.Fatalf("expected a warn check in the JSON output: %s", out)
+	}
 }
 
 func TestInitHeadlessWritesTheProfile(t *testing.T) {
