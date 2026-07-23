@@ -198,6 +198,10 @@ func defaultCredentialsPath() (string, error) {
 // init's save confirmation).
 func CredentialsPath() (string, error) { return credentialsPath() }
 
+// ErrInvalidCredentials signals a credentials.yml that failed to parse. It
+// deliberately carries no detail from the file itself: see LoadToken.
+var ErrInvalidCredentials = errors.New("credentials file is not valid YAML; delete it and rerun 'notion-track init'")
+
 // LoadToken resolves the integration token the way every command does:
 // NOTION_TOKEN first, then credentials.yml. source is "env" or "file"
 // (empty when no token was found anywhere), which is what lets doctor tell
@@ -221,7 +225,14 @@ func LoadToken() (token string, source string, err error) {
 
 	var creds Credentials
 	if err := yaml.Unmarshal(raw, &creds); err != nil {
-		return "", "", fmt.Errorf("config: parsing %s: %w", path, err)
+		// yaml.v3's unmarshal error names the offending scalar (the value
+		// itself, up to 10 characters, more if truncated). Every scalar in
+		// this file is either a token or a mistaken paste of one, so that
+		// error is a partial secret leak by construction — the underlying
+		// yaml error must never be wrapped with %w. ErrInvalidCredentials is
+		// a fixed message a caller can still key on with errors.Is; it
+		// carries nothing of what was actually read.
+		return "", "", fmt.Errorf("config: %s: %w", path, ErrInvalidCredentials)
 	}
 	if creds.Token == "" {
 		return "", "", nil

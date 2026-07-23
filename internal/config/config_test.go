@@ -238,6 +238,31 @@ func TestSaveTokenFixesPermissionsEvenWhenATempFilePreExistsWideOpen(t *testing.
 	}
 }
 
+// yaml.v3's unmarshal error names the offending scalar (the whole value up
+// to 10 characters, or the first 7 followed by "..." beyond that) — useful
+// for an ordinary config file, but credentials.yml can hold nothing else
+// but a secret, so any value that ends up in that error is a partial token
+// leak. This reproduces the case that actually puts a token there: someone
+// pastes their token into the wrong field, or the file otherwise gets out
+// of sync so a string lands where an int is expected.
+func TestLoadTokenParseErrorNeverContainsFileContent(t *testing.T) {
+	path := withTempCredentials(t)
+	secret := "ntn_supersecrettoken1234567890"
+	body := "schema_version: " + secret + "\ntoken: abc\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := LoadToken()
+	if err == nil {
+		t.Fatal("expected an error for a malformed credentials file")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, secret) || strings.Contains(msg, secret[:7]) {
+		t.Fatalf("error message leaks file content: %q", msg)
+	}
+}
+
 func TestSaveTokenThenLoadTokenRoundTrips(t *testing.T) {
 	withTempCredentials(t)
 
