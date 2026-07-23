@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: "Question / Domanda"
+    url: https://github.com/marcoarnulfo/notion-cli/discussions
+    about: "Ask a question / Fai una domanda"
+  - name: "Security vulnerability / Vulnerabilità di sicurezza"
+    url: https://github.com/marcoarnulfo/notion-cli/security/advisories/new
+    about: "Report privately, do not open a public issue / Segnala privatamente, non aprire una issue pubblica"
