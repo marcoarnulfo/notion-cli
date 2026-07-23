@@ -29,3 +29,18 @@ type DataSourceRef struct {
 	Title      string
 	DatabaseID string
 }
+
+// Property is one column of a data source, flattened to what notion-track
+// cares about: its name, its type, and the options a select or status accepts.
+type Property struct {
+	Name    string
+	Type    string
+	Options []string
+}
+
+// Schema is the property set of a data source.
+type Schema struct {
+	DataSourceID string
+	Title        string
+	Properties   map[string]Property
+}
