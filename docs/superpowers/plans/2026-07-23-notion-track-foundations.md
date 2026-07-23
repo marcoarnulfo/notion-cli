@@ -25,7 +25,9 @@
 - Conventional Commits con scope (`feat(notion):`, `fix(config):`). **MAI** `Co-Authored-By` nei messaggi di commit.
 - `Notion-Version` minima `2025-09-03`, definita in **una sola costante** in `internal/notion`. Valore esatto fissato dal Task 1.
 - Il token non deve **mai** comparire in output, log, errori o dump di debug.
-- `internal/tracker` non importa `internal/notion` né `internal/config`. Se un test di `tracker` ha bisogno di un server HTTP, il design è sbagliato.
+- `internal/tracker` non fa I/O e non dipende da `internal/service` né da `internal/cli`; può
+  importare `internal/notion` e `internal/config`, ma solo per i loro tipi di dato. Se un test di
+  `tracker` ha bisogno di un server HTTP, il design è sbagliato.
 - Dati su stdout, errori e warning su stderr. `cli.Execute()` ritorna `int` e non chiama mai `os.Exit`.
 - Exit code: 0 successo · 1 generico · 2 uso errato · 3 non trovato · 4 duplicati · 5 auth.
 - Chiavi JSON in `snake_case`, timestamp RFC3339.

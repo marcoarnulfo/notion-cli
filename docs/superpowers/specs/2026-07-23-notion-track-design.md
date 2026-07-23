@@ -100,10 +100,12 @@ internal/tracker  internal/notion  internal/config  internal/markdown
  (PURO, no I/O)    (net/http)       (YAML, profili)  (PURO, no I/O)
 ```
 
-**`internal/tracker`** — dominio puro, non importa né `notion` né `config`. Riceve dati,
-restituisce decisioni: dato l'insieme di righe trovate decide create/update/errore; dato un
-mapping e dei flag costruisce il payload delle proprietà; valida uno stato contro le opzioni
-ammesse. Testabile senza rete e senza mock.
+**`internal/tracker`** — dominio puro: nessun I/O, nessuna dipendenza da `internal/service` o
+`internal/cli`. Può importare `internal/notion` e `internal/config`, ma solo per i loro tipi di
+dato (`notion.Schema`, `notion.Page`, `config.Properties`, ...), non per invocarne le funzioni di
+rete o di file. Riceve dati, restituisce decisioni: dato l'insieme di righe trovate decide
+create/update/errore; dato un mapping e dei flag costruisce il payload delle proprietà; valida uno
+stato contro le opzioni ammesse. Testabile senza rete e senza mock.
 
 **`internal/markdown`** — dominio puro. Markdown in, albero di blocchi Notion out. Ci vive tutto
 il chunking: massimo 100 blocchi per chiamata, massimo 2000 caratteri per `rich_text`. Nessuna

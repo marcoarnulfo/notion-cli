@@ -62,7 +62,7 @@ internal/config      YAML config (profiles, property mapping) + NOTION_TOKEN / N
 
 Two rules here are **not negotiable**:
 
-> `internal/tracker` and `internal/markdown` must stay pure: no I/O, no imports of `internal/notion` or `internal/config`. Domain logic goes there so it can be tested without mocks.
+> `internal/tracker` and `internal/markdown` must stay pure: no I/O, and no dependency on `internal/service` or `internal/cli`. `internal/tracker` may import `internal/notion` and `internal/config` for their data types only — domain logic goes there so it can be tested without mocks.
 
 > Only stdlib in tests. No testify, no gomock. Fake the API with `httptest.Server`.
 

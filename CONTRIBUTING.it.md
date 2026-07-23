@@ -62,11 +62,11 @@ internal/config      config YAML (profili, mapping proprietà) + variabili NOTIO
 
 Due regole qui **non sono negoziabili**:
 
-> `internal/tracker` and `internal/markdown` must stay pure: no I/O, no imports of `internal/notion` or `internal/config`. Domain logic goes there so it can be tested without mocks.
+> `internal/tracker` and `internal/markdown` must stay pure: no I/O, and no dependency on `internal/service` or `internal/cli`. `internal/tracker` may import `internal/notion` and `internal/config` for their data types only — domain logic goes there so it can be tested without mocks.
 
 > Only stdlib in tests. No testify, no gomock. Fake the API with `httptest.Server`.
 
-Ovvero: `internal/tracker` e `internal/markdown` devono restare puri — niente I/O, nessun import di `internal/notion` o `internal/config`. La logica di dominio vive lì proprio perché possa essere testata senza mock. E: nei test si usa solo la libreria standard — niente testify, niente gomock. L'API si simula con `httptest.Server`.
+Ovvero: `internal/tracker` e `internal/markdown` devono restare puri — niente I/O, nessuna dipendenza da `internal/service` o `internal/cli`. `internal/tracker` può importare `internal/notion` e `internal/config`, ma solo per i loro tipi di dato. La logica di dominio vive lì proprio perché possa essere testata senza mock. E: nei test si usa solo la libreria standard — niente testify, niente gomock. L'API si simula con `httptest.Server`.
 
 Altre convenzioni utili da conoscere:
 
