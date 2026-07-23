@@ -99,9 +99,92 @@ func TestGetMissingTicketExitsNotFound(t *testing.T) {
 func TestGetWithoutTokenExitsAuth(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {})
 	t.Setenv(config.TokenEnv, "")
+	withIsolatedUserConfigDir(t)
 
 	if code := executeArgs([]string{"get", "--ticket", "X", "--config", cfg}); code != ExitAuth {
 		t.Fatalf("exit code = %d, want %d", code, ExitAuth)
+	}
+}
+
+// A credentials.yml the developer running these tests happens to have in
+// their real home directory must never leak into a test that expects "no
+// token found": withIsolatedUserConfigDir points os.UserConfigDir() (and so
+// config.CredentialsPath) at an empty temp directory instead.
+func withIsolatedUserConfigDir(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("HOME", dir)
+	t.Setenv("AppData", dir)
+}
+
+// An unreadable credentials.yml (here: a directory sitting where the file
+// should be, which reproduces "exists but can't be read as YAML" without
+// depending on how permissions behave for whoever runs the test suite) used
+// to exit 1 like a generic failure. It is an authentication problem exactly
+// like a missing or invalid token, so it must exit ExitAuth like the rest
+// of them.
+func TestGetWithUnreadableCredentialsExitsAuth(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {})
+	t.Setenv(config.TokenEnv, "")
+	withIsolatedUserConfigDir(t)
+
+	credPath, err := config.CredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(credPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := executeArgs([]string{"get", "--ticket", "X", "--config", cfg}); code != ExitAuth {
+		t.Fatalf("exit code = %d, want %d (ExitAuth)", code, ExitAuth)
+	}
+}
+
+// A credentials.yml that exists, can be read, but fails to parse as YAML
+// used to exit 1 like a generic failure, while an unreadable one (the test
+// above) already exited ExitAuth. The same reasoning applies to both: there
+// may be a token in there that nothing can prove exists.
+func TestGetWithCorruptedCredentialsExitsAuth(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {})
+	t.Setenv(config.TokenEnv, "")
+	withIsolatedUserConfigDir(t)
+
+	credPath, err := config.CredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(credPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(credPath, []byte("not: [valid: yaml"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := executeArgs([]string{"get", "--ticket", "X", "--config", cfg}); code != ExitAuth {
+		t.Fatalf("exit code = %d, want %d (ExitAuth)", code, ExitAuth)
+	}
+}
+
+// A token saved by init (or any prior session) must be picked up by every
+// other command, not just init itself.
+func TestGetUsesTokenFromCredentialsFile(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(cliSchemaJSON))
+			return
+		}
+		w.Write([]byte(`{"results":[` + cliRowJSON + `],"has_more":false}`))
+	})
+	t.Setenv(config.TokenEnv, "")
+	withIsolatedUserConfigDir(t)
+	if err := config.SaveToken("ntn_from_file"); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+
+	if code := executeArgs([]string{"get", "--ticket", "BDF-231", "--config", cfg}); code != ExitOK {
+		t.Fatalf("exit code = %d", code)
 	}
 }
 

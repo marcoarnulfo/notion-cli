@@ -5,7 +5,66 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/marcoarnulfo/notion-cli/internal/config"
 )
+
+// A user with different tokens in NOTION_TOKEN and credentials.yml has no
+// other way to tell which one doctor actually used, so the token check must
+// name its source.
+func TestDoctorReportsTokenSourceFromEnvironment(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/users/me":
+			w.Write([]byte(`{"name":"notion-track"}`))
+		case "/v1/data_sources/ds1":
+			w.Write([]byte(cliSchemaJSON))
+		default:
+			w.Write([]byte(`{"results":[],"has_more":false}`))
+		}
+	})
+	// withStubbedAPI already exports NOTION_TOKEN; that's the source under test.
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"doctor", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+	if !strings.Contains(out, "environment") {
+		t.Fatalf("token check does not name the environment as its source: %s", out)
+	}
+}
+
+func TestDoctorReportsTokenSourceFromFile(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/users/me":
+			w.Write([]byte(`{"name":"notion-track"}`))
+		case "/v1/data_sources/ds1":
+			w.Write([]byte(cliSchemaJSON))
+		default:
+			w.Write([]byte(`{"results":[],"has_more":false}`))
+		}
+	})
+	t.Setenv(config.TokenEnv, "")
+	withIsolatedUserConfigDir(t)
+	if err := config.SaveToken("ntn_from_file"); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+	credPath, err := config.CredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"doctor", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+	if !strings.Contains(out, credPath) {
+		t.Fatalf("token check does not name the credentials file path %q: %s", credPath, out)
+	}
+}
 
 func TestDoctorReportsEveryCheck(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {

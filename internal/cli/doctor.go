@@ -1,6 +1,10 @@
 package cli
 
 import (
+	"fmt"
+
+	"github.com/marcoarnulfo/notion-cli/internal/config"
+	"github.com/marcoarnulfo/notion-cli/internal/service"
 	"github.com/spf13/cobra"
 )
 
@@ -16,6 +20,7 @@ func newDoctorCmd() *cobra.Command {
 				return err
 			}
 			checks := svc.Doctor(cmd.Context())
+			annotateTokenSource(checks)
 
 			if asJSON {
 				if err := printJSON(cmd.OutOrStdout(), checks); err != nil {
@@ -53,4 +58,31 @@ func newDoctorCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print machine-readable JSON")
 	return cmd
+}
+
+// annotateTokenSource prefixes the "token" check's detail with where the
+// winning token came from. A user with a different token in NOTION_TOKEN
+// than in credentials.yml has no other way to tell which one this run
+// actually used.
+func annotateTokenSource(checks []service.Check) {
+	_, source, err := config.LoadToken()
+	if err != nil || source == "" {
+		return
+	}
+
+	desc := "environment"
+	if source == "file" {
+		path, err := config.CredentialsPath()
+		if err != nil {
+			return
+		}
+		desc = path
+	}
+
+	for i, c := range checks {
+		if c.Name == "token" {
+			checks[i].Detail = fmt.Sprintf("token from %s\n  %s", desc, c.Detail)
+			return
+		}
+	}
 }

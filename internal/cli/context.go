@@ -18,7 +18,10 @@ var (
 
 // buildService resolves token, config and profile into a ready Service.
 func buildService(cmd *cobra.Command) (*service.Service, error) {
-	token, _ := config.Token()
+	token, _, err := config.LoadToken()
+	if err != nil {
+		return nil, err
+	}
 	if token == "" {
 		return nil, Errorf(ExitAuth,
 			"no integration token found\n"+
@@ -28,10 +31,7 @@ func buildService(cmd *cobra.Command) (*service.Service, error) {
 	}
 
 	path, _ := cmd.Flags().GetString("config")
-	var (
-		cfg *config.Config
-		err error
-	)
+	var cfg *config.Config
 	if path != "" {
 		cfg, err = loadConfigFrom(path)
 	} else {

@@ -20,7 +20,7 @@ It authenticates with a Notion **internal integration token** only — no browse
 - **Update-only write** (`set`) — fails with a distinct exit code if the ticket doesn't exist yet, instead of silently creating it.
 - **Read** (`get`, `list`) — one row or many, optionally filtered by status, human-readable or `--json`.
 - **Diagnostics** (`doctor`) — checks the token, data source access, the property mapping (including type drift since `init`), and scans the whole data source for duplicate ticket keys.
-- **Guided setup** (`init`) — writes a profile from flags, validated against the data source's live schema before anything is saved; `init --list` discovers the data source ids your integration can see.
+- **Guided setup** (`init`) — writes a profile from flags, validated against the data source's live schema before anything is saved; `init --list` discovers the data source ids your integration can see. At an interactive terminal, it also offers to collect and save the integration token if none is found (see [Configuration](#configuration)).
 - **Profiles** — several named database configurations in one YAML config file, selectable by flag, environment variable, or a configured default.
 - **`--json` everywhere** — every command that produces output (`get`, `list`, `doctor`, `upsert`, `set`) can emit machine-readable JSON with a documented, stable shape.
 - **CI-friendly by design** — quiet on success, a distinct exit code per failure class (auth, not found, duplicate, usage, generic), no interactive prompts.
@@ -58,10 +58,11 @@ There is no `go get`-able prebuilt binary release yet — GoReleaser and GitHub 
 
 1. **Create the integration.** A Workspace Owner goes to <https://www.notion.so/my-integrations>, creates a new **internal** integration, and copies its token (`ntn_...`). Only a Workspace Owner can do this step.
 2. **Share the database with it.** Still as a Workspace Owner, open the tracking database in Notion → **•••** (top right) → **Connections** → add the integration. Without this step every request `notion-track` makes will 404, token or no token.
-3. **Export the token** (never write it to a config file):
+3. **Give `notion-track` the token.** Either export it yourself:
    ```bash
    export NOTION_TOKEN=ntn_...
    ```
+   or skip this step and let `init` (step 5) ask for it interactively — at a real terminal it prompts without echoing the token, and offers to save it to `credentials.yml` so you don't have to export it again next session. See [Configuration](#configuration) for where that file lives and how it differs from `config.yml`.
 4. **Find the data source id.** A database can hold more than one data source, so ask the integration what it can see:
    ```bash
    notion-track init --list
@@ -111,6 +112,11 @@ notion-track init --data-source-id <id> --ticket-prop <name> --status-prop <name
 
 Each mapped property is checked against the data source's live schema; `init` refuses to write a profile that would break on first use (wrong type, or a property that doesn't exist). `--ticket-prop`, `--status-prop`, and `--title-prop` are required in practice — `init` returns a usage error naming which one is missing — even though `--due-prop` is the only optional one. The profile is written under the name given by `--profile` (default `"default"`); if this is the first profile in the file it also becomes `default_profile`. Running `init` again with the same `--profile` name overwrites that profile without touching the others.
 
+**Token prompt.** If no token is found in `NOTION_TOKEN` or `credentials.yml`, `init` behaves differently depending on how it's run:
+
+- **At an interactive terminal**, it asks for the token (input isn't echoed to the screen) and offers to save it to `credentials.yml` — bare Enter accepts the recommended default. Decline and it prints the `export NOTION_TOKEN=...` line to run for the current session instead, without ever printing the token itself: a child process has no way to modify its parent shell's environment, so this is the closest it can get to doing that for you.
+- **Non-interactively** — CI, a pipe, a script, an agent — it never prompts. Same as every other command: exit code 5 and a message pointing at `NOTION_TOKEN`.
+
 ### `upsert` — create or update a row by ticket key
 
 ```
@@ -153,17 +159,25 @@ Runs four checks — `token`, `data_source`, `properties`, `duplicates` — and 
 
 ## Configuration
 
-The config file lives at `os.UserConfigDir()/notion-track/config.yml` — respecting `$XDG_CONFIG_HOME` on Linux:
+`notion-track` keeps two files side by side in `os.UserConfigDir()/notion-track/` — respecting `$XDG_CONFIG_HOME` on Linux:
 
-| OS | Default path |
+| File | Holds | Safe to commit? |
+|---|---|---|
+| `config.yml` | profiles: data source id, property mapping | Yes — no secret |
+| `credentials.yml` | the integration token | **No — never commit this** |
+
+They're two files, not one, for exactly this reason: `config.yml` is meant to be committed to a project repo so CI and every teammate share the same property mapping (see [CI usage](#ci-usage)); `credentials.yml` holds the one thing that must never end up in that repo. Splitting them makes "the token can't leak through the committed config" a property of the file layout, not a rule someone has to remember while editing YAML.
+
+| OS | Default directory |
 |---|---|
-| macOS | `~/Library/Application Support/notion-track/config.yml` |
-| Linux | `~/.config/notion-track/config.yml` |
-| Windows | `%AppData%\notion-track\config.yml` |
+| macOS | `~/Library/Application Support/notion-track/` |
+| Linux | `~/.config/notion-track/` |
+| Windows | `%AppData%\notion-track\` |
 
-Pass `--config /path/to/file.yml` to point at a different file entirely — this is how you use a config file **committed to a project repo** instead of the per-user default (see [CI usage](#ci-usage)).
+Pass `--config /path/to/file.yml` to point `config.yml` at a different file entirely — this is how you use a config file **committed to a project repo** instead of the per-user default (see [CI usage](#ci-usage)). There is no equivalent flag for `credentials.yml`: it is deliberately always the per-user, per-machine default location, never something a project repo points at.
 
 ```yaml
+# config.yml
 schema_version: 1        # written by `init`; don't hand-edit it
 default_profile: work    # used when --profile and NOTION_TRACK_PROFILE are both unset
 profiles:
@@ -178,15 +192,21 @@ profiles:
       due: Due         # optional: date property
 ```
 
-The file holds **no secret** and is safe to commit to a repository — that's the point: it lets CI (and every teammate) share the same property mapping without re-running `init`. The token is never read from it; `init` never writes one there.
+```yaml
+# credentials.yml — never commit this file
+schema_version: 1
+token: ntn_...
+```
 
-`init` still writes it with `0600` permissions, and replaces it atomically through a temporary file in the same directory: it holds no secret of its own, but it sits next to one.
+Both files are replaced atomically (a temporary file in the same directory, then a rename), but only `credentials.yml` is guaranteed `0600`: its temp file has a random suffix and its permissions are set explicitly, immune to anything already sitting at a guessable temp path. `config.yml`'s temp file has a fixed name and its permissions are not forced onto a pre-existing file there, so a leftover `config.yml.tmp` from an earlier run can leave it at whatever mode that leftover already had (e.g. `0644`) — acceptable only because, unlike `credentials.yml`, it holds no secret of its own.
+
+`credentials.yml` is written in exactly one place: `init`, when it runs at an interactive terminal, finds no token in `NOTION_TOKEN` or the file already, and you accept the "save it?" prompt (the default — see [Quick start](#quick-start)). Nothing writes a token to `config.yml`, ever.
 
 ### Environment variables
 
 | Variable | Effect |
 |---|---|
-| `NOTION_TOKEN` | the integration token. This is the **only** source `notion-track` reads a token from — there is no config-file fallback and no flag. |
+| `NOTION_TOKEN` | the integration token. Always wins over `credentials.yml` when set — this is what lets CI pass a token that never touches disk. |
 | `NOTION_TRACK_PROFILE` | which profile to resolve, unless `--profile` is also given |
 | `NOTION_TRACK_DB` | overrides the resolved profile's `database_id` |
 | `NOTION_TRACK_DATA_SOURCE` | overrides the resolved profile's `data_source_id` |
@@ -195,8 +215,8 @@ Precedence:
 
 - **Profile selection:** `--profile` flag → `NOTION_TRACK_PROFILE` → `default_profile` in the config file.
 - **`database_id` / `data_source_id`:** the env vars above always override whatever the resolved profile has on file, regardless of how that profile was chosen — this is what lets a CI job point an existing profile at a different data source without touching the committed file.
-- **Token:** `NOTION_TOKEN`, full stop.
-- **Config file location:** `--config` flag → the OS default path above. There is no environment variable for the path itself.
+- **Token:** `NOTION_TOKEN` → `credentials.yml`. A token read from the environment is never written back to `credentials.yml` — a CI secret can never leak onto disk through a normal run. Run `notion-track doctor` if you need to see which source actually won.
+- **Config file location:** `--config` flag → the OS default path above. There is no environment variable for the path itself, and no equivalent flag for `credentials.yml`.
 
 ## JSON output
 
@@ -232,7 +252,7 @@ If the configured property mapping names a column the row doesn't actually carry
 
 ```json
 [
-  { "name": "token", "status": "ok", "detail": "authenticated as notion-track" },
+  { "name": "token", "status": "ok", "detail": "token from environment\n  authenticated as notion-track" },
   { "name": "data_source", "status": "ok", "detail": "reachable: Tasks" },
   { "name": "properties", "status": "ok", "detail": "all mapped properties exist with the expected types" },
   { "name": "duplicates", "status": "ok", "detail": "42 rows, no repeated ticket keys" }
@@ -252,7 +272,7 @@ Pipelines can branch on these without parsing any message text:
 | `2` | Usage | the invocation cannot work as written: a missing/invalid flag, an unknown command, no config yet (`notion-track init` was never run), or a status value the data source doesn't allow |
 | `3` | Not found | the requested ticket has no matching row (`get`, `set`) |
 | `4` | Duplicate | the ticket key matches more than one row (`upsert`, `set`, `get`) |
-| `5` | Auth | no token was found, or Notion rejected it (401/403) — including `doctor`, when its `token` check is the only one that failed |
+| `5` | Auth | no token was found (including a `credentials.yml` that exists but can't be read), or Notion rejected it (401/403) — including `doctor`, when its `token` check is the only one that failed |
 
 ## CI usage
 
