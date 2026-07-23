@@ -150,6 +150,19 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if out == nil || len(raw) == 0 {
 		return nil
 	}
+	// io.LimitReader above is applied before this status-code check even
+	// runs, so a legitimate 2xx body larger than the cap arrives here
+	// truncated, and json.Unmarshal would fail with a generic "unexpected
+	// end of JSON input" that misattributes the cause. len(raw) reaching the
+	// cap exactly is what LimitReader produces whenever the real body was at
+	// or beyond it, so treat that as "too large" rather than attempting to
+	// decode a body we already know may be cut off. The one false positive
+	// this accepts — a genuine response whose size lands on exactly the cap
+	// — is an acceptable trade for not misreporting the far more likely
+	// oversized case as a decoding bug.
+	if len(raw) == maxResponseBodyBytes {
+		return fmt.Errorf("notion: response exceeds maximum size of %d bytes", maxResponseBodyBytes)
+	}
 	if err := json.Unmarshal(raw, out); err != nil {
 		return fmt.Errorf("notion: decoding response: %w", err)
 	}

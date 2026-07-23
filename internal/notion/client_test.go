@@ -255,6 +255,38 @@ func TestDoTreatsEmptySuccessBodyAsNoOp(t *testing.T) {
 	}
 }
 
+// A legitimate 2xx response larger than maxResponseBodyBytes must not be
+// misreported as malformed JSON: io.LimitReader silently truncates the body
+// before the JSON decoder ever sees it, so "unexpected end of JSON input"
+// would point at the wrong cause. The client must say the response exceeded
+// the size cap instead.
+func TestDoReportsOversizedSuccessBodyDistinctlyFromMalformedJSON(t *testing.T) {
+	// Comfortably past maxResponseBodyBytes so the body is truncated by
+	// io.LimitReader regardless of chunking details.
+	const oversizedItemCount = (maxResponseBodyBytes / 4) + 1024
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"items":[`))
+		w.Write(bytes.Repeat([]byte(`"x",`), oversizedItemCount))
+		w.Write([]byte(`"x"]}`))
+	}))
+	defer srv.Close()
+
+	var out struct {
+		Items []string `json:"items"`
+	}
+	err := New("t", WithBaseURL(srv.URL)).do(context.Background(), http.MethodGet, "/v1/x", nil, &out)
+	if err == nil {
+		t.Fatal("expected an error for an oversized response body")
+	}
+	if strings.Contains(err.Error(), "decoding response") {
+		t.Fatalf("error misattributes an oversized body to malformed JSON: %v", err)
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("error does not report the size cap being exceeded: %v", err)
+	}
+}
+
 // c.http.Do fails with a *url.Error when the transport itself can't reach
 // the server (as opposed to the server returning a non-2xx response). This
 // is the path that guards the package's most important invariant, so it
