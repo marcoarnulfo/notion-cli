@@ -171,59 +171,92 @@ func (c *converter) quote(node *ast.Blockquote, depth int) []notion.Block {
 	return append(c.emit(block), promoted...)
 }
 
-// spans extracts plain text from a node's inline children (Task 7 adds
-// annotations). Splitting is emit's job, so this returns raw spans. An image
-// degrades to a link span (its alt text as content, its URL as the link) so
-// it survives instead of being silently dropped.
+// spans extracts styled spans from a node's inline children. Splitting is
+// emit's job, so this returns raw (unsplit) spans.
 func (c *converter) spans(n ast.Node) []notion.Span {
+	var raw []notion.Span
+	for ch := n.FirstChild(); ch != nil; ch = ch.NextSibling() {
+		raw = append(raw, c.inlineSpans(ch, notion.Span{})...)
+	}
+	return raw
+}
+
+// inlineSpans converts one inline node into styled spans, carrying the ambient
+// style (bold/italic/etc.) inherited from enclosing emphasis/link nodes down
+// into the leaf text.
+func (c *converter) inlineSpans(n ast.Node, style notion.Span) []notion.Span {
+	switch node := n.(type) {
+	case *ast.Text:
+		s := style
+		s.Content = string(node.Segment.Value(c.src))
+		if node.SoftLineBreak() || node.HardLineBreak() {
+			s.Content += "\n"
+		}
+		if s.Content == "" {
+			return nil
+		}
+		return []notion.Span{s}
+	case *ast.String:
+		s := style
+		s.Content = string(node.Value)
+		if s.Content == "" {
+			return nil
+		}
+		return []notion.Span{s}
+	case *ast.CodeSpan:
+		s := style
+		s.Code = true
+		s.Content = string(node.Text(c.src))
+		return []notion.Span{s}
+	case *ast.Emphasis:
+		st := style
+		if node.Level == 2 {
+			st.Bold = true
+		} else {
+			st.Italic = true
+		}
+		return c.childSpans(node, st)
+	case *extast.Strikethrough:
+		st := style
+		st.Strikethrough = true
+		return c.childSpans(node, st)
+	case *ast.Link:
+		st := style
+		st.Link = string(node.Destination)
+		return c.childSpans(node, st)
+	case *ast.AutoLink:
+		s := style
+		u := string(node.URL(c.src))
+		s.Content, s.Link = u, u
+		return []notion.Span{s}
+	case *ast.Image:
+		st := style
+		st.Link = string(node.Destination)
+		alt := string(node.Text(c.src))
+		if alt == "" {
+			alt = string(node.Destination)
+		}
+		st.Content = alt
+		c.warn("image %q rendered as a link (native image block not supported yet)", string(node.Destination))
+		return []notion.Span{st}
+	default:
+		// Unknown inline (e.g. raw HTML span): fall back to its text.
+		s := style
+		s.Content = string(node.Text(c.src))
+		if s.Content == "" {
+			return nil
+		}
+		return []notion.Span{s}
+	}
+}
+
+// childSpans recurses into a node's children with an updated ambient style.
+func (c *converter) childSpans(n ast.Node, style notion.Span) []notion.Span {
 	var out []notion.Span
-	ast.Walk(n, func(x ast.Node, entering bool) (ast.WalkStatus, error) {
-		if !entering {
-			return ast.WalkContinue, nil
-		}
-		switch t := x.(type) {
-		case *ast.Text:
-			s := string(t.Segment.Value(c.src))
-			if t.SoftLineBreak() || t.HardLineBreak() {
-				s += "\n"
-			}
-			out = appendSpanText(out, s)
-		case *ast.String:
-			out = appendSpanText(out, string(t.Value))
-		case *ast.AutoLink:
-			out = appendSpanText(out, string(t.URL(c.src)))
-		case *ast.Image:
-			c.warn("image %q rendered as a link (images are not embedded yet)", string(t.Destination))
-			out = append(out, notion.Span{Content: c.imageAlt(t), Link: string(t.Destination)})
-			return ast.WalkSkipChildren, nil
-		}
-		return ast.WalkContinue, nil
-	})
+	for ch := n.FirstChild(); ch != nil; ch = ch.NextSibling() {
+		out = append(out, c.inlineSpans(ch, style)...)
+	}
 	return out
-}
-
-// appendSpanText appends s to the last span's content, or starts a new plain
-// span, so adjacent text/autolink runs collapse into one span.
-func appendSpanText(spans []notion.Span, s string) []notion.Span {
-	if s == "" {
-		return spans
-	}
-	if n := len(spans); n > 0 && spans[n-1].Link == "" {
-		spans[n-1].Content += s
-		return spans
-	}
-	return append(spans, notion.Span{Content: s})
-}
-
-// imageAlt returns an image's alt text (its inline children's plain text).
-func (c *converter) imageAlt(img *ast.Image) string {
-	var b strings.Builder
-	for ch := img.FirstChild(); ch != nil; ch = ch.NextSibling() {
-		if t, ok := ch.(*ast.Text); ok {
-			b.Write(t.Segment.Value(c.src))
-		}
-	}
-	return b.String()
 }
 
 func (c *converter) codeText(n ast.Node) string {
