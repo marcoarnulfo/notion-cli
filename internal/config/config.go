@@ -1,8 +1,11 @@
 // Package config reads and writes notion-track's YAML configuration.
 //
-// Two rules shape this file. First, the token never lands on disk by accident:
-// a token read from the environment is remembered as such, and Save skips it.
-// Second, Load may warn on stderr, Save must stay silent.
+// Three rules shape this file. First, the token never lands on disk by
+// accident: a token read from the environment is remembered as such, and
+// Save (config.yml) skips it entirely. Second, the token that does get
+// persisted lives in its own file, credentials.yml, never in config.yml —
+// see Credentials for why that split matters. Third, Load may warn on
+// stderr, Save must stay silent.
 package config
 
 import (
@@ -155,12 +158,101 @@ func (c *Config) Resolve(name string) (Profile, error) {
 	return p, nil
 }
 
-// Token returns the integration token and whether it came from the
-// environment. Callers must never persist a token whose second return value
-// is true, otherwise a CI secret ends up on a developer's disk.
+// Token returns the integration token from the environment only, and
+// whether it was found. It is the seam LoadToken uses to make NOTION_TOKEN
+// win over the file: CI passes its token this way and must never have that
+// secret read back off, or written to, disk.
 func Token() (string, bool) {
 	if v := os.Getenv(TokenEnv); v != "" {
 		return v, true
 	}
 	return "", false
+}
+
+// Credentials is the on-disk shape of credentials.yml.
+//
+// It exists as a file separate from config.yml on purpose: config.yml holds
+// no secret and is meant to be committed to a project repo so CI and every
+// teammate share the same property mapping. If the token lived in the same
+// file, every commit of that file would risk leaking it. Splitting the
+// files makes "never commit the token" a property of the filesystem layout
+// instead of a rule a human has to remember to follow.
+type Credentials struct {
+	SchemaVersion int    `yaml:"schema_version"`
+	Token         string `yaml:"token"`
+}
+
+// credentialsPath is a seam: tests point it at t.TempDir().
+var credentialsPath = defaultCredentialsPath
+
+func defaultCredentialsPath() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("config: locating config dir: %w", err)
+	}
+	return filepath.Join(dir, "notion-track", "credentials.yml"), nil
+}
+
+// CredentialsPath returns the location credentials.yml is read from and
+// written to, for messages that need to name it (doctor's token source,
+// init's save confirmation).
+func CredentialsPath() (string, error) { return credentialsPath() }
+
+// LoadToken resolves the integration token the way every command does:
+// NOTION_TOKEN first, then credentials.yml. source is "env" or "file"
+// (empty when no token was found anywhere), which is what lets doctor tell
+// a user who has different tokens in both places which one actually won.
+func LoadToken() (token string, source string, err error) {
+	if v, ok := Token(); ok {
+		return v, "env", nil
+	}
+
+	path, err := credentialsPath()
+	if err != nil {
+		return "", "", err
+	}
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("config: reading %s: %w", path, err)
+	}
+
+	var creds Credentials
+	if err := yaml.Unmarshal(raw, &creds); err != nil {
+		return "", "", fmt.Errorf("config: parsing %s: %w", path, err)
+	}
+	if creds.Token == "" {
+		return "", "", nil
+	}
+	return creds.Token, "file", nil
+}
+
+// SaveToken writes the token to credentials.yml, atomically (a temp file in
+// the same directory, then rename) and with the same restrictive
+// permissions config.yml uses. Called only from init, and only after an
+// interactive user has explicitly opted in.
+func SaveToken(token string) error {
+	path, err := credentialsPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("config: creating config dir: %w", err)
+	}
+
+	creds := Credentials{SchemaVersion: CurrentSchemaVersion, Token: token}
+	raw, err := yaml.Marshal(&creds)
+	if err != nil {
+		return fmt.Errorf("config: encoding credentials: %w", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return fmt.Errorf("config: writing %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("config: replacing %s: %w", path, err)
+	}
+	return nil
 }

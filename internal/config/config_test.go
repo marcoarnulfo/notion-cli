@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -115,6 +116,108 @@ func TestTokenAbsent(t *testing.T) {
 	t.Setenv(TokenEnv, "")
 	if tok, fromEnv := Token(); tok != "" || fromEnv {
 		t.Fatalf("Token() = %q, %v", tok, fromEnv)
+	}
+}
+
+// withTempCredentials points credentialsPath at a file in t.TempDir(), the
+// same seam pattern withTempConfig uses for config.yml.
+func withTempCredentials(t *testing.T) string {
+	t.Helper()
+	t.Setenv(TokenEnv, "")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.yml")
+	old := credentialsPath
+	credentialsPath = func() (string, error) { return path, nil }
+	t.Cleanup(func() { credentialsPath = old })
+	return path
+}
+
+func TestLoadTokenPrefersEnvOverFile(t *testing.T) {
+	path := withTempCredentials(t)
+	if err := os.WriteFile(path, []byte("schema_version: 1\ntoken: ntn_from_file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(TokenEnv, "ntn_from_env")
+
+	tok, source, err := LoadToken()
+	if err != nil {
+		t.Fatalf("LoadToken: %v", err)
+	}
+	if tok != "ntn_from_env" || source != "env" {
+		t.Fatalf("LoadToken() = %q, %q, want ntn_from_env, env", tok, source)
+	}
+}
+
+func TestLoadTokenFallsBackToFile(t *testing.T) {
+	path := withTempCredentials(t)
+	if err := os.WriteFile(path, []byte("schema_version: 1\ntoken: ntn_from_file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tok, source, err := LoadToken()
+	if err != nil {
+		t.Fatalf("LoadToken: %v", err)
+	}
+	if tok != "ntn_from_file" || source != "file" {
+		t.Fatalf("LoadToken() = %q, %q, want ntn_from_file, file", tok, source)
+	}
+}
+
+func TestLoadTokenAbsentEverywhere(t *testing.T) {
+	withTempCredentials(t)
+
+	tok, source, err := LoadToken()
+	if err != nil {
+		t.Fatalf("LoadToken: %v", err)
+	}
+	if tok != "" || source != "" {
+		t.Fatalf("LoadToken() = %q, %q, want empty", tok, source)
+	}
+}
+
+// The env var must never be persisted as a side effect of merely resolving
+// it: a CI secret sitting in NOTION_TOKEN must not leave a trace on disk.
+func TestLoadTokenNeverWritesAnEnvTokenToDisk(t *testing.T) {
+	path := withTempCredentials(t)
+	t.Setenv(TokenEnv, "ntn_from_env")
+
+	if _, _, err := LoadToken(); err != nil {
+		t.Fatalf("LoadToken: %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("credentials file was created for an env-sourced token: stat err = %v", err)
+	}
+}
+
+func TestSaveTokenUsesRestrictivePermissions(t *testing.T) {
+	path := withTempCredentials(t)
+
+	if err := SaveToken("ntn_secret"); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("permissions = %o, want 600", perm)
+	}
+}
+
+func TestSaveTokenThenLoadTokenRoundTrips(t *testing.T) {
+	withTempCredentials(t)
+
+	if err := SaveToken("ntn_secret"); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+
+	tok, source, err := LoadToken()
+	if err != nil {
+		t.Fatalf("LoadToken: %v", err)
+	}
+	if tok != "ntn_secret" || source != "file" {
+		t.Fatalf("LoadToken() = %q, %q, want ntn_secret, file", tok, source)
 	}
 }
 
