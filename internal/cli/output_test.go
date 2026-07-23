@@ -51,6 +51,11 @@ func TestExitCodeForMapsDomainErrors(t *testing.T) {
 		// place) used to fall through to the generic ExitError instead of
 		// the ExitAuth every other missing/broken-token path already uses.
 		{"credentials unreadable", fmt.Errorf("wrapped: %w", config.ErrCredentialsUnreadable), ExitAuth},
+		// A corrupted credentials.yml (fails to parse as YAML) used to exit
+		// the generic ExitError while an unreadable one exited ExitAuth, even
+		// though the same reasoning applies to both: there may be a token in
+		// there that nothing can prove exists.
+		{"credentials invalid", fmt.Errorf("wrapped: %w", config.ErrInvalidCredentials), ExitAuth},
 		{"empty ticket", fmt.Errorf("wrapped: %w", service.ErrEmptyTicket), ExitUsage},
 		// A 400 from Notion is, by construction, a value the API rejected —
 		// e.g. --due "yesterday" is not a valid ISO date. That is invalid

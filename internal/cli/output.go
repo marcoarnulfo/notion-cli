@@ -63,8 +63,12 @@ func exitCodeFor(err error) int {
 	// A credentials.yml nobody can read is an authentication failure like
 	// any other: there may be a token in there, but nothing can prove it,
 	// which is exactly the situation ExitAuth already describes for every
-	// other command.
-	case errors.Is(err, config.ErrCredentialsUnreadable):
+	// other command. A credentials.yml that can be read but fails to parse
+	// is the same problem by the same reasoning — there may still be a
+	// token in there, just not one anything can prove exists — so it must
+	// exit the same way rather than falling through to the generic
+	// ExitError below.
+	case errors.Is(err, config.ErrCredentialsUnreadable), errors.Is(err, config.ErrInvalidCredentials):
 		return ExitAuth
 	}
 	var coded *codedError
