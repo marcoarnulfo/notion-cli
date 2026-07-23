@@ -78,6 +78,16 @@ func trailingHex32(segment string) (string, bool) {
 
 // bareHex32 accepts a plain 32-hex id or the same id already dashed as a
 // UUID: stripping hyphens before checking makes both shapes one case.
+//
+// Deliberately lenient about *where* those hyphens fall: an input like
+// "23fb4e5c-8a5f-4d2-1b7c9-d0e1f2a3b4c5" (hyphens not at the canonical
+// 8-4-4-4-12 boundaries) is accepted too, because what identifies a page is
+// the 32 hex characters, not the cosmetic punctuation splitting them —
+// stripping every hyphen and validating the remaining 32 hex digits gets
+// that right regardless of how a caller happened to space them, and
+// formatUUID always re-inserts them at the correct boundaries on the way
+// out. Tightening this to require canonical hyphen placement would reject
+// some of that "sloppy but unambiguous" input for no gain in correctness.
 func bareHex32(s string) (string, bool) {
 	stripped := strings.ReplaceAll(s, "-", "")
 	if len(stripped) != 32 || !isHex(stripped) {
