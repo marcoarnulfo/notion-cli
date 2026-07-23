@@ -20,7 +20,7 @@ L'autenticazione avviene solo con un **token di integrazione interna** di Notion
 - **Scrittura solo in aggiornamento** (`set`) — fallisce con un exit code dedicato se il ticket non esiste ancora, invece di crearlo silenziosamente.
 - **Lettura** (`get`, `list`) — una riga o molte, filtrabili per stato, in forma leggibile o `--json`.
 - **Diagnostica** (`doctor`) — verifica il token, l'accesso alla data source, il mapping delle proprietà (compreso il drift di tipo rispetto a quando `init` è stato eseguito) e scansiona l'intera data source alla ricerca di chiavi ticket duplicate.
-- **Configurazione guidata** (`init`) — scrive un profilo a partire dai flag, validato contro lo schema live della data source prima di salvare qualsiasi cosa; `init --list` scopre gli id delle data source visibili alla tua integrazione.
+- **Configurazione guidata** (`init`) — scrive un profilo a partire dai flag, validato contro lo schema live della data source prima di salvare qualsiasi cosa; `init --list` scopre gli id delle data source visibili alla tua integrazione. In un terminale interattivo, offre anche di raccogliere e salvare il token di integrazione se non ne trova uno (vedi [Configurazione](#configurazione)).
 - **Profili** — più configurazioni di database, con nome, in un solo file YAML, selezionabili via flag, variabile d'ambiente o un default configurato.
 - **`--json` ovunque** — ogni comando che produce output (`get`, `list`, `doctor`, `upsert`, `set`) può emettere JSON leggibile da macchina, con una forma documentata e stabile.
 - **Pensato per la CI** — silenzioso in caso di successo, un exit code distinto per ogni classe di errore (auth, non trovato, duplicato, uso scorretto, generico), nessun prompt interattivo.
@@ -58,10 +58,11 @@ Non esiste ancora una release con binari precompilati — GoReleaser e le GitHub
 
 1. **Crea l'integrazione.** Un Workspace Owner va su <https://www.notion.so/my-integrations>, crea una nuova integrazione **interna** e copia il token (`ntn_...`). Solo un Workspace Owner può fare questo passaggio.
 2. **Condividi il database con l'integrazione.** Sempre come Workspace Owner, apri il database di tracking in Notion → **•••** (in alto a destra) → **Connessioni** → aggiungi l'integrazione. Senza questo passaggio ogni richiesta di `notion-track` risponderà 404, token o non token.
-3. **Esporta il token** (non scriverlo mai in un file di configurazione):
+3. **Fornisci il token a `notion-track`.** Esportalo tu stesso:
    ```bash
    export NOTION_TOKEN=ntn_...
    ```
+   oppure salta questo passaggio e lascia che `init` (passaggio 5) lo chieda interattivamente — in un terminale vero lo chiede senza fare echo del token, e offre di salvarlo in `credentials.yml` così non serve riesportarlo alla sessione successiva. Vedi [Configurazione](#configurazione) per dove vive questo file e come si differenzia da `config.yml`.
 4. **Trova l'id della data source.** Un database può contenere più di una data source, quindi chiedi all'integrazione cosa vede:
    ```bash
    notion-track init --list
@@ -111,6 +112,11 @@ notion-track init --data-source-id <id> --ticket-prop <nome> --status-prop <nome
 
 Ogni proprietà mappata viene verificata contro lo schema live della data source; `init` rifiuta di scrivere un profilo che si romperebbe al primo uso (tipo sbagliato, o proprietà inesistente). `--ticket-prop`, `--status-prop` e `--title-prop` sono di fatto obbligatori — `init` restituisce un errore di uso indicando quale manca — anche se `--due-prop` è l'unico realmente opzionale. Il profilo viene scritto con il nome passato tramite `--profile` (default `"default"`); se è il primo profilo nel file diventa anche `default_profile`. Rilanciare `init` con lo stesso nome di `--profile` sovrascrive quel profilo senza toccare gli altri.
 
+**Richiesta del token.** Se non trova nessun token né in `NOTION_TOKEN` né in `credentials.yml`, `init` si comporta diversamente a seconda di come viene eseguito:
+
+- **In un terminale interattivo**, chiede il token (l'input non viene mostrato a schermo) e offre di salvarlo in `credentials.yml` — premere Invio a vuoto accetta il default raccomandato. Se rifiuti, stampa la riga `export NOTION_TOKEN=...` da eseguire per la sessione corrente, senza mai stampare il token stesso: un processo figlio non ha modo di modificare l'ambiente della shell del genitore, quindi questo è il massimo che può fare per aiutarti.
+- **In modo non interattivo** — CI, una pipe, uno script, un agente — non chiede mai nulla. Come ogni altro comando: exit code 5 e un messaggio che punta a `NOTION_TOKEN`.
+
 ### `upsert` — crea o aggiorna una riga per chiave ticket
 
 ```
@@ -153,17 +159,25 @@ Esegue quattro controlli — `token`, `data_source`, `properties`, `duplicates` 
 
 ## Configurazione
 
-Il file di configurazione vive in `os.UserConfigDir()/notion-track/config.yml` — rispettando `$XDG_CONFIG_HOME` su Linux:
+`notion-track` tiene due file affiancati in `os.UserConfigDir()/notion-track/` — rispettando `$XDG_CONFIG_HOME` su Linux:
 
-| Sistema operativo | Percorso predefinito |
+| File | Contiene | Sicuro da committare? |
+|---|---|---|
+| `config.yml` | profili: id della data source, mapping delle proprietà | Sì — nessun segreto |
+| `credentials.yml` | il token di integrazione | **No — non committarlo mai** |
+
+Sono due file separati, non uno solo, esattamente per questa ragione: `config.yml` è pensato per essere committato in un repository di progetto così che la CI e ogni collega condividano lo stesso mapping delle proprietà (vedi [Uso in CI](#uso-in-ci)); `credentials.yml` contiene l'unica cosa che non deve mai finire in quel repository. Separarli rende "il token non può trapelare attraverso il config committato" una proprietà della struttura dei file, non una regola che qualcuno deve ricordarsi mentre modifica lo YAML.
+
+| Sistema operativo | Directory predefinita |
 |---|---|
-| macOS | `~/Library/Application Support/notion-track/config.yml` |
-| Linux | `~/.config/notion-track/config.yml` |
-| Windows | `%AppData%\notion-track\config.yml` |
+| macOS | `~/Library/Application Support/notion-track/` |
+| Linux | `~/.config/notion-track/` |
+| Windows | `%AppData%\notion-track\` |
 
-Passa `--config /percorso/al/file.yml` per puntare a un file diverso — è così che si usa un file di configurazione **committato in un repository di progetto** invece del default per-utente (vedi [Uso in CI](#uso-in-ci)).
+Passa `--config /percorso/al/file.yml` per puntare `config.yml` a un file diverso — è così che si usa un file di configurazione **committato in un repository di progetto** invece del default per-utente (vedi [Uso in CI](#uso-in-ci)). Non esiste un flag equivalente per `credentials.yml`: resta deliberatamente sempre il percorso predefinito per-utente e per-macchina, mai qualcosa a cui punta un repository di progetto.
 
 ```yaml
+# config.yml
 schema_version: 1        # scritto da `init`; non modificarlo a mano
 default_profile: work    # usato quando --profile e NOTION_TRACK_PROFILE sono entrambi assenti
 profiles:
@@ -178,15 +192,21 @@ profiles:
       due: Scadenza    # opzionale: proprietà data
 ```
 
-Il file **non contiene alcun segreto** ed è sicuro da committare in un repository — è proprio questo il punto: permette alla CI (e a ogni collega) di condividere lo stesso mapping delle proprietà senza rilanciare `init`. Il token non viene mai letto da questo file; `init` non ce lo scrive mai.
+```yaml
+# credentials.yml — non committare mai questo file
+schema_version: 1
+token: ntn_...
+```
 
-`init` lo scrive comunque con permessi `0600` e lo sostituisce in modo atomico tramite un file temporaneo nella stessa directory: non contiene segreti propri, ma vive accanto a uno.
+Entrambi i file sono scritti con permessi `0600` e sostituiti in modo atomico (un file temporaneo nella stessa directory, poi un rename) — `config.yml` non contiene segreti propri, ma vive accanto a uno.
+
+`credentials.yml` viene scritto in un solo punto: `init`, quando gira in un terminale interattivo, non trova nessun token né in `NOTION_TOKEN` né nel file già esistente, e accetti il prompt "salvarlo?" (il default — vedi [Avvio rapido](#avvio-rapido)). Nulla scrive mai un token in `config.yml`.
 
 ### Variabili d'ambiente
 
 | Variabile | Effetto |
 |---|---|
-| `NOTION_TOKEN` | il token di integrazione. È l'**unica** fonte da cui `notion-track` legge un token — non esiste un fallback sul file di configurazione né un flag. |
+| `NOTION_TOKEN` | il token di integrazione. Vince sempre su `credentials.yml` quando è impostata — è ciò che permette alla CI di passare un token che non tocca mai il disco. |
 | `NOTION_TRACK_PROFILE` | quale profilo risolvere, a meno che `--profile` non sia anch'esso specificato |
 | `NOTION_TRACK_DB` | sovrascrive il `database_id` del profilo risolto |
 | `NOTION_TRACK_DATA_SOURCE` | sovrascrive il `data_source_id` del profilo risolto |
@@ -195,8 +215,8 @@ Precedenza:
 
 - **Selezione del profilo:** flag `--profile` → `NOTION_TRACK_PROFILE` → `default_profile` nel file di configurazione.
 - **`database_id` / `data_source_id`:** le variabili d'ambiente sopra sovrascrivono sempre ciò che il profilo risolto ha su file, indipendentemente da come quel profilo è stato scelto — è ciò che permette a un job CI di puntare un profilo esistente verso un'altra data source senza toccare il file committato.
-- **Token:** `NOTION_TOKEN`, punto.
-- **Percorso del file di configurazione:** flag `--config` → il percorso predefinito del sistema operativo sopra. Non esiste una variabile d'ambiente per il percorso stesso.
+- **Token:** `NOTION_TOKEN` → `credentials.yml`. Un token letto dall'ambiente non viene mai riscritto in `credentials.yml` — un secret della CI non può mai trapelare su disco durante un'esecuzione normale. Esegui `notion-track doctor` se hai bisogno di vedere quale fonte ha effettivamente vinto.
+- **Percorso del file di configurazione:** flag `--config` → il percorso predefinito del sistema operativo sopra. Non esiste una variabile d'ambiente per il percorso stesso, né un flag equivalente per `credentials.yml`.
 
 ## Output JSON
 
@@ -232,7 +252,7 @@ Se il mapping configurato indica una colonna che la riga non porta davvero, il c
 
 ```json
 [
-  { "name": "token", "status": "ok", "detail": "authenticated as notion-track" },
+  { "name": "token", "status": "ok", "detail": "token from environment\n  authenticated as notion-track" },
   { "name": "data_source", "status": "ok", "detail": "reachable: Tasks" },
   { "name": "properties", "status": "ok", "detail": "all mapped properties exist with the expected types" },
   { "name": "duplicates", "status": "ok", "detail": "42 rows, no repeated ticket keys" }

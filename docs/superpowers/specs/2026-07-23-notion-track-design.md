@@ -169,12 +169,48 @@ profiles:
 
 ### Token
 
-**Mai scritto su file di default.** In v0.1 il token viene **solo** da `NOTION_TOKEN`: il
-fallback su file arriva insieme al wizard TUI, che è l'unico contesto in cui un utente potrebbe
-volerlo salvare. Come nel fix documentato di `clickup-cli`, un **flag di provenienza** (non un
-confronto di valore) garantisce che un token letto da env non venga mai riscritto su disco.
+**Aggiornamento (2026-07-23, token persistence):** questo rinvio è chiuso in anticipo rispetto al
+wizard TUI. `init`, quando gira interattivamente, offre già di salvare il token — non c'è più
+bisogno di aspettare il wizard per quello: il wizard resterà comunque necessario per il resto del
+flusso guidato (scoperta della data source, mapping delle proprietà), ma il token da solo non
+giustificava l'attesa.
 
-Il token non compare **mai** in output, log, messaggi d'errore o dump di debug delle request.
+Il token vive in un **file separato**, `credentials.yml`, accanto a `config.yml` nella stessa
+directory (`os.UserConfigDir()/notion-track/`), con gli stessi permessi `0600` e la stessa
+scrittura atomica (file temporaneo nella stessa directory, poi rename) di `config.yml`. La
+separazione non è un dettaglio implementativo: `config.yml` è pensato per essere committato in un
+repository di progetto (vedi "Uso in CI" sotto), quindi non deve poter contenere un segreto per
+costruzione — non per disciplina di chi lo scrive a mano. `credentials.yml` esiste apposta per
+essere l'unico posto dove il token può stare su disco.
+
+```yaml
+schema_version: 1
+token: ntn_...
+```
+
+**Precedenza:** `NOTION_TOKEN` vince sempre su `credentials.yml`. `internal/config` espone
+`LoadToken() (token, source string, err error)`, dove `source` è `"env"` o `"file"` — usato da
+`doctor` per dire da dove viene il token vincente. Come nel fix documentato di `clickup-cli`, un
+**flag di provenienza** (non un confronto di valore) garantisce che un token letto da env non
+venga mai riscritto su disco: `LoadToken` non scrive mai nulla, e `SaveToken` (che scrive
+`credentials.yml`) è invocata solo da `init`, solo interattivamente, solo dopo un opt-in esplicito
+dell'utente.
+
+**Flusso interattivo di `init`.** Quando né `NOTION_TOKEN` né `credentials.yml` hanno un token,
+`init` controlla `term.IsTerminal(stdin)`:
+- **interattivo** → chiede il token con `term.ReadPassword` (nessun echo a schermo o nello
+  scrollback), poi chiede se salvarlo (`[Y/n]`, default sì). Se sì, scrive `credentials.yml` e
+  conferma percorso e permessi. Se no, stampa la riga `export NOTION_TOKEN=...` da eseguire per la
+  sessione corrente — **senza mai includere il valore del token nel messaggio**, coerentemente con
+  la regola sotto; il motivo per cui il tool non può impostarla da solo (un processo figlio non
+  modifica l'ambiente del genitore) è nella riga successiva.
+- **non interattivo** (CI, pipe, agenti) → **nessun prompt, mai**: stesso comportamento di prima,
+  exit `ExitAuth` (5) con lo stesso messaggio. Il seam `isInteractive` è testato esplicitamente per
+  garantire che un job CI non possa mai bloccarsi su un prompt invisibile.
+
+Il token non compare **mai** in output, log, messaggi d'errore o dump di debug delle request —
+vale anche per il nuovo prompt (niente echo) e per la riga `export` stampata quando l'utente
+rifiuta il salvataggio.
 
 ### Precedenza delle sorgenti
 
@@ -190,6 +226,11 @@ Il file di config **non contiene il token**, quindi è committabile nel repo. In
 `--config ./notion-track.yml` (o il file scoperto nella working directory) più `NOTION_TOKEN`
 dai secret. Questo chiude un buco del README originale, il cui esempio CI passava solo token e
 database ID e non avrebbe avuto modo di conoscere il mapping delle proprietà.
+
+`credentials.yml` non ha un flag equivalente a `--config` — resta sempre il percorso di default
+per-utente. Non è un problema per la CI: `NOTION_TOKEN` vince comunque su `credentials.yml`, quindi
+un runner CI che non ha mai eseguito `init` interattivamente semplicemente non ha quel file, e
+legge il token dal secret come sempre.
 
 ---
 

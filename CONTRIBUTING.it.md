@@ -30,12 +30,14 @@ go build ./...
 go run ./cmd/notion-track --help
 ```
 
-Per provarlo contro un workspace reale, imposta il token via variabile d'ambiente (non scriverlo mai nel file di configurazione):
+Per provarlo contro un workspace reale, imposta il token via variabile d'ambiente (non scriverlo mai in `config.yml` — vedi le convenzioni di `internal/config` più sotto per il perché):
 
 ```bash
 export NOTION_TOKEN=ntn_...
 go run ./cmd/notion-track doctor
 ```
+
+In alternativa, esegui `notion-track init` in un terminale interattivo senza `NOTION_TOKEN` impostata: chiederà il token e offrirà di salvarlo in `credentials.yml`, così non serve riesportarlo a ogni `go run` durante una sessione di sviluppo.
 
 ## Prima di aprire una PR
 
@@ -57,7 +59,7 @@ internal/cli         albero dei comandi cobra, parsing dei flag, rendering JSON,
 internal/service     orchestra client + config + dominio per un profilo (Upsert/Set/Get/List/Doctor)
 internal/notion      client per l'API Notion (solo net/http — nessun SDK), retry/backoff, errori tipizzati
 internal/tracker     dominio PURO: decisioni crea-o-aggiorna, costruzione payload, validazione stato
-internal/config      config YAML (profili, mapping proprietà) + variabili NOTION_TOKEN / NOTION_TRACK_*
+internal/config      config.yml (profili, mapping proprietà), credentials.yml (token) + variabili NOTION_TOKEN / NOTION_TRACK_*
 ```
 
 Due regole qui **non sono negoziabili**:
@@ -73,7 +75,7 @@ Altre convenzioni utili da conoscere:
 - `internal/cli` non chiama mai `os.Exit`; `Execute()` restituisce un intero come exit code, così l'intero albero dei comandi può essere esercitato in-process nei test. Solo `cmd/notion-track/main.go` può terminare il processo.
 - Gli exit code sono un contratto pubblico (vedi la tabella [Exit code](README.it.md#exit-code) del README) — mappa una nuova modalità di fallimento su un codice esistente invece di inventarne uno con leggerezza, e aggiorna la tabella se ne aggiungi uno.
 - Anche ogni chiave JSON stampata con `--json` è un contratto di scripting stabile — rinominarla o rimuoverla è un breaking change, da documentare come tale.
-- `internal/config`: un token letto da `NOTION_TOKEN` non deve mai essere riscritto nel file di configurazione — `Save`/`SaveTo` devono restarne silenziosi. Non aggiungere un percorso di codice che persiste un token.
+- `internal/config`: un token letto da `NOTION_TOKEN` non deve mai essere scritto su disco — `Save`/`SaveTo` (config.yml) devono restarne silenziosi, e `SaveToken` (credentials.yml) non va mai chiamata con un token proveniente dall'ambiente. `config.yml` non deve mai contenere un token, punto — è a questo che serve `credentials.yml`, e solo un opt-in esplicito e interattivo dell'utente (il prompt di salvataggio di `init`) può scriverci.
 
 ## Linee guida per commit e PR
 

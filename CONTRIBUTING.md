@@ -30,12 +30,14 @@ go build ./...
 go run ./cmd/notion-track --help
 ```
 
-To try it against a real workspace, set the token via the environment (never write it to the config file):
+To try it against a real workspace, set the token via the environment (never write it to `config.yml` — see the `internal/config` conventions below for why):
 
 ```bash
 export NOTION_TOKEN=ntn_...
 go run ./cmd/notion-track doctor
 ```
+
+Alternatively, run `notion-track init` at an interactive terminal without `NOTION_TOKEN` set and it will prompt for the token and offer to save it to `credentials.yml`, so you don't have to re-export it for every `go run` during a dev session.
 
 ## Before opening a PR
 
@@ -57,7 +59,7 @@ internal/cli         cobra command tree, flag parsing, JSON rendering, exit-code
 internal/service     orchestrates client + config + domain for one profile (Upsert/Set/Get/List/Doctor)
 internal/notion      Notion API client (net/http only — no SDK), retry/backoff, typed errors
 internal/tracker     PURE domain: create-or-update decisions, payload building, status validation
-internal/config      YAML config (profiles, property mapping) + NOTION_TOKEN / NOTION_TRACK_* env vars
+internal/config      config.yml (profiles, property mapping), credentials.yml (token) + NOTION_TOKEN / NOTION_TRACK_* env vars
 ```
 
 Two rules here are **not negotiable**:
@@ -71,7 +73,7 @@ Other conventions worth knowing:
 - `internal/cli` never calls `os.Exit`; `Execute()` returns an int exit code so the whole command tree can be exercised in-process in tests. Only `cmd/notion-track/main.go` is allowed to exit the process.
 - Exit codes are a public contract (see the README's [Exit codes](README.md#exit-codes) table) — map a new failure mode onto an existing code rather than inventing one casually, and update the table if you do add one.
 - Any JSON key printed with `--json` is a stable scripting contract too — renaming or removing one is a breaking change, documented as such.
-- `internal/config`: a token read from `NOTION_TOKEN` must never be written back to the config file — `Save`/`SaveTo` must stay silent about it. Don't add a code path that persists a token.
+- `internal/config`: a token read from `NOTION_TOKEN` must never be written to disk — `Save`/`SaveTo` (config.yml) must stay silent about it, and `SaveToken` (credentials.yml) must never be called with an env-sourced token. `config.yml` itself must never carry a token, full stop — that's what `credentials.yml` is for, and only an interactive, explicit user opt-in (`init`'s save prompt) may write to it.
 
 ## Commit & PR guidelines
 
