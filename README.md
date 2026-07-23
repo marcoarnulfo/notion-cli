@@ -251,7 +251,7 @@ Pipelines can branch on these without parsing any message text:
 | `1` | Error | a generic failure — a network/API error, or `doctor` reporting a failed check |
 | `2` | Usage | the invocation cannot work as written: a missing/invalid flag, an unknown command, no config yet (`notion-track init` was never run), or a status value the data source doesn't allow |
 | `3` | Not found | the requested ticket has no matching row (`get`, `set`) |
-| `4` | Duplicate | the ticket key matches more than one row (`upsert`, `get`) |
+| `4` | Duplicate | the ticket key matches more than one row (`upsert`, `set`, `get`) |
 | `5` | Auth | no token was found, or Notion rejected it (401/403) |
 
 ## CI usage

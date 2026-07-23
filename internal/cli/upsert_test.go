@@ -98,6 +98,22 @@ func TestUpsertExitsDuplicateOnSeveralMatches(t *testing.T) {
 	}
 }
 
+// The exit-code table documents code 4 for upsert, set and get alike; set
+// had no test pinning it, only upsert and get did.
+func TestSetExitsDuplicateOnSeveralMatches(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(cliSchemaJSON))
+			return
+		}
+		w.Write([]byte(`{"results":[` + cliRowJSON + `,` + cliRowJSON + `],"has_more":false}`))
+	})
+
+	if code := executeArgs([]string{"set", "--ticket", "BDF-231", "--status", "Fatto", "--config", cfg}); code != ExitDuplicate {
+		t.Fatalf("exit code = %d, want %d", code, ExitDuplicate)
+	}
+}
+
 func TestSetExitsNotFoundInsteadOfCreating(t *testing.T) {
 	var created bool
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {

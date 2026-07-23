@@ -251,7 +251,7 @@ Le pipeline possono ramificare su questi valori senza fare parsing di alcun mess
 | `1` | Error | un errore generico — un errore di rete/API, oppure `doctor` che segnala un check fallito |
 | `2` | Usage | l'invocazione non può funzionare così com'è: un flag mancante o non valido, un comando sconosciuto, nessuna configurazione ancora presente (`notion-track init` non è mai stato eseguito), o un valore di stato che la data source non ammette |
 | `3` | Not found | il ticket richiesto non ha una riga corrispondente (`get`, `set`) |
-| `4` | Duplicate | la chiave del ticket corrisponde a più di una riga (`upsert`, `get`) |
+| `4` | Duplicate | la chiave del ticket corrisponde a più di una riga (`upsert`, `set`, `get`) |
 | `5` | Auth | nessun token trovato, oppure Notion lo ha rifiutato (401/403) |
 
 ## Uso in CI
