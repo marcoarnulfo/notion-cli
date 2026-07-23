@@ -62,6 +62,11 @@ type Page struct {
 	URL            string
 	LastEditedTime time.Time
 	Properties     map[string]PropertyValue
+	// DataSourceID is the id of the data source this page belongs to, read
+	// from parent.data_source_id. It is empty when the page's parent is not
+	// a data source (e.g. a plain sub-page), which callers that check it
+	// must treat as "unknown" rather than "mismatch".
+	DataSourceID string
 }
 
 // Filter is a raw Notion query filter.

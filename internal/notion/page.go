@@ -43,6 +43,22 @@ func (c *Client) UpdatePage(ctx context.Context, pageID string, props map[string
 	return decodePage(raw)
 }
 
+// GetPage retrieves one page directly by id, without querying a data source.
+//
+// GET is idempotent — retrying it never has an extra effect — so this goes
+// through the retrying do rather than the non-retryable path CreatePage
+// uses.
+func (c *Client) GetPage(ctx context.Context, pageID string) (Page, error) {
+	var raw json.RawMessage
+	// PathEscape for the same reason as UpdatePage: the id can come from
+	// user input, and an unescaped separator would retarget the request.
+	path := "/v1/pages/" + url.PathEscape(pageID)
+	if err := c.do(ctx, http.MethodGet, path, nil, &raw); err != nil {
+		return Page{}, err
+	}
+	return decodePage(raw)
+}
+
 // Me returns the name of the bot the token belongs to. doctor uses it as the
 // cheapest possible proof that the token is valid.
 func (c *Client) Me(ctx context.Context) (string, error) {

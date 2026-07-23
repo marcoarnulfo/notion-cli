@@ -3,12 +3,25 @@ package notion
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// pageFixtureWithParent adds the parent envelope pageFixture omits, for the
+// tests that need to observe DataSourceID.
+const pageFixtureWithParent = `{
+  "id": "page1",
+  "url": "https://notion.so/page1",
+  "last_edited_time": "2026-07-20T10:00:00.000Z",
+  "parent": {"type": "data_source_id", "data_source_id": "ds1"},
+  "properties": {
+    "Name": {"type":"title","title":[{"plain_text":"Hardening"}]}
+  }
+}`
 
 func TestCreatePageUsesDataSourceParent(t *testing.T) {
 	var gotBody map[string]any
@@ -88,6 +101,89 @@ func TestUpdatePagePatchesProperties(t *testing.T) {
 	}
 	if _, ok := props["Stato"]; !ok {
 		t.Fatalf("properties do not carry Stato: %v", props)
+	}
+}
+
+// decodePage must expose the parent data source id so the service layer can
+// check a page addressed by id actually belongs to the active profile.
+func TestDecodePageExposesParentDataSourceID(t *testing.T) {
+	p, err := decodePage(json.RawMessage(pageFixtureWithParent))
+	if err != nil {
+		t.Fatalf("decodePage: %v", err)
+	}
+	if p.DataSourceID != "ds1" {
+		t.Fatalf("DataSourceID = %q, want ds1", p.DataSourceID)
+	}
+}
+
+// A page without a data_source_id parent (e.g. a plain sub-page) must decode
+// fine and simply leave DataSourceID empty, not error.
+func TestDecodePageWithoutParentLeavesDataSourceIDEmpty(t *testing.T) {
+	p, err := decodePage(json.RawMessage(pageFixture))
+	if err != nil {
+		t.Fatalf("decodePage: %v", err)
+	}
+	if p.DataSourceID != "" {
+		t.Fatalf("DataSourceID = %q, want empty", p.DataSourceID)
+	}
+}
+
+func TestGetPageRetrievesByID(t *testing.T) {
+	var gotMethod, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		w.Write([]byte(pageFixtureWithParent))
+	}))
+	defer srv.Close()
+
+	p, err := New("t", WithBaseURL(srv.URL)).GetPage(context.Background(), "page1")
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if gotMethod != http.MethodGet || gotPath != "/v1/pages/page1" {
+		t.Fatalf("got %s %s", gotMethod, gotPath)
+	}
+	if p.ID != "page1" || p.DataSourceID != "ds1" {
+		t.Fatalf("page = %+v", p)
+	}
+}
+
+// GET /v1/pages/{id} is idempotent — repeating it has no extra effect on
+// Notion's side — so unlike CreatePage it must go through the retrying do,
+// not doNonRetryable, and recover from a transient 502 instead of surfacing
+// it on the first attempt.
+func TestGetPageRetriesOnTransientError(t *testing.T) {
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&attempts, 1) == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			w.Write([]byte(`{"code":"gateway_error","message":"bad gateway"}`))
+			return
+		}
+		w.Write([]byte(pageFixtureWithParent))
+	}))
+	defer srv.Close()
+
+	c := New("t", WithBaseURL(srv.URL), WithSleep(func(time.Duration) {}))
+	_, err := c.GetPage(context.Background(), "page1")
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2 (one failure, one retry)", attempts)
+	}
+}
+
+func TestGetPageMapsA404ToErrNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"code":"object_not_found","message":"not found"}`))
+	}))
+	defer srv.Close()
+
+	_, err := New("t", WithBaseURL(srv.URL)).GetPage(context.Background(), "nope")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("got %v, want ErrNotFound", err)
 	}
 }
 

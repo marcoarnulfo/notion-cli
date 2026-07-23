@@ -37,18 +37,28 @@ func toPageJSON(p notion.Page, props config.Properties) pageJSON {
 
 func newGetCmd() *cobra.Command {
 	var ticket string
+	var pageID string
 	var asJSON bool
 
 	cmd := &cobra.Command{
 		Use:   "get",
-		Short: "Read the row for a ticket",
+		Short: "Read the row for a ticket, or for a Notion page id",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			svc, err := buildService(cmd)
 			if err != nil {
 				return err
 			}
-			page, err := svc.Get(cmd.Context(), ticket)
+			var page notion.Page
+			// Branch on Changed, not on the value: `--page-id ""` must still
+			// take this path so it surfaces as service.ErrEmptyPageID rather
+			// than silently falling through to a ticket lookup with an empty
+			// key it was never given.
+			if cmd.Flags().Changed("page-id") {
+				page, err = svc.GetByID(cmd.Context(), pageID)
+			} else {
+				page, err = svc.Get(cmd.Context(), ticket)
+			}
 			if err != nil {
 				return err
 			}
@@ -66,8 +76,12 @@ func newGetCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&ticket, "ticket", "", "ticket key (required)")
+	cmd.Flags().StringVar(&ticket, "ticket", "", "ticket key")
+	cmd.Flags().StringVar(&pageID, "page-id", "",
+		"Notion page id to address directly, bypassing the ticket lookup; "+
+			"accepts the full page URL copied from Notion, a bare 32-hex id, or a dashed UUID")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print machine-readable JSON")
-	cmd.MarkFlagRequired("ticket")
+	cmd.MarkFlagsMutuallyExclusive("ticket", "page-id")
+	cmd.MarkFlagsOneRequired("ticket", "page-id")
 	return cmd
 }
