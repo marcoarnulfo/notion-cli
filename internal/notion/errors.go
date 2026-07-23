@@ -1,0 +1,39 @@
+package notion
+
+import (
+	"errors"
+	"fmt"
+)
+
+// Sentinel errors callers match with errors.Is.
+var (
+	ErrUnauthorized = errors.New("notion: unauthorized")
+	ErrNotFound     = errors.New("notion: object not found")
+	ErrRateLimited  = errors.New("notion: rate limited")
+)
+
+// APIError is a structured Notion error response. It deliberately carries no
+// request context beyond status, code and message so that a token can never
+// end up inside it.
+type APIError struct {
+	Status  int
+	Code    string
+	Message string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("notion: %s (%d): %s", e.Code, e.Status, e.Message)
+}
+
+// Is lets errors.Is match an APIError against the sentinels above.
+func (e *APIError) Is(target error) bool {
+	switch target {
+	case ErrUnauthorized:
+		return e.Status == 401 || e.Status == 403
+	case ErrNotFound:
+		return e.Status == 404
+	case ErrRateLimited:
+		return e.Status == 429
+	}
+	return false
+}
