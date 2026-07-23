@@ -1,0 +1,11 @@
+# Build output
+notion-track
+/dist/
+
+# Go test artifacts
+*.test
+*.out
+
+# Local agent workspace and notes, not published
+.superpowers/
+CLAUDE.md
