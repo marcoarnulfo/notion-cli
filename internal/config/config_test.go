@@ -310,6 +310,40 @@ func TestSaveTokenRemovesAStaleFixedNameTempFile(t *testing.T) {
 	}
 }
 
+// SaveToken's defer os.Remove(tmp) exists specifically so a failure between
+// creating the temp file and the final rename never leaves a token sitting
+// on disk under a throwaway name — a guarantee nothing had exercised.
+// Renaming onto an existing directory is always an error (renaming a file
+// over a directory is never allowed), which forces the failure without
+// depending on any environment-specific permission behavior.
+func TestSaveTokenLeavesNoResidualTempFileOnRenameFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.yml")
+	old := credentialsPath
+	credentialsPath = func() (string, error) { return path, nil }
+	t.Cleanup(func() { credentialsPath = old })
+
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SaveToken("ntn_secret"); err == nil {
+		t.Fatal("expected SaveToken to fail when the destination is a directory")
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "credentials.yml" {
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		t.Fatalf("directory contains %v after a failed save, want only the pre-existing credentials.yml directory", names)
+	}
+}
+
 func TestSaveTokenThenLoadTokenRoundTrips(t *testing.T) {
 	withTempCredentials(t)
 
