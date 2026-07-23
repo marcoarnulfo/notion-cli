@@ -53,3 +53,37 @@ func TestGetSchemaReadsPropertiesAndOptions(t *testing.T) {
 		t.Errorf("Scadenza = %+v", p)
 	}
 }
+
+func TestGetSchemaEscapesTheDataSourceID(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.EscapedPath()
+		w.Write([]byte(schemaFixture))
+	}))
+	defer srv.Close()
+
+	// An unescaped slash would retarget the request at another endpoint
+	// entirely rather than producing a readable error.
+	_, err := New("t", WithBaseURL(srv.URL)).GetSchema(context.Background(), "ds/../pages")
+	if err != nil {
+		t.Fatalf("GetSchema: %v", err)
+	}
+	if gotPath != "/v1/data_sources/ds%2F..%2Fpages" {
+		t.Fatalf("path = %q, want the id escaped", gotPath)
+	}
+}
+
+func TestGetSchemaHandlesAResponseWithoutProperties(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"id":"ds1","title":[{"plain_text":"Empty"}]}`))
+	}))
+	defer srv.Close()
+
+	got, err := New("t", WithBaseURL(srv.URL)).GetSchema(context.Background(), "ds1")
+	if err != nil {
+		t.Fatalf("GetSchema: %v", err)
+	}
+	if len(got.Properties) != 0 {
+		t.Fatalf("got %d properties, want none", len(got.Properties))
+	}
+}

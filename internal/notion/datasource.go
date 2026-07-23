@@ -3,6 +3,7 @@ package notion
 import (
 	"context"
 	"net/http"
+	"net/url"
 )
 
 // GetSchema reads the property schema of a data source.
@@ -14,7 +15,6 @@ func (c *Client) GetSchema(ctx context.Context, dataSourceID string) (*Schema, e
 		Name string `json:"name"`
 	}
 	type rawProperty struct {
-		Name   string `json:"name"`
 		Type   string `json:"type"`
 		Select *struct {
 			Options []option `json:"options"`
@@ -29,7 +29,11 @@ func (c *Client) GetSchema(ctx context.Context, dataSourceID string) (*Schema, e
 		Properties map[string]rawProperty `json:"properties"`
 	}
 
-	if err := c.do(ctx, http.MethodGet, "/v1/data_sources/"+dataSourceID, nil, &resp); err != nil {
+	// PathEscape, not raw concatenation: the id reaches here from a config file
+	// or a command-line flag, and an unescaped "/" or "?" would silently
+	// retarget the request instead of failing.
+	path := "/v1/data_sources/" + url.PathEscape(dataSourceID)
+	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
 		return nil, err
 	}
 

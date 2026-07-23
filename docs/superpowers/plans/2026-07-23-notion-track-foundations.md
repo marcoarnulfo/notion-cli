@@ -1467,6 +1467,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -1496,7 +1497,9 @@ func (c *Client) QueryPages(ctx context.Context, dataSourceID string, filter Fil
 			NextCursor string            `json:"next_cursor"`
 		}
 		req := queryReq{Filter: filter, StartCursor: cursor, PageSize: 100}
-		path := "/v1/data_sources/" + dataSourceID + "/query"
+		// url.PathEscape: the id comes from config or a flag, and an unescaped
+		// "/" would silently retarget the request.
+		path := "/v1/data_sources/" + url.PathEscape(dataSourceID) + "/query"
 		if err := c.do(ctx, http.MethodPost, path, req, &resp); err != nil {
 			return nil, err
 		}
@@ -1696,6 +1699,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 )
 
 // CreatePage adds a row to a data source. props holds already-built Notion
@@ -1719,7 +1723,7 @@ func (c *Client) CreatePage(ctx context.Context, dataSourceID string, props map[
 func (c *Client) UpdatePage(ctx context.Context, pageID string, props map[string]any) (Page, error) {
 	var raw json.RawMessage
 	body := map[string]any{"properties": props}
-	if err := c.do(ctx, http.MethodPatch, "/v1/pages/"+pageID, body, &raw); err != nil {
+	if err := c.do(ctx, http.MethodPatch, "/v1/pages/"+url.PathEscape(pageID), body, &raw); err != nil {
 		return Page{}, err
 	}
 	return decodePage(raw)
