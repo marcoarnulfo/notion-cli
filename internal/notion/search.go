@@ -2,6 +2,7 @@ package notion
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 )
 
@@ -50,6 +51,14 @@ func (c *Client) ListDataSources(ctx context.Context) ([]DataSourceRef, error) {
 		}
 		if !resp.HasMore || resp.NextCursor == "" {
 			return out, nil
+		}
+		// A cursor that does not advance would loop forever, appending the same
+		// page to out on every pass. Stopping with an error beats hanging: the
+		// caller learns the listing is incomplete instead of waiting on a
+		// request that never finishes.
+		if resp.NextCursor == cursor {
+			return nil, fmt.Errorf(
+				"notion: search pagination stalled, cursor %q repeated", resp.NextCursor)
 		}
 		cursor = resp.NextCursor
 	}

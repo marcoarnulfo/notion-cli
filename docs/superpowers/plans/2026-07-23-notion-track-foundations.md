@@ -1465,6 +1465,7 @@ package notion
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 )
@@ -1508,6 +1509,12 @@ func (c *Client) QueryPages(ctx context.Context, dataSourceID string, filter Fil
 		}
 		if !resp.HasMore || resp.NextCursor == "" {
 			return out, nil
+		}
+		// Same guard as ListDataSources: a cursor that does not advance would
+		// loop forever, appending the same page every time.
+		if resp.NextCursor == cursor {
+			return nil, fmt.Errorf(
+				"notion: query pagination stalled, cursor %q repeated", resp.NextCursor)
 		}
 		cursor = resp.NextCursor
 	}

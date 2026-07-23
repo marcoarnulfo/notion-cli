@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -62,5 +63,24 @@ func TestListDataSourcesFollowsPagination(t *testing.T) {
 	}
 	if got[1].ID != "ds2" {
 		t.Errorf("second result = %+v", got[1])
+	}
+}
+
+// A server that keeps returning the same cursor used to loop forever, growing
+// the result slice on every pass.
+func TestListDataSourcesStopsOnAStalledCursor(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"results":[
+			{"id":"ds1","title":[{"plain_text":"Tasks"}],"parent":{"database_id":"db1"}}
+		],"has_more":true,"next_cursor":"same"}`))
+	}))
+	defer srv.Close()
+
+	_, err := New("t", WithBaseURL(srv.URL)).ListDataSources(context.Background())
+	if err == nil {
+		t.Fatal("expected an error instead of an endless loop")
+	}
+	if !strings.Contains(err.Error(), "stalled") {
+		t.Fatalf("error does not explain the stall: %v", err)
 	}
 }
