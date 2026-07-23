@@ -1,6 +1,14 @@
 package notion
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 func para(n int) Block { // a paragraph counted as 1 block, small bytes
 	return Block{Type: "paragraph", RichText: []Span{{Content: "x"}}}
@@ -71,5 +79,65 @@ func TestSplitIntoRequestsCountsNestedBlocksTowardTotal(t *testing.T) {
 	batches := splitIntoRequests(blocks)
 	if len(batches) < 2 {
 		t.Fatalf("1100 nested blocks must span >1 batch by the 1000-block cap, got %d", len(batches))
+	}
+}
+
+func testClient(url string) *Client {
+	return New("tok", WithBaseURL(url), WithSleep(func(time.Duration) {}))
+}
+
+func TestDoRejectRetryableRetriesOn429ThenSucceeds(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			w.Write([]byte(`{"code":"rate_limited","message":"slow down"}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	err := testClient(srv.URL).doRejectRetryable(context.Background(), http.MethodPatch, "/x", map[string]any{}, nil)
+	if err != nil {
+		t.Fatalf("want success after retry, got %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("want 2 calls (429 then ok), got %d", calls)
+	}
+}
+
+func TestDoRejectRetryableTreats504AsAmbiguousWithoutRetry(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusGatewayTimeout)
+	}))
+	defer srv.Close()
+
+	err := testClient(srv.URL).doRejectRetryable(context.Background(), http.MethodPatch, "/x", map[string]any{}, nil)
+	if !errors.Is(err, ErrAmbiguousWrite) {
+		t.Fatalf("504 must be ambiguous, got %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("ambiguous status must NOT be retried, got %d calls", calls)
+	}
+}
+
+func TestDoRejectRetryableReturns400AsIsNotAmbiguous(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"code":"validation_error","message":"bad block"}`))
+	}))
+	defer srv.Close()
+
+	err := testClient(srv.URL).doRejectRetryable(context.Background(), http.MethodPatch, "/x", map[string]any{}, nil)
+	if errors.Is(err, ErrAmbiguousWrite) {
+		t.Fatal("400 is a rejected client error, must not be ambiguous")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 400 {
+		t.Fatalf("want APIError 400, got %v", err)
 	}
 }

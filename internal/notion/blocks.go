@@ -1,8 +1,11 @@
 package notion
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 )
 
 // Per-request Notion limits for the block-children endpoints. maxBytesPerRequest
@@ -105,4 +108,50 @@ func splitIntoRequests(blocks []Block) [][]Block {
 	}
 	flush()
 	return batches
+}
+
+// rejectedByServer reports statuses where Notion certainly refused the request
+// WITHOUT processing it, making a retry safe even for a non-idempotent write:
+// 429 (rate limited), 503 (service unavailable), 529 (service overload). It
+// deliberately excludes 500/502/504 and transport errors, which are ambiguous.
+func rejectedByServer(status int) bool {
+	return status == http.StatusTooManyRequests ||
+		status == http.StatusServiceUnavailable ||
+		status == statusServiceOverload
+}
+
+// doRejectRetryable performs a non-idempotent request, retrying ONLY on
+// rejectedByServer statuses (honoring Retry-After like do). A 4xx is returned
+// as-is (rejected, no side effect). A 5xx outside the safe set, or a
+// transport error, is joined with ErrAmbiguousWrite so the caller can tell the
+// user the write may be half-applied and to re-run.
+func (c *Client) doRejectRetryable(ctx context.Context, method, path string, body, out any) error {
+	for attempt := 0; attempt <= c.maxRetries; attempt++ {
+		err := c.doOnce(ctx, method, path, body, out)
+		if err == nil {
+			return nil
+		}
+		var apiErr *APIError
+		if errors.As(err, &apiErr) {
+			switch {
+			case rejectedByServer(apiErr.Status):
+				if attempt == c.maxRetries {
+					return err // exhausted; rejected each time → nothing applied
+				}
+				if werr := c.wait(ctx, backoffFor(attempt, apiErr.RetryAfter)); werr != nil {
+					return werr
+				}
+				continue
+			case apiErr.Status >= 500:
+				// 500/502/504: may have reached Notion and been applied.
+				return fmt.Errorf("%w: %w", ErrAmbiguousWrite, err)
+			default:
+				return err // 4xx: rejected, no side effect
+			}
+		}
+		// Transport-level error (timeout, reset): ambiguous. %w twice keeps both
+		// ErrAmbiguousWrite and the underlying error reachable via errors.Is/As.
+		return fmt.Errorf("%w: %w", ErrAmbiguousWrite, err)
+	}
+	return nil // unreachable: the loop returns on the last attempt
 }

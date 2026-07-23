@@ -10,6 +10,11 @@ var (
 	ErrUnauthorized = errors.New("notion: unauthorized")
 	ErrNotFound     = errors.New("notion: object not found")
 	ErrRateLimited  = errors.New("notion: rate limited")
+	// ErrAmbiguousWrite marks a non-idempotent write whose outcome is unknown:
+	// a transport error or a 500/502/504 that may have been applied before the
+	// failure. Callers surface it as "re-run to converge" rather than retrying
+	// automatically, which could duplicate.
+	ErrAmbiguousWrite = errors.New("notion: write outcome unknown; re-run to converge")
 )
 
 // APIError is a structured Notion error response. It deliberately carries no
