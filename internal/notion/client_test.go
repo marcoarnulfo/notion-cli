@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -181,5 +182,32 @@ func TestDoTreatsEmptySuccessBodyAsNoOp(t *testing.T) {
 	}
 	if out.Sentinel != "untouched" {
 		t.Fatalf("out was modified despite an empty response body: %+v", out)
+	}
+}
+
+// c.http.Do fails with a *url.Error when the transport itself can't reach
+// the server (as opposed to the server returning a non-2xx response). This
+// is the path that guards the package's most important invariant, so it
+// must be exercised explicitly: url.Error.Error() includes the request URL
+// and verb but never headers, so the token must not leak through it either.
+func TestDoTransportFailureNeverLeaksTheToken(t *testing.T) {
+	const token = "ntn_transport_secret"
+
+	// A server that is immediately closed leaves its address unreachable,
+	// forcing http.Client.Do to fail at the transport level.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	closedURL := srv.URL
+	srv.Close()
+
+	err := New(token, WithBaseURL(closedURL)).do(context.Background(), http.MethodGet, "/v1/x", nil, nil)
+	if err == nil {
+		t.Fatal("expected an error when the transport can't reach the server")
+	}
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		t.Fatalf("got %T, want an error wrapping *url.Error", err)
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Fatalf("transport error leaked the token: %v", err)
 	}
 }
