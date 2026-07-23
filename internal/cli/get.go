@@ -10,6 +10,11 @@ import (
 
 // pageJSON is the stable scripting shape of a row. Renaming a key here breaks
 // every script and agent that consumes it: treat it as public API.
+//
+// A property the profile maps to a name the row does not carry yields an empty
+// string rather than an error. That is deliberate: reporting a broken mapping
+// is doctor's job, and failing every read because of it would leave the user
+// with no way to look at their data while they fix the config.
 type pageJSON struct {
 	Ticket         string `json:"ticket"`
 	Title          string `json:"title"`
