@@ -137,6 +137,14 @@ Verbatim from <https://developers.notion.com/reference/request-limits> (consulte
 - **429 handling** — Notion returns `429` with a `Retry-After` header (seconds) when
   the rate limit is exceeded; the design doc's retry-with-backoff requirement (§9)
   must honor this header rather than using a fixed backoff.
+- **529 handling** — the same page states that connections "should accommodate
+  variable rate limits by handling HTTP 429 **and 529** responses and respecting the
+  `Retry-After` response header value". <https://developers.notion.com/reference/errors>
+  documents `529` as `service_overload`: "Notion is temporarily overloaded. Respect
+  the Retry-After response header and try again later."
+  **`529` must be retried exactly like `429`**, `Retry-After` included. The design
+  doc §9 lists only `429`/`502`/`503`/`504` and is therefore incomplete on this
+  point; `internal/notion` follows these notes.
 
 Reconciling with the design doc's chunking numbers (§10: "massimo 100 blocchi per
 chiamata di append, massimo 1000 blocchi per payload, massimo 2000 caratteri per
@@ -162,7 +170,9 @@ children endpoint), 1000 is the overall per-payload block cap, 2000 is the rich-
 - `GET /v1/databases/{id}` docs contain a note that reads as if the endpoint itself
   were "deprecated as of 2025-09-03." Read in context, this describes the removal of
   the direct `properties` field from that endpoint's response (properties moved to
-  the data source), not deprecation of the endpoint — the endpoint is still the
-  documented way to discover a database's data sources and is required by the
-  two-step discovery flow in design doc §2/§5. Flagging this reading explicitly in
-  case a future task hits a surprise here.
+  the data source), not deprecation of the endpoint. **Correction after review**: the
+  "Deprecated as of version 2025-09-03" line marks the *versioned documentation page*
+  for API `2022-06-28` and earlier ("Refer to the new APIs instead"), not the removal
+  of a single field. The practical conclusion is unchanged and still correct — the
+  endpoint is live, its response now carries `data_sources[]` instead of `properties`,
+  and it remains required by the two-step discovery flow in design doc §2/§5.

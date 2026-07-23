@@ -79,7 +79,9 @@ go mod init github.com/marcoarnulfo/notion-cli
 - [ ] **Step 2: Crea `.gitignore`**
 
 ```
-notion-track
+# The leading slash matters: an unanchored "notion-track" would also match the
+# cmd/notion-track/ source directory and silently exclude the entry point.
+/notion-track
 /dist/
 *.test
 *.out
@@ -683,6 +685,35 @@ func TestDoRetriesOn503WithExponentialBackoff(t *testing.T) {
 	}
 }
 
+// 529 is service_overload. Notion documents it next to 429 and asks for the
+// same treatment, and it has no net/http constant, so it is easy to miss.
+func TestDoRetriesOn529(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(529)
+			w.Write([]byte(`{"code":"service_overload","message":"overloaded"}`))
+			return
+		}
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	var slept []time.Duration
+	c := New("t", WithBaseURL(srv.URL), WithSleep(func(d time.Duration) { slept = append(slept, d) }))
+
+	if err := c.do(context.Background(), http.MethodGet, "/v1/x", nil, nil); err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("made %d calls, want 2", calls)
+	}
+	if len(slept) != 1 || slept[0] != time.Second {
+		t.Fatalf("slept %v, want one 1s wait from Retry-After", slept)
+	}
+}
+
 func TestDoGivesUpAfterMaxRetries(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -755,9 +786,16 @@ func WithMaxRetries(n int) Option { return func(c *Client) { c.maxRetries = n } 
 // WithSleep replaces the sleep function. Tests use it to run instantly.
 func WithSleep(f func(time.Duration)) Option { return func(c *Client) { c.sleep = f } }
 
+// statusServiceOverload is Notion's 529. It has no net/http constant: the code
+// is outside the registered range, and Notion documents it alongside 429 —
+// "handling HTTP 429 and 529 responses and respecting the Retry-After response
+// header value".
+const statusServiceOverload = 529
+
 // retryable reports whether a status code is worth another attempt.
 func retryable(status int) bool {
 	return status == http.StatusTooManyRequests ||
+		status == statusServiceOverload ||
 		status == http.StatusBadGateway ||
 		status == http.StatusServiceUnavailable ||
 		status == http.StatusGatewayTimeout

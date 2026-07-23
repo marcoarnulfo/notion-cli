@@ -348,10 +348,14 @@ con header `Retry-After` in secondi ([request limits](https://developers.notion.
 Il vincolo è più stretto di quanto sembri: un solo token è condiviso tra tre persone, i job CI e
 la TUI che pagina. È **un unico bucket**.
 
-`internal/notion` implementa dal giorno 1: retry con backoff esponenziale sui `429` rispettando
-`Retry-After`, retry sui `502`/`503`/`504`, numero massimo di tentativi configurabile, timeout e
-`context.Context` propagato su ogni chiamata. Senza questo, la promessa "safe to put in a retried
-CI job" è falsa.
+Esiste un secondo codice da trattare allo stesso modo: **`529` (`service_overload`)**, che la
+documentazione ufficiale accosta esplicitamente al `429` — "handling HTTP 429 and 529 responses
+and respecting the `Retry-After` response header value".
+
+`internal/notion` implementa dal giorno 1: retry con backoff esponenziale sui `429` e sui `529`
+rispettando `Retry-After`, retry sui `502`/`503`/`504`, numero massimo di tentativi
+configurabile, timeout e `context.Context` propagato su ogni chiamata. Senza questo, la promessa
+"safe to put in a retried CI job" è falsa.
 
 ---
 
