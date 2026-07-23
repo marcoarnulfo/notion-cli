@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/marcoarnulfo/notion-cli/internal/config"
@@ -125,6 +126,39 @@ func TestBuildPropertiesTicketBeatsTitleOnASharedColumn(t *testing.T) {
 	title := got["Key"].(map[string]any)["title"].([]map[string]any)
 	if content := title[0]["text"].(map[string]string)["content"]; content != "BDF-231" {
 		t.Fatalf("content = %q, want the ticket key to win", content)
+	}
+}
+
+// init does not require --due-prop, so an unmapped due role is the normal
+// configuration, not an edge case. Silently dropping an explicit --due
+// value there used to make `upsert --due 2026-01-01` exit 0 without ever
+// sending the date — the exact same shape of data loss that a property
+// mapped to a nonexistent schema column already refuses to allow (see
+// TestBuildPropertiesRejectsAMappingThatNoLongerMatchesTheSchema below).
+func TestBuildPropertiesRejectsAnExplicitValueForAnUnmappedProperty(t *testing.T) {
+	props := testProps()
+	props.Due = "" // due left unconfigured, same as init leaves it by default
+	_, err := BuildProperties(Fields{Ticket: "BDF-231", Due: "2026-01-01"}, props, testSchema())
+	if err == nil {
+		t.Fatal("expected an explicit due value with no mapped property to be rejected")
+	}
+	if !strings.Contains(err.Error(), "due-prop") {
+		t.Fatalf("error does not tell the user how to map it: %v", err)
+	}
+}
+
+// Leaving a field blank must still mean "don't touch this property" — that
+// is what makes `set --status` a partial update — even for a role with no
+// mapping at all.
+func TestBuildPropertiesStillAllowsAnEmptyValueOnAnUnmappedProperty(t *testing.T) {
+	props := testProps()
+	props.Due = ""
+	got, err := BuildProperties(Fields{Ticket: "BDF-231"}, props, testSchema())
+	if err != nil {
+		t.Fatalf("BuildProperties: %v", err)
+	}
+	if _, ok := got["Scadenza"]; ok {
+		t.Fatalf("an empty due value must not add a Scadenza property: %v", got)
 	}
 }
 

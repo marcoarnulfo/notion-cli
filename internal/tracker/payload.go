@@ -24,9 +24,26 @@ type Fields struct {
 func BuildProperties(f Fields, props config.Properties, schema *notion.Schema) (map[string]any, error) {
 	out := map[string]any{}
 
-	add := func(propName, value string) error {
-		if value == "" || propName == "" {
+	// role is only used to name the init flag in the "not mapped" error
+	// below (e.g. "due" -> --due-prop); it plays no part in building the
+	// payload itself.
+	add := func(role, propName, value string) error {
+		if value == "" {
+			// Empty means "leave this property alone" regardless of whether
+			// it is mapped — this is what makes `set --status` a partial
+			// update, and it must hold even for a role nobody configured.
 			return nil
+		}
+		if propName == "" {
+			// The user passed a value explicitly; silently dropping it would
+			// lose data. init does not require every role (due is optional),
+			// so this is the normal shape of "not configured yet", not a
+			// corrupted config — the fix is to map it, not to fail loudly
+			// about a broken mapping.
+			return fmt.Errorf(
+				"%s was set to %q but no %s property is mapped; "+
+					"run 'notion-track init --%s-prop <name>' to map it",
+				role, value, role, role)
 		}
 		prop, ok := schema.Properties[propName]
 		if !ok {
@@ -63,16 +80,16 @@ func BuildProperties(f Fields, props config.Properties, schema *notion.Schema) (
 
 	// Title first: when the ticket key *is* the title column, the ticket value
 	// must win over a separately supplied title.
-	if err := add(props.Title, f.Title); err != nil {
+	if err := add("title", props.Title, f.Title); err != nil {
 		return nil, err
 	}
-	if err := add(props.Ticket, f.Ticket); err != nil {
+	if err := add("ticket", props.Ticket, f.Ticket); err != nil {
 		return nil, err
 	}
-	if err := add(props.Status, f.Status); err != nil {
+	if err := add("status", props.Status, f.Status); err != nil {
 		return nil, err
 	}
-	if err := add(props.Due, f.Due); err != nil {
+	if err := add("due", props.Due, f.Due); err != nil {
 		return nil, err
 	}
 	return out, nil
