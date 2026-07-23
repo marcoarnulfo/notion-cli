@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/marcoarnulfo/notion-cli/internal/config"
@@ -194,4 +195,32 @@ func contains(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// The TUI runs commands on separate goroutines against one Service, so the
+// lazily cached schema must not race.
+func TestSchemaCacheIsSafeForConcurrentUse(t *testing.T) {
+	// A dedicated handler rather than routes(): that helper appends to a shared
+	// slice, which would itself race under concurrent requests.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(schemaJSON))
+			return
+		}
+		w.Write([]byte(`{"results":[` + rowJSON + `],"has_more":false}`))
+	}))
+	defer srv.Close()
+
+	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile())
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.Get(ctx, "BDF-231")
+		}()
+	}
+	wg.Wait()
 }

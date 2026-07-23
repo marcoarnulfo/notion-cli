@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/marcoarnulfo/notion-cli/internal/config"
 	"github.com/marcoarnulfo/notion-cli/internal/notion"
@@ -18,10 +19,15 @@ import (
 var ErrNotFound = errors.New("ticket not found")
 
 // Service performs notion-track's operations against one profile.
+//
+// One Service may be shared by concurrent callers — the TUI runs its commands
+// on separate goroutines — so the lazily fetched schema is guarded by a mutex.
 type Service struct {
 	client  *notion.Client
 	profile config.Profile
-	schema  *notion.Schema // read lazily, once
+
+	mu     sync.Mutex
+	schema *notion.Schema // read lazily, guarded by mu
 }
 
 // New builds a Service for a profile.
@@ -30,7 +36,12 @@ func New(client *notion.Client, profile config.Profile) *Service {
 }
 
 // Schema returns the data source schema, fetching it at most once.
+// A mutex rather than sync.Once: Once would memoise a network failure forever,
+// leaving the Service permanently broken after one transient error.
 func (s *Service) Schema(ctx context.Context) (*notion.Schema, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if s.schema != nil {
 		return s.schema, nil
 	}
