@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/marcoarnulfo/notion-cli/internal/config"
 	"github.com/marcoarnulfo/notion-cli/internal/notion"
 	"github.com/marcoarnulfo/notion-cli/internal/service"
 	"github.com/marcoarnulfo/notion-cli/internal/tracker"
@@ -37,6 +38,7 @@ func TestExitCodeForMapsDomainErrors(t *testing.T) {
 		{"duplicates", &tracker.DuplicateError{Ticket: "X"}, ExitDuplicate},
 		{"rejected value", &tracker.ValidationError{Field: "status", Value: "X"}, ExitUsage},
 		{"unauthorized", fmt.Errorf("wrapped: %w", notion.ErrUnauthorized), ExitAuth},
+		{"not configured", fmt.Errorf("wrapped: %w", config.ErrNotConfigured), ExitUsage},
 		{"anything else", errors.New("boom"), ExitError},
 	}
 	for _, tc := range tests {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/marcoarnulfo/notion-cli/internal/config"
 	"github.com/marcoarnulfo/notion-cli/internal/notion"
 	"github.com/marcoarnulfo/notion-cli/internal/service"
 	"github.com/marcoarnulfo/notion-cli/internal/tracker"
@@ -21,6 +22,12 @@ func printJSON(w io.Writer, v any) error {
 
 // exitCodeFor maps an error onto the process exit code, so that pipelines can
 // tell "not found" from "token expired" without parsing messages.
+//
+// Precedence is deliberate: a domain error wins over an explicit codedError
+// wrapping it, because the domain type describes what actually went wrong more
+// precisely than any code a caller attaches on the way out. Anyone wrapping a
+// domain error with %w and a different code should expect the domain code to
+// win — use %v to state a code that must survive.
 func exitCodeFor(err error) int {
 	if err == nil {
 		return ExitOK
@@ -36,6 +43,10 @@ func exitCodeFor(err error) int {
 		return ExitUsage
 	case errors.Is(err, service.ErrNotFound), errors.Is(err, notion.ErrNotFound):
 		return ExitNotFound
+	// Not yet configured is the same class of mistake as a missing flag: the
+	// invocation cannot work as written, and the fix is the user's to make.
+	case errors.Is(err, config.ErrNotConfigured):
+		return ExitUsage
 	case errors.Is(err, notion.ErrUnauthorized):
 		return ExitAuth
 	}
