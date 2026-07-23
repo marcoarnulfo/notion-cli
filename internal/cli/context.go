@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"errors"
+
 	"github.com/marcoarnulfo/notion-cli/internal/config"
 	"github.com/marcoarnulfo/notion-cli/internal/notion"
 	"github.com/marcoarnulfo/notion-cli/internal/service"
@@ -49,4 +51,38 @@ func buildService(cmd *cobra.Command) (*service.Service, error) {
 			"profile has no data_source_id; run 'notion-track init' to configure it")
 	}
 	return service.New(newClient(token), profile), nil
+}
+
+// loadExistingOrNew returns the config at path, or an empty one if absent.
+func loadExistingOrNew(path string) (*config.Config, error) {
+	var (
+		cfg *config.Config
+		err error
+	)
+	if path != "" {
+		cfg, err = loadConfigFrom(path)
+	} else {
+		cfg, err = loadConfig()
+	}
+	if errors.Is(err, config.ErrNotConfigured) {
+		return &config.Config{
+			SchemaVersion: config.CurrentSchemaVersion,
+			Profiles:      map[string]config.Profile{},
+		}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Profiles == nil {
+		cfg.Profiles = map[string]config.Profile{}
+	}
+	return cfg, nil
+}
+
+// saveConfigTo writes to an explicit path when given, otherwise the default.
+func saveConfigTo(cfg *config.Config, path string) error {
+	if path == "" {
+		return cfg.Save()
+	}
+	return cfg.SaveTo(path)
 }

@@ -95,22 +95,16 @@ func LoadFrom(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// Save writes the config atomically with 0600 permissions.
-func (c *Config) Save() error {
-	path, err := configPath()
-	if err != nil {
-		return err
-	}
+// SaveTo writes the config to an explicit path.
+func (c *Config) SaveTo(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("config: creating config dir: %w", err)
 	}
-
 	c.SchemaVersion = CurrentSchemaVersion
 	raw, err := yaml.Marshal(c)
 	if err != nil {
 		return fmt.Errorf("config: encoding: %w", err)
 	}
-
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return fmt.Errorf("config: writing %s: %w", tmp, err)
@@ -119,6 +113,15 @@ func (c *Config) Save() error {
 		return fmt.Errorf("config: replacing %s: %w", path, err)
 	}
 	return nil
+}
+
+// Save writes the config to its default location.
+func (c *Config) Save() error {
+	path, err := configPath()
+	if err != nil {
+		return err
+	}
+	return c.SaveTo(path)
 }
 
 // Resolve returns a profile by name, falling back to NOTION_TRACK_PROFILE and
