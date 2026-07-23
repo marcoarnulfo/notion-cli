@@ -141,6 +141,42 @@ func TestDoRefusesToFollowRedirects(t *testing.T) {
 	}
 }
 
+// WithHTTPClient is the natural production usage (custom proxy, custom TLS
+// config), so it must not silently drop the redirect protection just because
+// the caller's own *http.Client leaves CheckRedirect nil. A PoC on the
+// previous implementation showed the token reaching the redirect target
+// under exactly this construction.
+func TestDoRefusesToFollowRedirectsWithCustomHTTPClient(t *testing.T) {
+	const token = "ntn_custom_client_secret"
+
+	var targetHit bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHit = true
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer target.Close()
+
+	// target and origin are both httptest servers on 127.0.0.1 with distinct
+	// random ports, so this redirect is exactly the "same host, different
+	// port" case the stdlib's sensitive-header stripping does not cover.
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/v1/elsewhere", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	c := New(token, WithBaseURL(origin.URL), WithHTTPClient(&http.Client{}))
+	err := c.do(context.Background(), http.MethodGet, "/v1/x", nil, nil)
+	if err == nil {
+		t.Fatal("expected an error when the server issues a redirect")
+	}
+	if targetHit {
+		t.Fatal("client followed the redirect instead of refusing it")
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Fatalf("redirect error leaked the token: %v", err)
+	}
+}
+
 // An oversized, non-JSON error body (e.g. a WAF or proxy error page) must
 // not be buffered and echoed back verbatim: that would let a misbehaving
 // intermediary balloon memory use and log size for every failed request.

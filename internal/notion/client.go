@@ -43,7 +43,13 @@ type Option func(*Client)
 // WithBaseURL points the client at another host. Tests use it with httptest.
 func WithBaseURL(u string) Option { return func(c *Client) { c.baseURL = u } }
 
-// WithHTTPClient replaces the underlying HTTP client.
+// WithHTTPClient replaces the underlying HTTP client. This is the natural
+// way to plug in a custom proxy or TLS config in production, so New still
+// enforces the redirect-refusal policy below on whatever client is supplied
+// here, provided it leaves CheckRedirect nil. If this client sets its own
+// CheckRedirect, that is treated as an explicit, informed choice and is left
+// untouched — which also means the caller then owns making sure that
+// callback does not let the Authorization header follow a redirect.
 func WithHTTPClient(h *http.Client) Option { return func(c *Client) { c.http = h } }
 
 // New builds a client authenticated with an integration token.
@@ -53,17 +59,23 @@ func New(token string, opts ...Option) *Client {
 		baseURL: BaseURL,
 		http: &http.Client{
 			Timeout: 30 * time.Second,
-			// The stdlib only strips Authorization on redirect when the
-			// hostname changes; it ignores port and scheme, so a same-host
-			// redirect to another port, or an https->http downgrade, would
-			// still carry the token along. The Notion API never redirects,
-			// so refusing every redirect is strictly safer than trusting
-			// that partial protection.
-			CheckRedirect: refuseRedirects,
 		},
 	}
 	for _, o := range opts {
 		o(c)
+	}
+	// Applied last, after every option (including a caller-supplied
+	// WithHTTPClient) has run, so the policy can't be bypassed just by
+	// passing a custom *http.Client — it depends only on the option order
+	// otherwise. The stdlib only strips Authorization on redirect when the
+	// hostname changes; it ignores port and scheme, so a same-host redirect
+	// to another port, or an https->http downgrade, would still carry the
+	// token along. The Notion API never redirects, so refusing every
+	// redirect is strictly safer than trusting that partial protection. A
+	// caller-set CheckRedirect is left alone: it is an explicit choice, and
+	// forcibly overriding it would be surprising.
+	if c.http.CheckRedirect == nil {
+		c.http.CheckRedirect = refuseRedirects
 	}
 	return c
 }
