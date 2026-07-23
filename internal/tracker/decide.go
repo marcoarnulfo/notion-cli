@@ -39,7 +39,13 @@ func (e *DuplicateError) Error() string {
 	fmt.Fprintf(&b, "ticket %q matches %d rows; refusing to guess which one to update:",
 		e.Ticket, len(e.Pages))
 	for _, p := range e.Pages {
-		fmt.Fprintf(&b, "\n  %s", p.URL)
+		// URL is what makes this message actionable, so fall back to the id
+		// rather than printing a blank line the user cannot act on.
+		if p.URL != "" {
+			fmt.Fprintf(&b, "\n  %s", p.URL)
+			continue
+		}
+		fmt.Fprintf(&b, "\n  page %s (no url)", p.ID)
 	}
 	b.WriteString("\n  fix: delete the duplicates in Notion, then run the command again")
 	return b.String()

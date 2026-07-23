@@ -74,3 +74,17 @@ func TestDuplicateErrorListsPageURLs(t *testing.T) {
 		}
 	}
 }
+
+func TestDuplicateErrorFallsBackToPageIDWhenURLIsMissing(t *testing.T) {
+	err := &DuplicateError{
+		Ticket: "BDF-231",
+		Pages:  []notion.Page{{ID: "page1"}, {ID: "page2", URL: "https://notion.so/page2"}},
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "page1") {
+		t.Errorf("a row without a URL is unidentifiable: %s", msg)
+	}
+	if !strings.Contains(msg, "https://notion.so/page2") {
+		t.Errorf("message lost the row that does have a URL: %s", msg)
+	}
+}
