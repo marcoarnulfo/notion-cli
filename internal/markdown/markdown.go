@@ -207,6 +207,9 @@ func (c *converter) inlineSpans(n ast.Node, style notion.Span) []notion.Span {
 		s := style
 		s.Code = true
 		s.Content = string(node.Text(c.src))
+		if s.Content == "" {
+			return nil
+		}
 		return []notion.Span{s}
 	case *ast.Emphasis:
 		st := style

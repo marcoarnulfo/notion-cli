@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -209,6 +210,80 @@ func TestListBlockChildrenPaginatesPastOneHundred(t *testing.T) {
 	}
 	if len(got) != 2 || got[0].ID != "a" || got[1].Type != "child_page" {
 		t.Fatalf("pagination lost content: %+v", got)
+	}
+}
+
+// TestDoRejectRetryableExhaustsRetriesReturnsUnderlyingAPIError pins that a
+// persistent 429 (rejected every time, never applied) surfaces as the plain
+// *APIError once retries are exhausted, NOT wrapped in ErrAmbiguousWrite: the
+// server rejected the write on every attempt, so nothing was ever applied and
+// there is nothing ambiguous about it.
+func TestDoRejectRetryableExhaustsRetriesReturnsUnderlyingAPIError(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"code":"rate_limited","message":"slow down"}`))
+	}))
+	defer srv.Close()
+
+	c := New("tok", WithBaseURL(srv.URL), WithSleep(func(time.Duration) {}), WithMaxRetries(2))
+	err := c.doRejectRetryable(context.Background(), http.MethodPatch, "/x", map[string]any{}, nil)
+	if err == nil {
+		t.Fatal("want error after exhausting retries, got nil")
+	}
+	if errors.Is(err, ErrAmbiguousWrite) {
+		t.Fatalf("persistent rejection must NOT be ambiguous (nothing was applied), got %v", err)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 429 {
+		t.Fatalf("want APIError 429, got %v", err)
+	}
+	if calls != 3 { // initial attempt + 2 retries
+		t.Fatalf("want 3 calls (1 + 2 retries), got %d", calls)
+	}
+}
+
+// TestSplitIntoRequestsChunksByByteBudget forces splitIntoRequests to split on
+// the 450KiB byte budget rather than the 100-count or 1000-block limits: each
+// block below carries a ~300KB rich-text span, well under the count/block caps
+// but large enough that two of them exceed maxBytesPerRequest together.
+func TestSplitIntoRequestsChunksByByteBudget(t *testing.T) {
+	big := strings.Repeat("x", 300<<10) // 300KiB of ASCII content
+	blocks := make([]Block, 4)
+	for i := range blocks {
+		blocks[i] = Block{Type: "paragraph", RichText: []Span{{Content: big}}}
+	}
+	batches := splitIntoRequests(blocks)
+	if len(batches) < 2 {
+		t.Fatalf("4x300KiB blocks must span >1 batch via the byte budget, got %d batch(es)", len(batches))
+	}
+	// Order preserved and no block dropped: reconstruct the flattened content
+	// order and compare against the input order.
+	var got []string
+	for _, batch := range batches {
+		for _, b := range batch {
+			got = append(got, b.RichText[0].Content)
+		}
+	}
+	if len(got) != len(blocks) {
+		t.Fatalf("lost blocks: got %d, want %d", len(got), len(blocks))
+	}
+	for i := range blocks {
+		if got[i] != blocks[i].RichText[0].Content {
+			t.Fatalf("order not preserved at index %d", i)
+		}
+	}
+	// Each batch must itself respect the byte budget.
+	for bi, batch := range batches {
+		sum := 0
+		for _, b := range batch {
+			sum += blockBytes(b)
+		}
+		if sum > maxBytesPerRequest {
+			t.Fatalf("batch %d is %d bytes, over the %d budget", bi, sum, maxBytesPerRequest)
+		}
 	}
 }
 

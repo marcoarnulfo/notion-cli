@@ -116,6 +116,19 @@ func TestToBlocksSplitsCodeFenceOver2000Chars(t *testing.T) {
 	}
 }
 
+func TestToBlocksHTMLBlockDegradesToCodeWithWarning(t *testing.T) {
+	blocks, warnings, _ := ToBlocks([]byte("<div>\nhi\n</div>\n"))
+	if len(blocks) == 0 || blocks[0].Type != "code" {
+		t.Fatalf("raw HTML should degrade to a code block, got %+v", blocks)
+	}
+	if got := spanText(blocks[0].RichText); !strings.Contains(got, "hi") {
+		t.Fatalf("HTML content lost, got %q", got)
+	}
+	if !hasWarning(warnings, "html") {
+		t.Fatalf("raw HTML degradation must warn, got %v", warnings)
+	}
+}
+
 func TestToBlocksImageDegradesToLinkWithWarning(t *testing.T) {
 	blocks, warnings, _ := ToBlocks([]byte("![alt](https://img.test/x.png)\n"))
 	if !hasWarning(warnings, "image") {

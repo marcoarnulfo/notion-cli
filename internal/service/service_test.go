@@ -174,6 +174,9 @@ func TestSetBodyAppendFailureKeepsPropertiesApplied(t *testing.T) {
 	if res.Action != "updated" {
 		t.Fatalf("action = %q, want updated", res.Action)
 	}
+	if res.Body == nil {
+		t.Fatal("res.Body must be populated even on append failure: the --json partial-failure contract depends on it")
+	}
 }
 
 // indexOf returns the position of the first "METHOD …suffix" entry, or -1.

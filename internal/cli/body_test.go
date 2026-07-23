@@ -30,6 +30,25 @@ func TestLoadBodyRejectsEmptyFile(t *testing.T) {
 	}
 }
 
+// TestLoadBodyRejectsFileOverOneMiB pins the pre-flight size cap (spec §9): a
+// body file just over 1MiB must be rejected as a usage error (exit 2) before
+// any parsing or network call.
+func TestLoadBodyRejectsFileOverOneMiB(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "huge.md")
+	data := bytes.Repeat([]byte("a"), (1<<20)+1)
+	if err := os.WriteFile(p, data, 0o600); err != nil {
+		t.Fatalf("write huge fixture: %v", err)
+	}
+	_, _, err := loadBody(p, nil, nil)
+	if err == nil {
+		t.Fatal("want error for a body file over 1MiB, got nil")
+	}
+	if exitCodeFor(err) != ExitUsage {
+		t.Fatalf("over-limit body file must be a usage error, got %v (code %d)", err, exitCodeFor(err))
+	}
+}
+
 func TestLoadBodyRejectsMissingFile(t *testing.T) {
 	_, _, err := loadBody(filepath.Join(t.TempDir(), "nope.md"), nil, nil)
 	if err == nil || exitCodeFor(err) != ExitUsage {

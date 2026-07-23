@@ -2,7 +2,6 @@ package notion
 
 import (
 	"encoding/json"
-	"reflect"
 	"testing"
 )
 
@@ -83,5 +82,4 @@ func TestMarshalToDoAndCodeAndChildren(t *testing.T) {
 	if len(kids) != 1 {
 		t.Fatalf("want 1 child, got %v", kids)
 	}
-	_ = reflect.DeepEqual // keep import if trimmed
 }
