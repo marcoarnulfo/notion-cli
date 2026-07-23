@@ -126,3 +126,22 @@ func TestDoDoesNotRetryClientErrors(t *testing.T) {
 		t.Fatalf("made %d calls, want 1", calls)
 	}
 }
+
+// A negative retry budget used to make the loop body run zero times, so do()
+// returned nil having never reached the network — a silent success.
+func TestNegativeMaxRetriesStillPerformsOneAttempt(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	c := New("t", WithBaseURL(srv.URL), WithMaxRetries(-1), WithSleep(func(time.Duration) {}))
+	if err := c.do(context.Background(), http.MethodGet, "/v1/x", nil, nil); err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("made %d calls, want 1", calls)
+	}
+}

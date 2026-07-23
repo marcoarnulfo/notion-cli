@@ -16,8 +16,17 @@ const (
 	maxBackoff        = 30 * time.Second
 )
 
-// WithMaxRetries caps how many times a retryable response is retried.
-func WithMaxRetries(n int) Option { return func(c *Client) { c.maxRetries = n } }
+// WithMaxRetries caps how many times a retryable response is retried. Zero
+// disables retrying; a negative value is ignored rather than honoured, because
+// the retry loop would then run zero attempts and report success without ever
+// reaching the network.
+func WithMaxRetries(n int) Option {
+	return func(c *Client) {
+		if n >= 0 {
+			c.maxRetries = n
+		}
+	}
+}
 
 // WithSleep replaces the sleep function. Tests use it to run instantly.
 func WithSleep(f func(time.Duration)) Option { return func(c *Client) { c.sleep = f } }
