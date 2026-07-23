@@ -86,10 +86,17 @@ func promptForToken(cmd *cobra.Command) (string, error) {
 	}
 	answer = strings.ToLower(strings.TrimSpace(answer))
 
-	// A prompt that persists a secret must be permissive about what counts as
-	// "no": "nope", "N.", a typo, anything starting with n declines. Only
-	// exact "y"/"yes"/empty should ever save; failing open here means a typo
-	// writes a token to disk when the user meant to say no.
+	// Saving is the recommended default (the prompt's own [Y/n] and the doc
+	// comment above say so), so refusal is what has to be recognized
+	// broadly: "nope", "N.", anything starting with n declines, and
+	// everything else — "y", "yes", a bare Enter, but also "q" or a typo —
+	// saves. That is deliberate, not an oversight: this prompt only ever
+	// runs at an interactive terminal right after the user pasted the token
+	// in, so the worst case of failing open is writing to a file the user
+	// already trusted enough to type a secret into: 0600, this user's, and
+	// print the location. Failing closed instead would mean a typo silently
+	// discards a token the user meant to keep, sending them back through
+	// the whole prompt next session for no reason.
 	if strings.HasPrefix(answer, "n") {
 		// Never echo the token itself here (see the package-wide rule that it
 		// must not appear in output): the user just typed it and still has it
