@@ -281,6 +281,20 @@ func TestValidateAppendableRejectsTooManyDirectChildren(t *testing.T) {
 	}
 }
 
+func TestValidateAppendableAcceptsTwoLevelsRejectsThree(t *testing.T) {
+	twoLevel := Block{Type: "bulleted_list_item", RichText: []Span{{Content: "a"}},
+		Children: []Block{{Type: "bulleted_list_item", RichText: []Span{{Content: "b"}}}}}
+	if err := ValidateAppendable([]Block{twoLevel}); err != nil {
+		t.Fatalf("2 levels must be accepted: %v", err)
+	}
+	threeLevel := Block{Type: "bulleted_list_item", RichText: []Span{{Content: "a"}},
+		Children: []Block{{Type: "bulleted_list_item", RichText: []Span{{Content: "b"}},
+			Children: []Block{{Type: "bulleted_list_item", RichText: []Span{{Content: "c"}}}}}}}
+	if err := ValidateAppendable([]Block{threeLevel}); err == nil {
+		t.Fatal("3 levels must be rejected pre-flight")
+	}
+}
+
 func TestValidateAppendableAcceptsNormalDoc(t *testing.T) {
 	blocks := []Block{para(0), para(0), {Type: "divider"}}
 	if err := ValidateAppendable(blocks); err != nil {
@@ -369,18 +383,37 @@ func blockBytes(b Block) int {
 	return len(data)
 }
 
+// blockDepth returns the nesting depth of a subtree: a leaf is 1, a block whose
+// children are leaves is 2, and so on. Notion accepts at most 2 levels per
+// append request.
+func blockDepth(b Block) int {
+	d := 1
+	for _, c := range b.Children {
+		if cd := 1 + blockDepth(c); cd > d {
+			d = cd
+		}
+	}
+	return d
+}
+
 // ValidateAppendable reports whether blocks can be materialized as valid append
 // requests WITHOUT any network call. It fails only on an irreducible case: a
 // single top-level element that cannot fit one request alone (>100 direct
-// children, or a subtree over the block/byte caps). Grouping small blocks is
-// splitIntoRequests' job; deeper nesting than v1 supports surfaces here as a
-// clear pre-flight error rather than a mid-replace 400.
+// children, a subtree over the block/byte caps, or nesting deeper than 2
+// levels). Grouping small blocks is splitIntoRequests' job; deeper nesting than
+// v1 supports surfaces here as a clear pre-flight error rather than a
+// mid-replace 400. The depth check is defense in depth: the walker already
+// promotes deep nesting, so a positive here means a walker bug, not user input.
 func ValidateAppendable(blocks []Block) error {
 	for i, b := range blocks {
 		if len(b.Children) > maxChildrenPerRequest {
 			return fmt.Errorf(
 				"block %d (%s) has %d direct children, over the %d-per-request limit; deeply nested content is not supported yet",
 				i, b.Type, len(b.Children), maxChildrenPerRequest)
+		}
+		if d := blockDepth(b); d > 2 {
+			return fmt.Errorf("block %d (%s) nests %d levels deep, over Notion's 2-level per-request limit",
+				i, b.Type, d)
 		}
 		if n := countBlocks(b); n > maxBlocksPerRequest {
 			return fmt.Errorf("block %d (%s) expands to %d blocks, over the %d-per-request limit",
@@ -582,13 +615,14 @@ func (c *Client) doRejectRetryable(ctx context.Context, method, path string, bod
 				continue
 			case apiErr.Status >= 500:
 				// 500/502/504: may have reached Notion and been applied.
-				return fmt.Errorf("%w: %v", ErrAmbiguousWrite, err)
+				return fmt.Errorf("%w: %w", ErrAmbiguousWrite, err)
 			default:
 				return err // 4xx: rejected, no side effect
 			}
 		}
-		// Transport-level error (timeout, reset): ambiguous.
-		return fmt.Errorf("%w: %v", ErrAmbiguousWrite, err)
+		// Transport-level error (timeout, reset): ambiguous. %w twice keeps both
+		// ErrAmbiguousWrite and the underlying error reachable via errors.Is/As.
+		return fmt.Errorf("%w: %w", ErrAmbiguousWrite, err)
 	}
 	return nil // unreachable: the loop returns on the last attempt
 }
@@ -623,7 +657,10 @@ git commit -m "feat(notion): reject-only retry mode with ErrAmbiguousWrite for n
 - [ ] **Step 1: Write the failing test**
 
 ```go
-import "net/url"
+// This test file already imports context/errors/net/http/httptest/atomic/time
+// from Task 3; the append test additionally needs "encoding/json" for the body
+// decoder. "net/url" belongs in blocks.go (production), NOT in this test.
+import "encoding/json"
 
 func TestAppendBlockChildrenChunksSequentiallyWithPositionEnd(t *testing.T) {
 	var bodies []map[string]any
@@ -888,11 +925,11 @@ func TestSplitBlockOnSpanLimit(t *testing.T) {
 	if len(blocks) != 3 {
 		t.Fatalf("250 spans want 3 blocks, got %d", len(blocks))
 	}
-	if len(blocks[1].Children) != 0 {
-		t.Fatal("children must stay only on the first fragment")
+	if len(blocks[0].Children) != 0 || len(blocks[1].Children) != 0 {
+		t.Fatal("children must not be on the non-final fragments")
 	}
-	if len(blocks[0].Children) != 1 {
-		t.Fatal("first fragment must keep the children")
+	if len(blocks[len(blocks)-1].Children) != 1 {
+		t.Fatal("children must move to the last fragment (text reads before nested content)")
 	}
 }
 ```
@@ -1006,15 +1043,16 @@ func lastSpaceBefore(r []rune, limit int) int {
 
 // splitBlockOnSpanLimit splits a block whose rich text exceeds maxSpansPerBlock
 // into several blocks of the same type, each with at most maxSpansPerBlock
-// spans. Children stay on the first fragment only. Called after splitLongSpans,
-// which is what can push a block's span count over the limit.
+// spans. Children move to the LAST fragment, so the split text still reads
+// before the nested content. Called after splitLongSpans, which is what can
+// push a block's span count over the limit.
 func splitBlockOnSpanLimit(b notion.Block) []notion.Block {
 	if len(b.RichText) <= maxSpansPerBlock {
 		return []notion.Block{b}
 	}
-	var out []notion.Block
+	children := b.Children
+	var frags []notion.Block
 	spans := b.RichText
-	first := true
 	for len(spans) > 0 {
 		n := maxSpansPerBlock
 		if n > len(spans) {
@@ -1022,14 +1060,12 @@ func splitBlockOnSpanLimit(b notion.Block) []notion.Block {
 		}
 		frag := b
 		frag.RichText = spans[:n]
-		if !first {
-			frag.Children = nil
-		}
-		out = append(out, frag)
+		frag.Children = nil
+		frags = append(frags, frag)
 		spans = spans[n:]
-		first = false
 	}
-	return out
+	frags[len(frags)-1].Children = children // children read after all the text
+	return frags
 }
 ```
 
@@ -1128,21 +1164,28 @@ func TestToBlocksCodeLanguageCanonicalized(t *testing.T) {
 	}
 }
 
-func TestToBlocksNestedListKeepsTwoLevelsAndPromotesDeeper(t *testing.T) {
+func TestToBlocksNestedListKeepsTwoLevelsAndPromotesDeeperInOrder(t *testing.T) {
 	src := "- a\n  - b\n    - c\n"
 	blocks, warnings, _ := ToBlocks([]byte(src))
-	// Top level: one item "a" with a child "b"; "c" (level 3) is promoted, not lost.
+	// Top level: item "a" with children; "c" (level 3) is promoted to level 2,
+	// as a sibling that FOLLOWS "b" (reading order), never precedes it.
 	if blocks[0].Type != "bulleted_list_item" || len(blocks[0].Children) == 0 {
 		t.Fatalf("level-2 nesting not materialized: %+v", blocks[0])
 	}
-	if len(blocks[0].Children[0].Children) != 0 {
-		t.Fatal("level 3 must not be materialized (2-level cap)")
+	kids := blocks[0].Children
+	bi := indexMentioning(kids, "b")
+	ci := indexMentioning(kids, "c")
+	if bi < 0 || ci < 0 {
+		t.Fatalf("both 'b' and 'c' must survive as children: %+v", kids)
+	}
+	if bi > ci {
+		t.Fatalf("promoted 'c' (@%d) must follow its parent 'b' (@%d): %+v", ci, bi, kids)
+	}
+	if len(kids[bi].Children) != 0 {
+		t.Fatal("level 3 must not be materialized under 'b' (2-level cap)")
 	}
 	if !hasWarning(warnings, "nesting") {
 		t.Fatalf("deep nesting must warn, got %v", warnings)
-	}
-	if !mentions(blocks, "c") {
-		t.Fatal("level-3 text 'c' must be preserved somewhere, not dropped")
 	}
 }
 
@@ -1154,6 +1197,62 @@ func TestToBlocksTableDegradesToCodeWithWarning(t *testing.T) {
 	}
 	if !hasWarning(warnings, "table") {
 		t.Fatalf("table degradation must warn, got %v", warnings)
+	}
+}
+
+func TestToBlocksSplitsCodeFenceOver2000Chars(t *testing.T) {
+	// A 3000-char code fence must split so no span exceeds the 2000-char cap —
+	// otherwise the append 400s mid-replace, which the pre-flight cannot catch.
+	huge := "```\n" + strings.Repeat("x", 3000) + "\n```\n"
+	blocks, _, _ := ToBlocks([]byte(huge))
+	seenCode := false
+	for _, b := range blocks {
+		if b.Type == "code" {
+			seenCode = true
+		}
+		for _, s := range b.RichText {
+			if len([]rune(s.Content)) > 2000 {
+				t.Fatalf("a %s span is %d runes, over the 2000 cap", b.Type, len([]rune(s.Content)))
+			}
+		}
+	}
+	if !seenCode {
+		t.Fatal("expected at least one code block")
+	}
+}
+
+func TestToBlocksImageDegradesToLinkWithWarning(t *testing.T) {
+	blocks, warnings, _ := ToBlocks([]byte("![alt](https://img.test/x.png)\n"))
+	if !hasWarning(warnings, "image") {
+		t.Fatalf("image must warn, got %v", warnings)
+	}
+	found := false
+	for _, b := range blocks {
+		for _, s := range b.RichText {
+			if s.Link == "https://img.test/x.png" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("image must survive as a link span: %+v", blocks)
+	}
+}
+
+func TestToBlocksBlockquoteMultiParagraphNoDuplication(t *testing.T) {
+	// First paragraph is the quote's own text; the second becomes a child. The
+	// first must NOT also appear as a child (the old two-pass bug).
+	blocks, _, _ := ToBlocks([]byte("> first\n>\n> second\n"))
+	if blocks[0].Type != "quote" {
+		t.Fatalf("want quote, got %s", blocks[0].Type)
+	}
+	if got := spanText(blocks[0].RichText); !strings.Contains(got, "first") {
+		t.Fatalf("quote text should be the first paragraph: %q", got)
+	}
+	for _, child := range blocks[0].Children {
+		if strings.Contains(spanText(child.RichText), "first") {
+			t.Fatal("first paragraph must not be duplicated as a child")
+		}
 	}
 }
 
@@ -1173,13 +1272,22 @@ func hasWarning(ws []string, sub string) bool {
 	}
 	return false
 }
-func mentions(blocks []notion.Block, sub string) bool {
+
+func spanText(spans []notion.Span) string {
+	var b strings.Builder
+	for _, s := range spans {
+		b.WriteString(s.Content)
+	}
+	return b.String()
+}
+
+// indexMentioning returns the index of the first block whose own text (or any
+// descendant's) contains sub, or -1.
+func indexMentioning(blocks []notion.Block, sub string) int {
 	var walk func(b notion.Block) bool
 	walk = func(b notion.Block) bool {
-		for _, s := range b.RichText {
-			if strings.Contains(s.Content, sub) {
-				return true
-			}
+		if strings.Contains(spanText(b.RichText), sub) {
+			return true
 		}
 		for _, c := range b.Children {
 			if walk(c) {
@@ -1188,12 +1296,12 @@ func mentions(blocks []notion.Block, sub string) bool {
 		}
 		return false
 	}
-	for _, b := range blocks {
+	for i, b := range blocks {
 		if walk(b) {
-			return true
+			return i
 		}
 	}
-	return false
+	return -1
 }
 ```
 
@@ -1206,7 +1314,7 @@ Expected: FAIL — `undefined: ToBlocks`.
 
 - [ ] **Step 4: Write the implementation** (`internal/markdown/markdown.go`)
 
-Walker producing plain-text spans. Inline formatting (Emphasis/Link/etc.) is deliberately flattened to text here; Task 7 replaces `plainSpans` with styled extraction.
+Walker producing **plain-text** spans (inline formatting comes in Task 7). Two invariants make this correct: (1) every text-bearing block — headings, paragraphs, list items, **code, and degraded table/HTML/unknown blocks** — goes through `emit`, which applies BOTH the 2000-char span split and the 100-span block split, so nothing can 400 on size; (2) content nested deeper than `maxNestDepth` is **promoted after** its parent (never before), and `ValidateAppendable` (Task 2) rejects any residual depth-3 as defense in depth.
 
 ```go
 package markdown
@@ -1218,8 +1326,8 @@ import (
 	"github.com/marcoarnulfo/notion-cli/internal/notion"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
-	extast "github.com/yuin/goldmark/extension/ast"
 	"github.com/yuin/goldmark/extension"
+	extast "github.com/yuin/goldmark/extension/ast"
 	"github.com/yuin/goldmark/text"
 )
 
@@ -1243,19 +1351,36 @@ func ToBlocks(src []byte) ([]notion.Block, []string, error) {
 }
 
 // normalize strips a leading BOM and converts CRLF/CR to LF before parsing.
+// "﻿" is the BOM as an escape so it survives copy/paste of this plan.
 func normalize(src []byte) []byte {
-	src = []byte(strings.ReplaceAll(strings.ReplaceAll(string(src), "\r\n", "\n"), "\r", "\n"))
-	return []byte(strings.TrimPrefix(string(src), "﻿"))
+	s := strings.ReplaceAll(strings.ReplaceAll(string(src), "\r\n", "\n"), "\r", "\n")
+	return []byte(strings.TrimPrefix(s, "﻿"))
 }
 
 type converter struct {
-	src      []byte
-	warnings []string
+	src        []byte
+	warnings   []string
 	warnedNest bool
 }
 
 func (c *converter) warn(format string, args ...any) {
 	c.warnings = append(c.warnings, fmt.Sprintf(format, args...))
+}
+
+func (c *converter) warnNesting() {
+	if !c.warnedNest { // one warning, not one per over-deep node
+		c.warn("nesting deeper than %d levels was flattened", maxNestDepth)
+		c.warnedNest = true
+	}
+}
+
+// emit finalizes a text-bearing block: it splits over-long spans (2000 chars)
+// then over-long blocks (100 spans), so every produced block is within Notion's
+// rich-text limits. EVERY text block must go through here — code and degraded
+// constructs included, since those are the most likely to be large.
+func (c *converter) emit(b notion.Block) []notion.Block {
+	b.RichText = splitLongSpans(b.RichText)
+	return splitBlockOnSpanLimit(b)
 }
 
 // block converts one block-level node into zero or more Notion blocks at the
@@ -1265,40 +1390,41 @@ func (c *converter) block(n ast.Node, depth int) []notion.Block {
 	case *ast.Heading:
 		level := node.Level
 		if level > 3 {
-			level = 3
+			level = 3 // Notion has only heading_1..3
 		}
-		return c.finish(notion.Block{Type: fmt.Sprintf("heading_%d", level), RichText: c.spans(node)})
+		return c.emit(notion.Block{Type: fmt.Sprintf("heading_%d", level), RichText: c.spans(node)})
 	case *ast.Paragraph, *ast.TextBlock:
-		return c.finish(notion.Block{Type: "paragraph", RichText: c.spans(node)})
+		return c.emit(notion.Block{Type: "paragraph", RichText: c.spans(n)})
 	case *ast.List:
 		return c.list(node, depth)
 	case *ast.Blockquote:
-		return c.finish(notion.Block{Type: "quote", RichText: c.quoteText(node), Children: c.quoteChildren(node, depth)})
+		return c.quote(node, depth)
 	case *ast.ThematicBreak:
 		return []notion.Block{{Type: "divider"}}
 	case *ast.FencedCodeBlock:
-		return c.finish(notion.Block{Type: "code", Language: CanonicalLanguage(string(node.Language(c.src))), RichText: []notion.Span{{Content: c.codeText(node)}}})
+		return c.emit(notion.Block{Type: "code", Language: CanonicalLanguage(string(node.Language(c.src))), RichText: []notion.Span{{Content: c.codeText(node)}}})
 	case *ast.CodeBlock:
-		return c.finish(notion.Block{Type: "code", Language: "plain text", RichText: []notion.Span{{Content: c.codeText(node)}}})
+		return c.emit(notion.Block{Type: "code", Language: "plain text", RichText: []notion.Span{{Content: c.codeText(node)}}})
 	case *extast.Table:
-		c.warn("table on line rendered as a plain code block (native tables not supported yet)")
-		return []notion.Block{{Type: "code", Language: "plain text", RichText: []notion.Span{{Content: c.rawSource(node)}}}}
+		c.warn("table rendered as a plain code block (native tables not supported yet)")
+		return c.emit(notion.Block{Type: "code", Language: "plain text", RichText: []notion.Span{{Content: c.rawSource(node)}}})
 	case *ast.HTMLBlock:
 		c.warn("raw HTML rendered as a plain code block")
-		return []notion.Block{{Type: "code", Language: "html", RichText: []notion.Span{{Content: c.htmlText(node)}}}}
+		return c.emit(notion.Block{Type: "code", Language: "html", RichText: []notion.Span{{Content: c.htmlText(node)}}})
 	default:
 		// Unknown block: preserve its text as a paragraph rather than drop it.
 		txt := c.rawSource(n)
 		if strings.TrimSpace(txt) == "" {
 			return nil
 		}
-		return c.finish(notion.Block{Type: "paragraph", RichText: []notion.Span{{Content: txt}}})
+		return c.emit(notion.Block{Type: "paragraph", RichText: []notion.Span{{Content: txt}}})
 	}
 }
 
 // list converts a list node, mapping each item to a list-item block. A child
-// sub-list becomes the item's Children, up to maxNestDepth; deeper nesting is
-// promoted (flattened one level) with a single warning so no text is lost.
+// sub-list becomes the item's Children up to maxNestDepth; deeper nesting is
+// promoted to the current level with a single warning so no text is lost. The
+// promoted blocks are appended AFTER the parent item, so reading order holds.
 func (c *converter) list(node *ast.List, depth int) []notion.Block {
 	itemType := "bulleted_list_item"
 	if node.IsOrdered() {
@@ -1315,45 +1441,63 @@ func (c *converter) list(node *ast.List, depth int) []notion.Block {
 			block.Type = "to_do"
 			block.Checked = checked
 		}
+		var promoted []notion.Block // deep content lifted to this level
 		for sub := li.FirstChild(); sub != nil; sub = sub.NextSibling() {
 			switch child := sub.(type) {
 			case *ast.List:
 				if depth >= maxNestDepth {
-					if !c.warnedNest {
-						c.warn("nesting deeper than %d levels was flattened", maxNestDepth)
-						c.warnedNest = true
-					}
-					out = append(out, c.block(child, depth)...) // promote to current level
+					c.warnNesting()
+					promoted = append(promoted, c.list(child, depth)...)
 				} else {
-					block.Children = append(block.Children, c.block(child, depth+1)...)
+					block.Children = append(block.Children, c.list(child, depth+1)...)
 				}
 			default:
-				if len(block.RichText) == 0 {
-					block.RichText = c.spans(sub)
-				} else {
-					block.Children = append(block.Children, c.block(sub, depth+1)...)
+				switch {
+				case len(block.RichText) == 0 && isTextual(child):
+					block.RichText = c.spans(child) // first textual child = the item's own text
+				case depth >= maxNestDepth:
+					c.warnNesting()
+					promoted = append(promoted, c.block(child, depth)...)
+				default:
+					block.Children = append(block.Children, c.block(child, depth+1)...)
 				}
 			}
 		}
-		out = append(out, c.finishOne(block)...)
+		out = append(out, c.emit(block)...)
+		out = append(out, promoted...) // AFTER the parent → reading order preserved
 	}
 	return out
 }
 
-// finish runs the span-limit split on a single produced block; finishOne is the
-// same for a block that may already carry children. Both keep every block under
-// the 100-span cap. (splitLongSpans has already run inside spans().)
-func (c *converter) finish(b notion.Block) []notion.Block  { return splitBlockOnSpanLimit(b) }
-func (c *converter) finishOne(b notion.Block) []notion.Block { return splitBlockOnSpanLimit(b) }
+// quote converts a blockquote: its first textual child becomes the quote's own
+// text, everything else becomes children (or is promoted past the depth cap).
+// Iterating once avoids the double-count a separate text/children pass would hit
+// when the first child is not a paragraph.
+func (c *converter) quote(node *ast.Blockquote, depth int) []notion.Block {
+	block := notion.Block{Type: "quote"}
+	var promoted []notion.Block
+	for sub := node.FirstChild(); sub != nil; sub = sub.NextSibling() {
+		switch {
+		case len(block.RichText) == 0 && isTextual(sub):
+			block.RichText = c.spans(sub)
+		case depth >= maxNestDepth:
+			c.warnNesting()
+			promoted = append(promoted, c.block(sub, depth)...)
+		default:
+			block.Children = append(block.Children, c.block(sub, depth+1)...)
+		}
+	}
+	return append(c.emit(block), promoted...)
+}
 
 // spans extracts plain text from a node's inline children (Task 7 adds
-// annotations) and applies the 2000-char split.
+// annotations). Splitting is emit's job, so this returns raw spans.
 func (c *converter) spans(n ast.Node) []notion.Span {
 	txt := c.inlineText(n)
 	if txt == "" {
 		return nil
 	}
-	return splitLongSpans([]notion.Span{{Content: txt}})
+	return []notion.Span{{Content: txt}}
 }
 
 // inlineText concatenates the textual content of a node's inline descendants.
@@ -1379,39 +1523,11 @@ func (c *converter) inlineText(n ast.Node) string {
 	return b.String()
 }
 
-func (c *converter) quoteText(n *ast.Blockquote) []notion.Span {
-	// First paragraph becomes the quote's own text; deeper content becomes children.
-	if p := firstParagraph(n); p != nil {
-		return c.spans(p)
-	}
-	return nil
-}
-
-func (c *converter) quoteChildren(n *ast.Blockquote, depth int) []notion.Block {
-	var out []notion.Block
-	first := true
-	for ch := n.FirstChild(); ch != nil; ch = ch.NextSibling() {
-		if first {
-			if _, ok := ch.(*ast.Paragraph); ok {
-				first = false
-				continue // consumed by quoteText
-			}
-		}
-		if depth >= maxNestDepth {
-			out = append(out, c.block(ch, depth)...)
-		} else {
-			out = append(out, c.block(ch, depth+1)...)
-		}
-	}
-	return out
-}
-
 func (c *converter) codeText(n ast.Node) string {
 	var b strings.Builder
 	lines := n.Lines()
 	for i := 0; i < lines.Len(); i++ {
-		seg := lines.At(i)
-		b.Write(seg.Value(c.src))
+		b.Write(lines.At(i).Value(c.src))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -1443,9 +1559,20 @@ func (c *converter) rawSource(n ast.Node) string {
 	return string(c.src[start:stop])
 }
 
-func firstParagraph(n ast.Node) ast.Node {
+// isTextual reports whether a node is a paragraph or the tight-list TextBlock
+// goldmark emits for `- item` — both hold a list item's own inline text.
+func isTextual(n ast.Node) bool {
+	switch n.(type) {
+	case *ast.Paragraph, *ast.TextBlock:
+		return true
+	}
+	return false
+}
+
+// firstTextual returns the first paragraph/TextBlock child, or nil.
+func firstTextual(n ast.Node) ast.Node {
 	for ch := n.FirstChild(); ch != nil; ch = ch.NextSibling() {
-		if _, ok := ch.(*ast.Paragraph); ok {
+		if isTextual(ch) {
 			return ch
 		}
 	}
@@ -1453,20 +1580,23 @@ func firstParagraph(n ast.Node) ast.Node {
 }
 
 // taskState reports whether a list item is a GFM task item and its checked
-// state. A task item's first inline child is an extension TaskCheckBox.
+// state. In goldmark the checkbox is the first inline child of the item's first
+// textual child — which is a TextBlock in a tight list, a Paragraph in a loose
+// one, so both must be accepted (a Paragraph-only check misses the common
+// `- [ ]` tight case entirely).
 func taskState(li *ast.ListItem) (checked bool, ok bool) {
-	para := firstParagraph(li)
-	if para == nil {
+	t := firstTextual(li)
+	if t == nil {
 		return false, false
 	}
-	if cb, isCB := para.FirstChild().(*extast.TaskCheckBox); isCB {
+	if cb, isCB := t.FirstChild().(*extast.TaskCheckBox); isCB {
 		return cb.IsChecked, true
 	}
 	return false, false
 }
 ```
 
-> Implementer note: goldmark's exact accessor names (`Segment.Value`, `List.IsOrdered`, `FencedCodeBlock.Language`, `Node.Lines`, `extast.TaskCheckBox.IsChecked`, `AutoLink.URL`) are for v1.7.x. If a name differs in the resolved version, let the RED tests drive the fix — the behavior the tests assert is the contract, not these accessor names.
+> Implementer note: goldmark's exact accessor names (`Segment.Value`, `List.IsOrdered`, `FencedCodeBlock.Language`, `Node.Lines`, `extast.TaskCheckBox.IsChecked`, `AutoLink.URL`) are for v1.7.x. If a name differs in the resolved version, let the RED tests drive the fix — the behavior the tests assert is the contract, not these accessor names. The list/quote **structure** (tight-list `TextBlock`, promote-after-parent order, single-pass quote) is not a naming detail: keep it as written.
 
 - [ ] **Step 5: Run to verify it passes**
 
@@ -1572,20 +1702,17 @@ Expected: FAIL — spans are unstyled (plain), so `sawBold` etc. are false.
 
 - [ ] **Step 3: Write the implementation** (edit `internal/markdown/markdown.go`)
 
-Replace `spans` and `inlineText` with a styled recursion. Keep `inlineText` only where raw text is needed (it is still used by `rawSource`/degradation via source slicing, so leave `rawSource` as is; remove `inlineText` if now unused).
+Replace the body of `spans` with a styled recursion and **delete** the now-unused `inlineText` method (`rawSource`/`codeText` do their own source slicing and don't use it; `go vet` will flag it if left). Splitting stays in `emit` — `spans` returns raw styled spans.
 
 ```go
-// spans extracts styled spans from a node's inline children and applies the
-// 2000-char split.
+// spans extracts styled spans from a node's inline children. Splitting is
+// emit's job, so this returns raw (unsplit) spans.
 func (c *converter) spans(n ast.Node) []notion.Span {
 	var raw []notion.Span
 	for ch := n.FirstChild(); ch != nil; ch = ch.NextSibling() {
 		raw = append(raw, c.inlineSpans(ch, notion.Span{})...)
 	}
-	if len(raw) == 0 {
-		return nil
-	}
-	return splitLongSpans(raw)
+	return raw
 }
 
 // inlineSpans converts one inline node into styled spans, carrying the ambient
@@ -1667,12 +1794,12 @@ func (c *converter) childSpans(n ast.Node, style notion.Span) []notion.Span {
 }
 ```
 
-Delete the now-unused `inlineText` method (keep `codeText`, `rawSource`). Run `go vet` to confirm nothing else referenced it (`quoteText` uses `spans`, which is fine).
+Delete the now-unused `inlineText` method (keep `codeText`, `rawSource`; `block()`/`list()`/`quote()` all reach text through `spans`, which is what changed). Run `go vet` to confirm nothing else referenced `inlineText`.
 
 - [ ] **Step 4: Run to verify it passes**
 
 Run: `go test ./internal/markdown/ -race -v`
-Expected: PASS (Task 6 structural tests still green — `mentions`/plain assertions hold since content is unchanged, only annotations added — plus Task 7 inline tests green).
+Expected: PASS (Task 6 structural tests still green — the `indexMentioning`/degradation assertions hold since content is unchanged, only annotations are added — plus Task 7 inline tests green).
 
 - [ ] **Step 5: Commit**
 
@@ -1782,6 +1909,41 @@ func TestUpsertWithNilBodyLeavesBodyUntouched(t *testing.T) {
 	}
 }
 
+func TestSetBodyAppendFailureKeepsPropertiesApplied(t *testing.T) {
+	// The children PATCH (append) 400s. Properties were already written, so
+	// the caller must get a *BodyWriteError with the page still populated.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/data_sources/ds1":
+			w.Write([]byte(schemaJSON))
+		case r.URL.Path == "/v1/data_sources/ds1/query":
+			w.Write([]byte(`{"results":[` + rowJSON + `],"has_more":false}`))
+		case strings.HasSuffix(r.URL.Path, "/children") && r.Method == http.MethodGet:
+			w.Write([]byte(`{"results":[],"has_more":false}`))
+		case strings.HasSuffix(r.URL.Path, "/children") && r.Method == http.MethodPatch:
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"code":"validation_error","message":"bad block"}`))
+		default: // PATCH /v1/pages/{id}
+			w.Write([]byte(rowJSON))
+		}
+	}))
+	defer srv.Close()
+
+	s := New(notion.New("t", notion.WithBaseURL(srv.URL), notion.WithSleep(func(time.Duration) {})), testProfile())
+	res, err := s.Set(context.Background(), tracker.Fields{Ticket: "BDF-231"},
+		&BodyRequest{Blocks: []notion.Block{{Type: "paragraph", RichText: []notion.Span{{Content: "x"}}}}})
+	var bwe *BodyWriteError
+	if !errors.As(err, &bwe) {
+		t.Fatalf("append failure must be a *BodyWriteError, got %v", err)
+	}
+	if res.Page.ID == "" {
+		t.Fatal("properties were written, so Result.Page must be populated")
+	}
+	if res.Action != "updated" {
+		t.Fatalf("action = %q, want updated", res.Action)
+	}
+}
+
 // indexOf returns the position of the first "METHOD …suffix" entry, or -1.
 func indexOf(seen []string, method, suffix string) int {
 	for i, e := range seen {
@@ -1793,7 +1955,14 @@ func indexOf(seen []string, method, suffix string) int {
 }
 ```
 
-Add `"io"`, `"strings"`, `"time"` to the service_test imports if missing. **Update every existing `s.Upsert(...)`, `s.Set(...)`, `s.SetByID(...)` call in this file to pass a trailing `nil`.**
+Add `"io"`, `"strings"`, `"time"` to the service_test imports if missing (`errors` is already imported).
+
+**Call-site updates required in THIS task (or the tree does not compile / `go test ./...` is red at the task's end):**
+- `internal/service/service_test.go` — every existing `s.Upsert(...)`, `s.Set(...)` call: add a trailing `nil`.
+- `internal/service/pageid_test.go` — every `s.SetByID(ctx, id, fields)` (there are ~5, around lines 91/137/175/222/278): add a trailing `nil`.
+- `internal/cli/upsert.go` and `internal/cli/set.go` — the production call sites: pass `nil` as the new `body` argument for now (Task 9 replaces `nil` with the real `--body-file` wiring). This keeps `go test ./... -race` green at the end of Task 8, honoring the plan's global constraint.
+
+Run `grep -rn 'SetByID\|\.Upsert(\|\.Set(' internal/` first to catch any call site this list missed.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -1831,29 +2000,38 @@ func (e *BodyWriteError) Unwrap() error { return e.err }
 // replaceBody makes the page body equal to req.Blocks with replace semantics:
 // snapshot existing children, append the new body at the end, then delete the
 // snapshotted children — skipping child_page/child_database so sub-pages are
-// never archived. The order converges on re-run if append fails midway.
+// never archived. The order converges on re-run if append fails midway. On a
+// failed DELETE, res already carries the real BlocksWritten (the append DID
+// happen), which the CLI surfaces even in the partial-failure JSON (spec §8).
 func (s *Service) replaceBody(ctx context.Context, pageID string, req *BodyRequest) (BodyResult, error) {
 	var res BodyResult
 	old, err := s.client.ListBlockChildren(ctx, pageID)
 	if err != nil {
 		return res, err
 	}
+	// Count how many of the snapshot we will actually delete (sub-pages are kept).
+	toDelete := 0
+	for _, ch := range old {
+		if ch.Type != "child_page" && ch.Type != "child_database" {
+			toDelete++
+		}
+	}
+	progress(req.Progress, "appending %d block(s)…", len(req.Blocks))
 	if err := s.client.AppendBlockChildren(ctx, pageID, req.Blocks); err != nil {
 		return res, err
 	}
 	res.BlocksWritten = len(req.Blocks)
-	progress(req.Progress, "wrote %d block(s); removing %d old block(s)", len(req.Blocks), len(old))
-	for i, ch := range old {
+	for _, ch := range old {
 		if ch.Type == "child_page" || ch.Type == "child_database" {
 			res.Warnings = append(res.Warnings,
 				fmt.Sprintf("kept a %s (%s): deleting it would archive a sub-page or database", ch.Type, ch.ID))
 			continue
 		}
 		if err := s.client.DeleteBlock(ctx, ch.ID); err != nil {
-			return res, err
+			return res, err // res.BlocksWritten is already set: the append succeeded
 		}
 		res.BlocksDeleted++
-		progress(req.Progress, "deleted %d/%d old block(s)", i+1, len(old))
+		progress(req.Progress, "deleted %d/%d old block(s)", res.BlocksDeleted, toDelete)
 	}
 	return res, nil
 }
@@ -1986,15 +2164,15 @@ type Result struct {
 }
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [ ] **Step 4: Run to verify it passes (whole tree, per the global constraint)**
 
-Run: `go test ./internal/service/ -race -v`
-Expected: PASS (updated existing tests + new body tests).
+Run: `go test ./... -race`
+Expected: PASS. This must include `internal/service` (new + updated tests), `internal/cli` (compiles because upsert.go/set.go now pass `nil`), and `internal/service/pageid_test.go` (call sites updated). If `internal/cli` fails to compile, a `SetByID`/`Set`/`Upsert` call site was missed — fix it before committing.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/service/service.go internal/service/service_test.go
+git add internal/service/service.go internal/service/service_test.go internal/service/pageid_test.go internal/cli/upsert.go internal/cli/set.go
 git commit -m "feat(service): replaceBody and body-aware Upsert/Set/SetByID"
 ```
 
@@ -2018,10 +2196,16 @@ Follow the existing cli test style (drive through `executeArgs` with the seams `
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/marcoarnulfo/notion-cli/internal/service"
+	"github.com/spf13/cobra"
 )
 
 func TestLoadBodyRejectsEmptyFile(t *testing.T) {
@@ -2051,25 +2235,79 @@ func TestLoadBodyReadsStdin(t *testing.T) {
 	}
 }
 
-func TestExitCodeForBodyWriteErrorIsGeneric(t *testing.T) {
-	// A body failure carrying a 400 underneath must still exit 1 (partial
-	// success), not 2 — properties were written.
-	inner := &notion.APIError{Status: 400, Code: "validation_error", Message: "bad"}
-	err := &service.BodyWriteError{} // constructed via helper below
-	_ = inner
-	if got := exitCodeFor(wrapBodyWriteError(inner)); got != ExitError {
-		t.Fatalf("BodyWriteError must exit 1, got %d", got)
+// Partial failure e2e: properties are written, then the body append 400s. The
+// command must exit 1 (NOT 2, despite the underlying 400) and, with --json,
+// still print a parsable object marking the body as unwritten. This is the
+// most delicate public contract of the feature (spec §8).
+func TestUpsertBodyAppendFailureExitsOneWithParsableJSON(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/data_sources/ds1":
+			w.Write([]byte(cliSchemaJSON))
+		case r.URL.Path == "/v1/data_sources/ds1/query":
+			w.Write([]byte(`{"results":[` + cliRowJSON + `],"has_more":false}`))
+		case strings.HasSuffix(r.URL.Path, "/children") && r.Method == http.MethodGet:
+			w.Write([]byte(`{"results":[],"has_more":false}`))
+		case strings.HasSuffix(r.URL.Path, "/children") && r.Method == http.MethodPatch:
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"code":"validation_error","message":"bad block"}`))
+		default: // PATCH /v1/pages/{id}
+			w.Write([]byte(cliRowJSON))
+		}
+	})
+	md := filepath.Join(t.TempDir(), "body.md")
+	os.WriteFile(md, []byte("# Title\n\nbody\n"), 0o600)
+
+	var code int
+	out := captureStdout(t, func() {
+		code = executeArgs([]string{"upsert", "--ticket", "BDF-231", "--body-file", md, "--json", "--config", cfg})
+	})
+	if code != ExitError {
+		t.Fatalf("partial failure must exit %d, got %d", ExitError, code)
 	}
-	_ = err
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("stdout must stay parsable JSON on partial failure: %v\n%s", err, out)
+	}
+	body, ok := got["body"].(map[string]any)
+	if !ok || body["written"] != false || body["error"] == nil {
+		t.Fatalf("body must mark written:false with an error: %v", got)
+	}
+	if got["page"] == nil {
+		t.Fatal("page (applied properties) must still be present")
+	}
+}
+
+// emitWrite must route warnings to stderr, never stdout (which carries --json).
+func TestEmitWriteSendsWarningsToStderrNotStdout(t *testing.T) {
+	cmd := &cobra.Command{}
+	var out, errBuf bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+
+	res := service.Result{Action: "updated", Body: &service.BodyResult{Warnings: []string{"kept a child_page"}}}
+	_ = emitWrite(cmd, cliProps(), res, []string{"table degraded"}, false, nil)
+
+	if !strings.Contains(errBuf.String(), "table degraded") || !strings.Contains(errBuf.String(), "child_page") {
+		t.Fatalf("warnings must be on stderr: %q", errBuf.String())
+	}
+	if strings.Contains(out.String(), "warning") {
+		t.Fatalf("warnings must NOT be on stdout: %q", out.String())
+	}
 }
 ```
 
-> Note: `service.BodyWriteError` has an unexported field, so the test cannot build one directly. Add a tiny test-only constructor in the service package OR assert the exit code through a full command run instead. Simplest: add `func NewBodyWriteError(err error) *BodyWriteError { return &BodyWriteError{err: err} }` to the service package (documented as "exported for tests and future adapters") and use it here as `wrapBodyWriteError`. If you prefer no test-only export, replace this test with an end-to-end command test whose httptest server 400s the append and assert the process exit code is 1.
+> `cliProps()` returns the same `config.Properties` the stub config maps (ticket=Ticket, status=Stato, title=Name). Add it as a one-line test helper if one does not already exist:
+> ```go
+> func cliProps() config.Properties {
+> 	return config.Properties{Ticket: "Ticket", Status: "Stato", Title: "Name"}
+> }
+> ```
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `go test ./internal/cli/ -run 'TestLoadBody|TestExitCodeForBody' -v`
-Expected: FAIL — `undefined: loadBody`.
+Run: `go test ./internal/cli/ -run 'TestLoadBody|TestUpsertBodyAppend|TestEmitWrite' -v`
+Expected: FAIL — `undefined: loadBody` / `emitWrite`.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -2079,6 +2317,7 @@ Expected: FAIL — `undefined: loadBody`.
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -2156,11 +2395,19 @@ func emitWrite(cmd *cobra.Command, props config.Properties, res service.Result, 
 	}
 	if err != nil {
 		var bwe *service.BodyWriteError
-		if errorsAs(err, &bwe) && asJSON {
+		if errors.As(err, &bwe) && asJSON {
+			body := map[string]any{"written": false, "error": bwe.Error()}
+			if res.Body != nil {
+				// Real counts of what happened before the failure: crucial in the
+				// dual case (append ok, a DELETE failed) where the body WAS written
+				// (spec §8).
+				body["blocks_written"] = res.Body.BlocksWritten
+				body["blocks_deleted"] = res.Body.BlocksDeleted
+			}
 			_ = printJSON(cmd.OutOrStdout(), map[string]any{
 				"action": res.Action,
 				"page":   toPageJSON(res.Page, props),
-				"body":   map[string]any{"written": false, "error": bwe.Error()},
+				"body":   body,
 			})
 		}
 		return err
@@ -2178,8 +2425,6 @@ func emitWrite(cmd *cobra.Command, props config.Properties, res service.Result, 
 	return nil
 }
 ```
-
-> `errorsAs` above is just `errors.As`; import `"errors"` and call `errors.As` directly (shown as `errorsAs` only to flag the import). Use `errors.As(err, &bwe)`.
 
 Add the flag to the shared binder in `internal/cli/upsert.go` (`writeFlags`), so both commands get it:
 
@@ -2335,3 +2580,5 @@ git commit -m "docs: --body-file usage, and page bodies now in scope for the age
 **2. Placeholder scan** — no "TBD/handle edge cases"; the one goldmark accessor caveat is an explicit "let RED tests drive the exact name", not a missing spec. The 1 MiB cap, 450 KiB budget, and language set are concrete.
 
 **3. Type consistency** — signatures used across tasks match: `ToBlocks(src []byte) ([]notion.Block, []string, error)`; `AppendBlockChildren(ctx, string, []notion.Block) error`; `Upsert/Set(ctx, tracker.Fields, *BodyRequest)`, `SetByID(ctx, string, tracker.Fields, *BodyRequest)`; `Result.Body *BodyResult`; `BodyWriteError` (Unwrap). `CanonicalLanguage`, `splitLongSpans`, `splitBlockOnSpanLimit`, `ValidateAppendable`, `splitIntoRequests`, `doRejectRetryable`, `rejectedByServer`, `ChildBlock{ID,Type}` are referenced with identical names throughout.
+
+**4. Fable review round applied.** A second review (spec + plan together) found and this plan now fixes: the 2000-char split not reaching code/table/HTML/unknown blocks (now every text block goes through `emit`); the deep-nesting promotion emitting promoted content *before* its parent (now after, with an order test); the forgotten `SetByID` call sites in `pageid_test.go` and the two CLI call sites (Task 8 updates all of them and passes `nil` so the tree compiles); tight-list `to_do` recognition (`isTextual` accepts `TextBlock`); the depth-3 leak (guarded in the walker AND rejected pre-flight by `ValidateAppendable`'s new depth check); the blockquote first-paragraph duplication (single-pass `quote`); the broken `exitCodeFor` unit test (replaced by an end-to-end partial-failure test); the failure-JSON now carrying real `blocks_written`/`blocks_deleted`; and the `%w: %w` error chain. Spec decisions resolved in the same round: setext → h1/h2 (CommonMark), warnings name the construct (not the line), append progress is a single pre-append line (no per-chunk hook in the client).

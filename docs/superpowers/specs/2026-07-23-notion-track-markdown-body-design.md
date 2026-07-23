@@ -47,8 +47,8 @@ dipendenze proprie, standard de-facto (usato da Hugo).
 
 | Markdown | Blocco Notion |
 |---|---|
-| `# H1` / `## H2` / `### H3` | `heading_1` / `heading_2` / `heading_3` |
-| `####`+ (h4-h6), heading setext (`===`/`---` sotto testo) | `heading_3` (Notion ha 3 livelli) |
+| `# H1` / `## H2` / `### H3`; setext (`===` → h1, `---` → h2, semantica CommonMark) | `heading_1` / `heading_2` / `heading_3` |
+| `####`+ (h4-h6) | `heading_3` (Notion ha solo 3 livelli, quindi si fa clamp) |
 | paragrafo | `paragraph` |
 | `- ` / `* ` / `+ ` | `bulleted_list_item` |
 | `1. ` | `numbered_list_item` |
@@ -60,16 +60,20 @@ dipendenze proprie, standard de-facto (usato da Hugo).
 ### Inline → rich text (annotations)
 
 `**bold**`, `*italic*`, `` `code` ``, `~~strike~~` (GFM), `[testo](url)`. Le annotations si
-combinano (bold+italic, ecc.). Un link diventa uno span con `text.link.url`. Hard break
-(`\` a fine riga o due spazi) → `\n` nello stesso span.
+combinano (bold+italic, ecc.) propagandosi dallo span esterno a quello interno (es. un link
+dentro un `**bold**` porta sia `bold` sia `link`). Un link diventa uno span con
+`text.link.url`. Sia hard break (`\` a fine riga o due spazi) sia soft break (a-capo dentro
+un paragrafo) → `\n` nello stesso span: si preserva l'a-capo che l'utente ha scritto, scelta
+deliberata rispetto allo spazio del rendering CommonMark.
 
 ### Linguaggio dei code fence
 
 Notion valida `language` contro un enum chiuso e risponde **400** su valori ignoti. Quindi
 `internal/markdown` mantiene:
 - un **set** dei linguaggi accettati da Notion;
-- una **mappa di alias** verso i nomi canonici (`js`→`javascript`, `ts`→`typescript`,
-  `sh`/`bash`→`shell`, `py`→`python`, `yml`→`yaml`, `md`→`markdown`, `rb`→`ruby`, `golang`→`go`, …);
+- una **mappa di alias** verso i nomi canonici solo per i tag non già validi (`js`→`javascript`,
+  `ts`→`typescript`, `sh`/`zsh`→`shell`, `py`→`python`, `yml`→`yaml`, `md`→`markdown`,
+  `rb`→`ruby`, `golang`→`go`, …; `bash` è già accettato da Notion, quindi non è un alias);
 - fallback: linguaggio assente o non riconosciuto → `"plain text"` (il valore neutro
   accettato da Notion). Nessun 400 può originare da qui.
 
@@ -77,13 +81,16 @@ Notion valida `language` contro un enum chiuso e risponde **400** su valori igno
 
 - **Tabella GFM**, **HTML raw**: si conserva il **sorgente Markdown/testo grezzo** dentro un
   blocco `code` (`language: "plain text"`), non celle concatenate. Un **warning su stderr**
-  nomina il costrutto e la riga.
-- **Immagine** `![alt](url)`: → `paragraph` con uno span-link `alt` → `url` (il blocco
-  `image` nativo è follow-up: un URL esterno non raggiungibile farebbe 400, e la v1 resta
-  robusta). Warning su stderr.
+  nomina il costrutto.
+- **Immagine** `![alt](url)`: → span-link `alt` → `url` dentro il paragrafo che la contiene
+  (il blocco `image` nativo è follow-up: un URL esterno non raggiungibile farebbe 400, e la
+  v1 resta robusta). Warning su stderr.
 - **Nesting > 2 livelli**: gli elementi più profondi del livello 2 sono **promossi** al
-  livello 2 (restano list item, testo e ordine preservati), con **un** warning su stderr che
-  nomina il limite. Niente 400, niente testo perso.
+  livello 2 (restano list item, con testo **e ordine di lettura** preservati — i promossi
+  seguono il loro item genitore, non lo precedono), con **un** warning su stderr che nomina
+  il limite. Niente 400, niente testo perso. Difesa in profondità: `ValidateAppendable`
+  (§4) rifiuta comunque, pre-flight, qualsiasi blocco annidato oltre i 2 livelli, così un bug
+  del walker non può mai spedire un payload che Notion respingerebbe con 400.
 
 I warning vanno su **stderr**, quindi non inquinano `--json` (stdout) né rompono l'uso in CI.
 
@@ -150,6 +157,10 @@ Responsabilità che **restano** in `internal/markdown` (contenuto, non trasporto
   stesso tipo** (paragraph→paragraph, ecc.). Per i `code` block lo split in due blocchi
   `code` è accettato e documentato (cambia il rendering in due riquadri: è il male minore
   rispetto a un 400).
+- Entrambi gli split si applicano a **ogni** blocco con testo, **incluso** il contenuto
+  `code` e il testo grezzo dei costrutti degradati (tabelle/HTML): sono proprio i candidati
+  più probabili a superare i 2000 caratteri, quindi devono passare per lo split o il
+  pre-flight non basterebbe a evitare il 400.
 - Normalizzazione input: rimozione BOM iniziale; CRLF/CR → LF prima del parse.
 
 Responsabilità che **NON** stanno qui (vedi §5): raggruppare i blocchi in richieste da ≤100 /
@@ -239,9 +250,12 @@ func (c *Client) DeleteBlock(ctx context.Context, blockID string) error
 ```go
 // ValidateAppendable reports whether blocks can be materialized as valid Notion
 // append requests at all, WITHOUT any network call. It fails when a SINGLE
-// top-level element cannot fit one request: >100 direct children, or a subtree
-// exceeding the 1000-block / 500KB per-payload caps. Called by the service
-// right after parsing, before any destructive step. Pure → table-testable.
+// top-level element cannot fit one request: >100 direct children, a subtree
+// exceeding the 1000-block / 500KB per-payload caps, OR nesting deeper than 2
+// levels (Notion's per-request cap). The depth check is defense in depth: the
+// walker already promotes deep nesting, but this guarantees no walker bug can
+// ship a payload Notion would 400. Called by the service right after parsing,
+// before any destructive step. Pure → table-testable.
 func ValidateAppendable(blocks []Block) error
 ```
 
@@ -339,9 +353,13 @@ esclusi i `child_page`/`child_database` saltati.)
   {
     "action": "updated",
     "page": { … },
-    "body": { "written": false, "error": "<messaggio>" }
+    "body": { "written": false, "error": "<messaggio>", "blocks_written": 12, "blocks_deleted": 3 }
   }
   ```
+  `blocks_written`/`blocks_deleted` riportano quanto è stato effettivamente fatto **prima**
+  del fallimento: sono cruciali nel caso duale (append riuscito, una `DELETE` fallita), dove
+  il corpo nuovo **è** stato scritto e `written:false` da solo sarebbe fuorviante. Restano i
+  contatori reali presi da `res.Body`, non zeri.
 - senza `--json`, messaggio su stderr. Se l'errore è ambiguo (`ErrAmbiguousWrite`), il
   messaggio dice esplicitamente di **ri-eseguire per convergere**.
 
@@ -356,8 +374,12 @@ Non esiste bulk delete: un replace di una pagina con N blocchi vecchi costa N `D
 sequenziali + il list paginato + K append. A ~3 req/s può durare minuti su pagine grandi.
 
 - Il README dichiara il costo **O(n)** dell'operazione.
-- Con corpo/pagina non banali, la CLI stampa un **progresso su stderr** (es. "appending
-  2/3…", "deleting 40/120…") — mai su stdout, per non rompere `--json`.
+- La CLI stampa **progresso su stderr** (mai su stdout, per non rompere `--json`): una riga
+  prima dell'append ("appending N block(s) in K request(s)…") e, quando ci sono figli vecchi
+  da rimuovere, una riga per-delete ("deleted 40/120 old block(s)"). La fase di delete è
+  tipicamente la più lunga (N figli piccoli), quindi è lì che il progresso conta di più; il
+  progresso per-chunk dell'append non serve (K è piccolo) ed è escluso di proposito per
+  tenere il client `notion` senza hook di presentazione.
 - `ValidateAppendable` più i limiti per-richiesta già impediscono payload assurdi; un tetto
   esplicito sulla dimensione del file evita di partire e morire a metà. **Soglia: 1 MiB**
   (un corpo-task oltre 1 MiB di Markdown è fuori dallo scopo del tool) — file più grande →
