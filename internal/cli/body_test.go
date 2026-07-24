@@ -235,3 +235,137 @@ func blockText(t *testing.T, blocks []notion.Block) string {
 	}
 	return string(raw)
 }
+
+// dryRunAPI answers the reads a dry run makes and fails loudly on any write:
+// the guarantee under test is that none happen.
+func dryRunAPI(t *testing.T, queryResults string) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/data_sources/ds1":
+			w.Write([]byte(cliSchemaJSON))
+		case r.URL.Path == "/v1/data_sources/ds1/query":
+			w.Write([]byte(`{"results":[` + queryResults + `],"has_more":false}`))
+		default:
+			t.Errorf("a dry run reached %s %s", r.Method, r.URL.Path)
+			w.Write([]byte(cliRowJSON))
+		}
+	}
+}
+
+func TestUpsertDryRunReportsWithoutWriting(t *testing.T) {
+	cfg := withStubbedAPI(t, dryRunAPI(t, cliRowJSON))
+
+	out := captureStdout(t, func() {
+		code := executeArgs([]string{
+			"upsert", "--ticket", "BDF-231", "--status", "Fatto",
+			"--dry-run", "--config", cfg,
+		})
+		if code != ExitOK {
+			t.Errorf("exit code = %d", code)
+		}
+	})
+
+	if !strings.Contains(out, "would update") {
+		t.Errorf("output does not say what would happen:\n%s", out)
+	}
+	for _, want := range []string{"Ticket", "BDF-231", "Stato", "Fatto"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output does not name %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestUpsertDryRunOnANewTicketSaysItWouldCreate(t *testing.T) {
+	cfg := withStubbedAPI(t, dryRunAPI(t, ""))
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{
+			"upsert", "--ticket", "BDF-999", "--title", "New", "--dry-run", "--config", cfg,
+		}); code != ExitOK {
+			t.Errorf("exit code = %d", code)
+		}
+	})
+
+	if !strings.Contains(out, "would create") {
+		t.Errorf("output = %q, want it to say it would create", out)
+	}
+}
+
+// --json stays the scripting contract: a dry run has to be recognisable as one
+// rather than passing for a write that happened.
+func TestDryRunJSONIsMarkedAsSuch(t *testing.T) {
+	cfg := withStubbedAPI(t, dryRunAPI(t, cliRowJSON))
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{
+			"upsert", "--ticket", "BDF-231", "--status", "Fatto",
+			"--dry-run", "--json", "--config", cfg,
+		}); code != ExitOK {
+			t.Errorf("exit code = %d", code)
+		}
+	})
+
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("output is not JSON: %s", out)
+	}
+	if got["dry_run"] != true {
+		t.Errorf("dry_run = %v, want true: %v", got["dry_run"], got)
+	}
+	plan, ok := got["plan"].(map[string]any)
+	if !ok || plan["action"] != "updated" {
+		t.Fatalf("plan = %v", got["plan"])
+	}
+}
+
+func TestSetDryRunReportsWithoutWriting(t *testing.T) {
+	cfg := withStubbedAPI(t, dryRunAPI(t, cliRowJSON))
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{
+			"set", "--ticket", "BDF-231", "--status", "Fatto", "--dry-run", "--config", cfg,
+		}); code != ExitOK {
+			t.Errorf("exit code = %d", code)
+		}
+	})
+
+	if !strings.Contains(out, "would update") {
+		t.Errorf("output = %q", out)
+	}
+}
+
+// The body is parsed and counted, but never sent.
+func TestDryRunCountsTheBodyWithoutWritingIt(t *testing.T) {
+	cfg := withStubbedAPI(t, dryRunAPI(t, cliRowJSON))
+	md := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(md, []byte("# One\n\ntwo\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{
+			"upsert", "--ticket", "BDF-231", "--body-file", md, "--dry-run", "--config", cfg,
+		}); code != ExitOK {
+			t.Errorf("exit code = %d", code)
+		}
+	})
+
+	if !strings.Contains(out, "page body") || !strings.Contains(out, "blocks") {
+		t.Errorf("output does not mention the body:\n%s", out)
+	}
+}
+
+// A dry run that reported a happy plan for a write the real run would reject
+// is worse than useless: it would send the user off to run the real thing.
+func TestDryRunStillFailsOnAnInvalidStatus(t *testing.T) {
+	cfg := withStubbedAPI(t, dryRunAPI(t, cliRowJSON))
+
+	code := executeArgs([]string{
+		"upsert", "--ticket", "BDF-231", "--status", "Nonexistent", "--dry-run", "--config", cfg,
+	})
+
+	if code == ExitOK {
+		t.Fatal("a dry run accepted a status the data source rejects")
+	}
+}

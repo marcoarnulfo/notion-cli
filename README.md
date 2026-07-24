@@ -23,6 +23,7 @@ It authenticates with a Notion **internal integration token** only — no browse
 - **Diagnostics** (`doctor`) — checks the token, data source access, the property mapping (including type drift since `init`), scans the whole data source for duplicate ticket keys, and warns if a git-tracked file looks like it carries your integration token.
 - **Guided setup** (`init`) — a bare `notion-track init` at a terminal opens a wizard that picks the data source and proposes the property mapping for you; the flag form writes the same profile non-interactively, validated against the data source's live schema before anything is saved. `init --list` discovers the data source ids your integration can see. At an interactive terminal it also offers to collect and save the integration token if none is found (see [Configuration](#configuration)).
 - **Profiles** — several named database configurations in one YAML config file, selectable by flag, environment variable, or a configured default.
+- **Dry run** (`--dry-run` on `upsert`/`set`) — reports whether it would create or update, which row and which columns, and writes nothing.
 - **`--json` everywhere** — every command that produces output (`get`, `list`, `doctor`, `upsert`, `set`) can emit machine-readable JSON with a documented, stable shape.
 - **CI-friendly by design** — quiet on success, a distinct exit code per failure class (auth, not found, duplicate, usage, generic), no interactive prompts.
 - **Retries with backoff** on Notion's rate limiting (429) and transient 502/503/504/529 responses, honoring `Retry-After` when Notion sends one.
@@ -205,6 +206,23 @@ Lists every row, or only those matching `--status`. An unknown status value fail
 
 When nothing matches, the human-readable form prints `no matching tasks` **to stderr** and exits 0 — stdout stays empty, so `list | wc -l` counts rows and nothing else. `list --json` prints `[]` and says nothing on stderr.
 
+### `--dry-run` — see what a write would do
+
+```bash
+notion-track upsert --ticket BDF-231 --status Done --dry-run
+```
+
+```
+would update 1f2e3d4c-...
+  Ticket               BDF-231
+  Stato                Done
+  https://notion.so/...
+```
+
+Available on `upsert` and `set`. It reports whether the row would be created or updated, which row, and which columns would be written — and writes nothing. With `--json` the output is `{"dry_run": true, "plan": {...}}`, so a script can tell it apart from a write that actually happened.
+
+"Without touching the API" can only mean without *writing*: whether a ticket key resolves to a create or an update, and whether a status value even exists, are questions only the live data source can answer. A dry run therefore makes the same reads a real run does and stops before the first write — including the same validation, so a status your board would reject fails now rather than on the run you were about to do for real.
+
 ### `doctor` — check the setup
 
 ```
@@ -371,7 +389,7 @@ Contributions are welcome — this is a free, open-source project. See **[CONTRI
 
 ## Roadmap
 
-Implemented today: `init` (interactive wizard and flag-driven, with `--list`), the browsing TUI, `upsert`, `set`, `get`, `list`, `doctor`; `--body-file` on `upsert`/`set` to write the page body from Markdown, with `--expand` for `{{ticket}}`/`{{date}}` placeholders; `--json` on every command that produces output; profiles; retry with backoff.
+Implemented today: `init` (interactive wizard and flag-driven, with `--list`), the browsing TUI, `upsert`, `set`, `get`, `list`, `doctor`; `--dry-run` on `upsert`/`set`; `--body-file` on `upsert`/`set` to write the page body from Markdown, with `--expand` for `{{ticket}}`/`{{date}}` placeholders; `--json` on every command that produces output; profiles; retry with backoff.
 
 Not yet built:
 

@@ -32,9 +32,9 @@ func newSetCmd() *cobra.Command {
 			// See get.go: branch on Changed, not on the value, so an empty
 			// --page-id still takes the by-id path.
 			if cmd.Flags().Changed("page-id") {
-				res, err = svc.SetByID(cmd.Context(), wf.pageID, wf.fields(), body)
+				res, err = svc.DryRun(wf.dryRun).SetByID(cmd.Context(), wf.pageID, wf.fields(), body)
 			} else {
-				res, err = svc.Set(cmd.Context(), wf.fields(), body)
+				res, err = svc.DryRun(wf.dryRun).Set(cmd.Context(), wf.fields(), body)
 			}
 			return emitWrite(cmd, svc.Profile().Properties, res, warnings, wf.asJSON, err)
 		},
