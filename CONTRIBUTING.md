@@ -61,6 +61,7 @@ internal/notion      Notion API client (net/http only — no SDK), retry/backoff
 internal/tracker     PURE domain: create-or-update decisions, payload building, status validation
 internal/markdown    PURE domain: Markdown → Notion block tree, chunking limits
 internal/template    PURE domain: {{ticket}}/{{date}} placeholder expansion for --body-file
+internal/manifest    PURE domain: the JSON/CSV bulk manifest `apply` reads
 internal/config      config.yml (profiles, property mapping), credentials.yml (token) + NOTION_TOKEN / NOTION_TRACK_* env vars
 internal/tui         bubbletea models (init wizard, browsing TUI); no network — calls arrive injected, so screens are testable without a terminal
 internal/secrets     scans git-tracked files for token-shaped strings, for doctor's "secrets" check
