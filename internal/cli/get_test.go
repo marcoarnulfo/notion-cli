@@ -212,20 +212,36 @@ func TestGetUsesTokenFromCredentialsFile(t *testing.T) {
 }
 
 // captureStdout redirects os.Stdout for the duration of f.
+func captureStdout(t *testing.T, f func()) string {
+	t.Helper()
+	return captureStream(t, &os.Stdout, f)
+}
+
+// captureStderr is captureStdout for the other stream, for the output a
+// command deliberately keeps off stdout so pipes stay clean.
+func captureStderr(t *testing.T, f func()) string {
+	t.Helper()
+	return captureStream(t, &os.Stderr, f)
+}
+
+// captureStream swaps a pipe in for *target while f runs and returns what was
+// written to it. The root command reads os.Stdout and os.Stderr when it is
+// built, which happens inside executeArgs — that is, inside f — so the swap
+// reaches the command tree.
 //
 // The reader runs in its own goroutine: reading only after f returns would
 // deadlock as soon as the output fills the pipe buffer, which a real
 // `list --json` easily does. The restore is deferred so that a t.Fatalf inside
-// f cannot leave os.Stdout pointing at a closed pipe for every later test.
-func captureStdout(t *testing.T, f func()) string {
+// f cannot leave the stream pointing at a closed pipe for every later test.
+func captureStream(t *testing.T, target **os.File, f func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	old := os.Stdout
-	os.Stdout = w
+	old := *target
+	*target = w
 
 	done := make(chan string, 1)
 	go func() {
@@ -235,12 +251,12 @@ func captureStdout(t *testing.T, f func()) string {
 	}()
 
 	defer func() {
-		os.Stdout = old
+		*target = old
 		w.Close()
 	}()
 	f()
 
-	os.Stdout = old
+	*target = old
 	w.Close()
 	return <-done
 }
@@ -406,6 +422,56 @@ func TestGetHumanOutputKeepsBothValuesWhenTheyAreDifferentColumns(t *testing.T) 
 		if !strings.Contains(out, want) {
 			t.Errorf("%q missing from %q", want, out)
 		}
+	}
+}
+
+// stubbedNoRows is stubbedRow for the empty case.
+func stubbedNoRows(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/v1/data_sources/ds1" {
+		w.Write([]byte(cliSchemaJSON))
+		return
+	}
+	w.Write([]byte(`{"results":[],"has_more":false}`))
+}
+
+// Printing nothing at all left the user unable to tell a working command with
+// no matches from one that silently did nothing. The line goes to stderr so
+// that stdout stays empty and `list | wc -l` keeps counting rows, not notices.
+func TestListHumanOutputReportsAnEmptyResultOnStderr(t *testing.T) {
+	cfg := withStubbedAPI(t, stubbedNoRows)
+
+	var stdout string
+	stderr := captureStderr(t, func() {
+		stdout = captureStdout(t, func() {
+			if code := executeArgs([]string{"list", "--config", cfg}); code != ExitOK {
+				t.Errorf("exit code = %d, want %d", code, ExitOK)
+			}
+		})
+	})
+
+	if !strings.Contains(stderr, "no matching tasks") {
+		t.Errorf("stderr = %q, want it to report the empty result", stderr)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want it left empty for pipes", stdout)
+	}
+}
+
+// The notice is for a human reading a terminal. A script asking for --json
+// gets [] and must not find prose on either stream.
+func TestListJSONWithNoResultsStaysSilentOnStderr(t *testing.T) {
+	cfg := withStubbedAPI(t, stubbedNoRows)
+
+	stderr := captureStderr(t, func() {
+		captureStdout(t, func() {
+			if code := executeArgs([]string{"list", "--json", "--config", cfg}); code != ExitOK {
+				t.Errorf("exit code = %d, want %d", code, ExitOK)
+			}
+		})
+	})
+
+	if stderr != "" {
+		t.Errorf("stderr = %q, want it empty for --json", stderr)
 	}
 }
 

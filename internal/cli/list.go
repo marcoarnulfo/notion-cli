@@ -38,6 +38,17 @@ func newListCmd() *cobra.Command {
 				}
 				return printJSON(cmd.OutOrStdout(), rows)
 			}
+			// Printing nothing is ambiguous at a terminal: it reads the same
+			// as a command that silently failed. The notice goes to stderr so
+			// stdout carries rows and only rows — `list | wc -l` must not
+			// count this line. --json already answers the question with [],
+			// and a script parsing it must not find prose on either stream,
+			// so this is deliberately below the --json branch.
+			if len(pages) == 0 {
+				cmd.PrintErrln("no matching tasks")
+				return nil
+			}
+
 			merged := ticketIsTitle(profile.Properties)
 			for _, p := range pages {
 				status := p.Properties[profile.Properties.Status].Text

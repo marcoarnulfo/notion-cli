@@ -170,6 +170,8 @@ notion-track list [--status <status>] [--json]
 
 Lists every row, or only those matching `--status`. An unknown status value fails fast with exit code 2, naming the values Notion actually allows for that property.
 
+When nothing matches, the human-readable form prints `no matching tasks` **to stderr** and exits 0 — stdout stays empty, so `list | wc -l` counts rows and nothing else. `list --json` prints `[]` and says nothing on stderr.
+
 ### `doctor` — check the setup
 
 ```
