@@ -1,9 +1,14 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/marcoarnulfo/notion-cli/internal/config"
+	"github.com/marcoarnulfo/notion-cli/internal/secrets"
 	"github.com/marcoarnulfo/notion-cli/internal/service"
 	"github.com/spf13/cobra"
 )
@@ -21,6 +26,11 @@ func newDoctorCmd() *cobra.Command {
 			}
 			checks := svc.Doctor(cmd.Context())
 			annotateTokenSource(checks)
+			// Appended here rather than inside Service.Doctor: this one asks
+			// nothing of Notion, and Doctor returns early with just the token
+			// check when authentication fails — exactly the run where a
+			// committed token is most worth mentioning.
+			checks = append(checks, checkTrackedSecrets(cmd.Context()))
 
 			if asJSON {
 				if err := printJSON(cmd.OutOrStdout(), checks); err != nil {
@@ -58,6 +68,55 @@ func newDoctorCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print machine-readable JSON")
 	return cmd
+}
+
+// checkTrackedSecrets warns when a file the current repository tracks carries
+// something shaped like an integration token.
+//
+// It warns and never fails: a committed token does not stop notion-track from
+// working, and taking the exit code to non-zero would break the CI pipelines
+// that run doctor as a gate — over a file whose contents this command cannot
+// fix anyway.
+//
+// Anything that stops the scan from running (no repository, no git, an
+// unreadable tree) reports "ok" with the reason. A user checking their setup
+// from their home directory has nothing to fix, and a warning they cannot act
+// on is how a check earns the right to be ignored.
+func checkTrackedSecrets(ctx context.Context) service.Check {
+	dir, err := os.Getwd()
+	if err != nil {
+		return service.Check{Name: "secrets", Status: "ok",
+			Detail: fmt.Sprintf("skipped: %v", err)}
+	}
+
+	res, err := secrets.ScanTracked(ctx, dir)
+	switch {
+	case errors.Is(err, secrets.ErrNoRepository):
+		return service.Check{Name: "secrets", Status: "ok",
+			Detail: "not inside a git repository, nothing tracked to scan"}
+	case errors.Is(err, secrets.ErrGitUnavailable):
+		return service.Check{Name: "secrets", Status: "ok",
+			Detail: "git is not installed, skipped the scan for committed tokens"}
+	case err != nil:
+		return service.Check{Name: "secrets", Status: "ok",
+			Detail: fmt.Sprintf("skipped: %v", err)}
+	}
+
+	if len(res.Findings) == 0 {
+		return service.Check{Name: "secrets", Status: "ok",
+			Detail: fmt.Sprintf("%d tracked files scanned, no token-looking strings", res.Scanned)}
+	}
+
+	// Locations only. Echoing the match would put the secret into terminal
+	// scrollback and CI logs, which is the failure this check exists to catch.
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d line(s) in tracked files look like an integration token:", len(res.Findings))
+	for _, f := range res.Findings {
+		fmt.Fprintf(&b, "\n  %s:%d", f.Path, f.Line)
+	}
+	b.WriteString("\n  fix: rotate the token at https://www.notion.so/my-integrations, " +
+		"remove it from the file, and keep it in " + config.TokenEnv + " or credentials.yml instead")
+	return service.Check{Name: "secrets", Status: "warn", Detail: b.String()}
 }
 
 // annotateTokenSource prefixes the "token" check's detail with where the
