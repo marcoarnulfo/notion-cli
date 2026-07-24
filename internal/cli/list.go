@@ -4,6 +4,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// The merged column is exactly as wide as the two it replaces (20 + the
+// separating space + 40), so the status lands in the same screen column
+// whether or not the ticket and the title share a property.
+const (
+	listRowFormat       = "%-20s %-40s [%s]\n"
+	listMergedRowFormat = "%-61s [%s]\n"
+)
+
 func newListCmd() *cobra.Command {
 	var status string
 	var asJSON bool
@@ -30,11 +38,17 @@ func newListCmd() *cobra.Command {
 				}
 				return printJSON(cmd.OutOrStdout(), rows)
 			}
+			merged := ticketIsTitle(profile.Properties)
 			for _, p := range pages {
-				cmd.Printf("%-20s %-40s [%s]\n",
+				status := p.Properties[profile.Properties.Status].Text
+				if merged {
+					cmd.Printf(listMergedRowFormat, p.Properties[profile.Properties.Title].Text, status)
+					continue
+				}
+				cmd.Printf(listRowFormat,
 					p.Properties[profile.Properties.Ticket].Text,
 					p.Properties[profile.Properties.Title].Text,
-					p.Properties[profile.Properties.Status].Text)
+					status)
 			}
 			return nil
 		},
