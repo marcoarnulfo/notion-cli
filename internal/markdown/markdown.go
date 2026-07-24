@@ -206,7 +206,7 @@ func (c *converter) inlineSpans(n ast.Node, style notion.Span) []notion.Span {
 	case *ast.CodeSpan:
 		s := style
 		s.Code = true
-		s.Content = string(node.Text(c.src))
+		s.Content = c.nodeText(node)
 		if s.Content == "" {
 			return nil
 		}
@@ -235,7 +235,7 @@ func (c *converter) inlineSpans(n ast.Node, style notion.Span) []notion.Span {
 	case *ast.Image:
 		st := style
 		st.Link = string(node.Destination)
-		alt := string(node.Text(c.src))
+		alt := c.nodeText(node)
 		if alt == "" {
 			alt = string(node.Destination)
 		}
@@ -245,7 +245,7 @@ func (c *converter) inlineSpans(n ast.Node, style notion.Span) []notion.Span {
 	default:
 		// Unknown inline (e.g. raw HTML span): fall back to its text.
 		s := style
-		s.Content = string(node.Text(c.src))
+		s.Content = c.nodeText(node)
 		if s.Content == "" {
 			return nil
 		}
@@ -297,6 +297,36 @@ func (c *converter) rawSource(n ast.Node) string {
 		return ""
 	}
 	return string(c.src[start:stop])
+}
+
+// nodeText concatenates a node's descendant text. It is the non-deprecated
+// stand-in for goldmark's ast.Node.Text (removed in favour of node-specific
+// properties): it walks children and reads each leaf from the accessor goldmark
+// now points to — Text.Segment, String.Value, RawHTML.Segments — inserting a
+// newline after a soft line break exactly as the old Text did, so code spans,
+// image alt text, and unknown inline nodes render byte-for-byte as before.
+func (c *converter) nodeText(n ast.Node) string {
+	var b strings.Builder
+	c.writeNodeText(&b, n)
+	return b.String()
+}
+
+func (c *converter) writeNodeText(b *strings.Builder, n ast.Node) {
+	switch node := n.(type) {
+	case *ast.Text:
+		b.Write(node.Segment.Value(c.src))
+	case *ast.String:
+		b.Write(node.Value)
+	case *ast.RawHTML:
+		b.Write(node.Segments.Value(c.src))
+	default:
+		for ch := n.FirstChild(); ch != nil; ch = ch.NextSibling() {
+			c.writeNodeText(b, ch)
+			if sb, ok := ch.(interface{ SoftLineBreak() bool }); ok && sb.SoftLineBreak() {
+				b.WriteByte('\n')
+			}
+		}
+	}
 }
 
 // isTextual reports whether a node is a paragraph or the tight-list TextBlock
