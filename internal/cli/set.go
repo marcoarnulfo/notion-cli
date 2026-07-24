@@ -20,22 +20,23 @@ func newSetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			var body *service.BodyRequest
+			var warnings []string
+			if wf.bodyFile != "" {
+				body, warnings, err = loadBody(wf.bodyFile, cmd.InOrStdin(), cmd.ErrOrStderr())
+				if err != nil {
+					return err
+				}
+			}
 			var res service.Result
 			// See get.go: branch on Changed, not on the value, so an empty
 			// --page-id still takes the by-id path.
 			if cmd.Flags().Changed("page-id") {
-				res, err = svc.SetByID(cmd.Context(), wf.pageID, wf.fields())
+				res, err = svc.SetByID(cmd.Context(), wf.pageID, wf.fields(), body)
 			} else {
-				res, err = svc.Set(cmd.Context(), wf.fields())
+				res, err = svc.Set(cmd.Context(), wf.fields(), body)
 			}
-			if err != nil {
-				return err
-			}
-			if wf.asJSON {
-				out := toPageJSON(res.Page, svc.Profile().Properties)
-				return printJSON(cmd.OutOrStdout(), map[string]any{"action": res.Action, "page": out})
-			}
-			return nil
+			return emitWrite(cmd, svc.Profile().Properties, res, warnings, wf.asJSON, err)
 		},
 	}
 	wf.bindWithPageID(cmd)

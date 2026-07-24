@@ -1,0 +1,110 @@
+package cli
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	"github.com/marcoarnulfo/notion-cli/internal/config"
+	"github.com/marcoarnulfo/notion-cli/internal/markdown"
+	"github.com/marcoarnulfo/notion-cli/internal/notion"
+	"github.com/marcoarnulfo/notion-cli/internal/service"
+	"github.com/spf13/cobra"
+)
+
+// maxBodyFileBytes is the pre-flight cap on a --body-file (spec §9): a task
+// body over 1 MiB of Markdown is out of scope, and rejecting it up front beats
+// dying mid-replace.
+const maxBodyFileBytes = 1 << 20
+
+// loadBody reads and parses a --body-file into a validated BodyRequest, all
+// before any network call. path "-" reads stdin. Every input problem is a
+// usage error (exit 2). progress is where the service later writes ephemeral
+// progress lines (stderr).
+func loadBody(path string, stdin io.Reader, progress io.Writer) (*service.BodyRequest, []string, error) {
+	raw, err := readBodySource(path, stdin)
+	if err != nil {
+		return nil, nil, Errorf(ExitUsage, "reading body file %s: %v", path, err)
+	}
+	if len(raw) > maxBodyFileBytes {
+		return nil, nil, Errorf(ExitUsage, "body file %s is over the %d-byte limit", path, maxBodyFileBytes)
+	}
+	if strings.TrimSpace(string(raw)) == "" {
+		return nil, nil, Errorf(ExitUsage, "body file %s is empty", path)
+	}
+	blocks, warnings, err := markdown.ToBlocks(raw)
+	if err != nil {
+		return nil, nil, Errorf(ExitUsage, "parsing %s: %v", path, err)
+	}
+	if err := notion.ValidateAppendable(blocks); err != nil {
+		return nil, nil, Errorf(ExitUsage, "%v", err)
+	}
+	return &service.BodyRequest{Blocks: blocks, Progress: progress}, warnings, nil
+}
+
+func readBodySource(path string, stdin io.Reader) ([]byte, error) {
+	// Read one byte past the cap so the size check can detect an over-limit file.
+	limit := int64(maxBodyFileBytes) + 1
+	if path == "-" {
+		if stdin == nil {
+			return nil, fmt.Errorf("no stdin")
+		}
+		return io.ReadAll(io.LimitReader(stdin, limit))
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(io.LimitReader(f, limit))
+}
+
+// printWarnings writes each warning to w (stderr) with a "warning: " prefix.
+func printWarnings(w io.Writer, warnings []string) {
+	for _, msg := range warnings {
+		fmt.Fprintln(w, "warning: "+msg)
+	}
+}
+
+// emitWrite is the shared output path for upsert/set: it prints warnings to
+// stderr, then either the success --json (with the additive body object) or,
+// on a body failure after properties were written, a parsable partial-failure
+// --json, and finally returns err so the process exits with the right code.
+func emitWrite(cmd *cobra.Command, props config.Properties, res service.Result, warnings []string, asJSON bool, err error) error {
+	printWarnings(cmd.ErrOrStderr(), warnings)
+	if res.Body != nil {
+		printWarnings(cmd.ErrOrStderr(), res.Body.Warnings)
+	}
+	if err != nil {
+		var bwe *service.BodyWriteError
+		if errors.As(err, &bwe) && asJSON {
+			body := map[string]any{"written": false, "error": bwe.Error()}
+			if res.Body != nil {
+				// Real counts of what happened before the failure: crucial in the
+				// dual case (append ok, a DELETE failed) where the body WAS written
+				// (spec §8).
+				body["blocks_written"] = res.Body.BlocksWritten
+				body["blocks_deleted"] = res.Body.BlocksDeleted
+			}
+			_ = printJSON(cmd.OutOrStdout(), map[string]any{
+				"action": res.Action,
+				"page":   toPageJSON(res.Page, props),
+				"body":   body,
+			})
+		}
+		return err
+	}
+	if asJSON {
+		out := map[string]any{"action": res.Action, "page": toPageJSON(res.Page, props)}
+		if res.Body != nil {
+			out["body"] = map[string]any{
+				"blocks_written": res.Body.BlocksWritten,
+				"blocks_deleted": res.Body.BlocksDeleted,
+			}
+		}
+		return printJSON(cmd.OutOrStdout(), out)
+	}
+	return nil
+}

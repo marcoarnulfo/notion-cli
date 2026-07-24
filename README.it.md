@@ -135,6 +135,25 @@ Stessi campi di `upsert`, ma fallisce con exit code 3 se la riga non esiste anco
 
 `--ticket` e `--page-id` sono mutuamente esclusivi ed è obbligatorio esattamente uno dei due. `--page-id` indirizza una riga direttamente tramite il suo page id di Notion — nessuna query per chiave ticket — il che è più rapido e privo di ambiguità quando lo si ha già a disposizione (ad es. dal `page_id` restituito da una precedente chiamata `--json`, vedi [Output JSON](#output-json)). Accetta l'URL completo della pagina copiato dalla barra degli indirizzi di Notion, un id esadecimale nudo di 32 caratteri, o un UUID con trattini; qualsiasi altro input fallisce immediatamente con exit code 2, prima di qualunque chiamata di rete. Poiché leggere una pagina per id funziona per qualsiasi pagina condivisa con l'integrazione — non solo per le righe della data source configurata — un page id che risolve verso una data source *diversa* da quella del profilo attivo viene rifiutato con exit code 2 invece di fallire più avanti con un criptico errore sui nomi delle proprietà da parte di Notion. Anche `set --page-id` rifiuta, con lo stesso exit code, una pagina il cui parent non riporta alcuna data source — la sua appartenenza non può mai essere confermata, e una scrittura non deve procedere su una pagina che non può dimostrare di appartenere a questo profilo.
 
+### `--body-file` — scrive il corpo della pagina da Markdown
+
+```
+notion-track upsert --ticket <chiave> --body-file notes.md
+notion-track set --page-id <id> --body-file -
+```
+
+Disponibile sia su `upsert` sia su `set`. `--body-file` accetta il percorso di un file Markdown, oppure `-` per leggere da stdin; il suo contenuto diventa il corpo della pagina Notion della riga, convertito in blocchi nativi. Le proprietà (`--title`, `--status`, `--due`) e il corpo sono indipendenti — puoi passare entrambi, uno solo, o nessuno dei due.
+
+**Semantica di sostituzione.** `--body-file` **possiede il corpo della pagina**: ogni esecuzione rende il corpo uguale al contenuto del file, cancellando qualunque blocco fosse già presente — incluso ciò che è stato aggiunto a mano in Notion dall'ultima esecuzione. Eseguirlo due volte sullo stesso file produce lo stesso corpo, non un duplicato. Non esiste una modalità append né un annulla, quindi tratta il file come l'unica fonte di verità per quella pagina e leggi prima la pagina (`get`) se non sei sicuro di cosa contenga. Le sotto-pagine e i database annidati sotto la pagina non vengono mai toccati — vengono saltati invece che archiviati, e un warning su stderr nomina ciascuno di quelli mantenuti.
+
+**Markdown supportato.** Titoli (`#`/`##`/`###`, i livelli più profondi si appiattiscono su h3), paragrafi, liste puntate e numerate, checkbox di attività (`- [ ]` / `- [x]`), blocchi di codice con o senza fence, citazioni, divisori `---`, e formattazione inline **grassetto**, *corsivo*, `codice`, ~~barrato~~ e link. L'annidamento di liste e citazioni è supportato fino a 2 livelli. Tabelle, immagini, HTML grezzo e annidamento oltre i 2 livelli non vengono scartati — ciascuno **degrada** verso il blocco supportato più vicino (una tabella diventa un blocco di codice in testo semplice, un'immagine diventa un link, l'annidamento più profondo viene promosso di un livello) e stampa un warning su stderr che indica cosa è successo, così niente sparisce silenziosamente ma niente blocca la scrittura. Un file oltre 1 MiB viene rifiutato prima di qualunque chiamata di rete (exit code 2).
+
+**Costo.** L'API di Notion non offre un endpoint di cancellazione massiva, quindi sostituire un corpo costa `O(n)` nel numero di blocchi già presenti sulla pagina: si aggiunge il nuovo contenuto, poi si cancellano i vecchi blocchi uno alla volta. Una pagina con molto contenuto esistente richiede proporzionalmente più tempo, e `notion-track` stampa righe di avanzamento su stderr (blocchi aggiunti, blocchi cancellati finora) così un'esecuzione lunga non sembra bloccata.
+
+**Concorrenza.** Due esecuzioni di `--body-file` in corsa sulla stessa pagina possono entrambe aggiungere contenuto prima che una delle due cancelli il vecchio, duplicando il corpo — non c'è alcun lock da acquisire su una pagina Notion. Non eseguire scritture concorrenti del corpo sulla stessa pagina.
+
+Con `--json`, una scrittura riuscita aggiunge un oggetto `body`: `{"blocks_written": N, "blocks_deleted": N}`. Se la scrittura delle proprietà riesce ma la sostituzione del corpo fallisce a metà, il comando esce comunque con codice 1 (non 0), e `--json` stampa `body: {"written": false, "error": "...", "blocks_written": N, "blocks_deleted": N}` — `written` indica che il corpo *non* è nello stato descritto dal file, mentre `page` nello stesso output riflette comunque le proprietà effettivamente applicate, perché sono due chiamate API Notion separate e la prima può riuscire anche se la seconda fallisce.
+
 ### `get` — legge una riga
 
 ```
@@ -302,7 +321,8 @@ Sono tradeoff attuali e deliberati — non bug di cui sorprendersi:
 2. **`upsert` e `get` falliscono sui ticket duplicati invece di sceglierne uno.** Se più righe condividono la stessa chiave ticket, `notion-track` rifiuta di indovinare quale intendessi — esce con codice 4 ed elenca le righe in conflitto. Esegui `notion-track doctor` per trovarle e ripulirle.
 3. **Due job concorrenti che creano lo stesso ticket nuovo possono generare un duplicato per race condition.** La decisione crea-o-aggiorna di `upsert` legge le righe correnti e poi scrive; l'API di Notion non offre un vincolo di unicità né un compare-and-swap per chiudere quella finestra. Non è prevenibile lato client — la scansione dei duplicati di `doctor` è la mitigazione, non una soluzione.
 4. **Solo un Workspace Owner può fare questa configurazione.** Creare l'integrazione e condividere un database con essa richiedono entrambi permessi da Workspace Owner in Notion. Un guest del workspace — una delle ragioni per cui questo strumento esiste — non può fare nessuno dei due passaggi, ma può usare liberamente lo strumento una volta che qualcuno con permessi da Owner li ha completati.
-5. **Nessun body Markdown, e nessuna TUI interattiva ancora.** `upsert`/`set` toccano solo le proprietà documentate sopra — non esiste un `--body-file` per scrivere il contenuto della pagina, e non esiste un wizard o un'interfaccia di navigazione: ogni comando qui è guidato da flag. Entrambi sono tracciati nella [Roadmap](#roadmap).
+5. **Nessuna TUI interattiva ancora.** Non esiste un wizard o un'interfaccia di navigazione: ogni comando qui è guidato da flag. Tracciato nella [Roadmap](#roadmap).
+6. **`--body-file` sostituisce l'intero corpo della pagina, senza lock e senza annulla.** Possiede il corpo: ogni esecuzione sovrascrive tutto ciò che c'è, incluso il contenuto modificato a mano, e due esecuzioni in corsa sulla stessa pagina possono duplicarlo. Vedi `--body-file` sotto [Uso](#uso) sopra.
 
 ## Usarlo da un agente AI
 
@@ -314,13 +334,12 @@ I contributi sono benvenuti — questo è un progetto libero e open-source. Vedi
 
 ## Roadmap
 
-Implementato oggi: `init` (guidato da flag, con `--list`), `upsert`, `set`, `get`, `list`, `doctor`; `--json` su ogni comando che produce output; profili; retry con backoff.
+Implementato oggi: `init` (guidato da flag, con `--list`), `upsert`, `set`, `get`, `list`, `doctor`; `--body-file` su `upsert`/`set` per scrivere il corpo della pagina da Markdown; `--json` su ogni comando che produce output; profili; retry con backoff.
 
 Non ancora costruito:
 
 - **Wizard interattivo per `init`** — un'alternativa TUI guidata all'attuale forma solo a flag.
 - **TUI di navigazione** — una vista interattiva sulle righe tracciate.
-- **Body Markdown della pagina** (`--body-file` su `upsert`/`set`) — oggi si possono scrivere solo le proprietà elencate in [Uso](#uso).
 - **Binari precompilati** — una pipeline GoReleaser che pubblica GitHub Releases per macOS/Linux/Windows; oggi le uniche opzioni sono `go install` o compilare da sorgente.
 - **Una composite GitHub Action** che avvolge il binario, così uno step di workflow non ha bisogno di un proprio `go install`.
 - **Un adapter server MCP** sopra lo stesso livello `internal/service` usato oggi dalla CLI.

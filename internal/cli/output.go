@@ -32,6 +32,13 @@ func exitCodeFor(err error) int {
 	if err == nil {
 		return ExitOK
 	}
+	// A body write that failed after properties were applied is a partial
+	// success: exit 1 regardless of the underlying status, so a wrapped 400
+	// does not masquerade as a usage error.
+	var bodyErr *service.BodyWriteError
+	if errors.As(err, &bodyErr) {
+		return ExitError
+	}
 	var (
 		dup     *tracker.DuplicateError
 		invalid *tracker.ValidationError

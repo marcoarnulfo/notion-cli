@@ -54,7 +54,7 @@ one is required. `upsert` only takes `--ticket` (see below for why).
 ### Create or update a task by name — `upsert`
 
 ```sh
-notion-track upsert --ticket "<name>" [--status "<status>"] [--title "<title>"] [--due YYYY-MM-DD] [--json]
+notion-track upsert --ticket "<name>" [--status "<status>"] [--title "<title>"] [--due YYYY-MM-DD] [--body-file <path>] [--json]
 ```
 
 Creates the row if no task has that key, updates it if one does. Running it
@@ -63,13 +63,18 @@ set only if given. `upsert` cannot address a task by `--page-id`: at creation
 time the page doesn't exist yet, so there's no id to use.
 
 `--json` returns `{"action":"created"|"updated","page":{...}}` — read `action`
-to tell which happened, and `page.page_id` to capture the id for later.
+to tell which happened, and `page.page_id` to capture the id for later. On a
+body write, success adds `body:{blocks_written,blocks_deleted}`. On partial
+failure (properties written, body failed) the command exits 1 and `--json`
+adds `body:{written:false,error,...}` while `page` still reflects the
+properties that did get applied — check `body.written` before assuming a
+`--body-file` call fully succeeded.
 
 ### Change an existing task — `set`
 
 ```sh
-notion-track set --ticket "<name>"     --status "<status>" [--title ...] [--due ...] [--json]
-notion-track set --page-id <id-or-url> --status "<status>" [--title ...] [--due ...] [--json]
+notion-track set --ticket "<name>"     --status "<status>" [--title ...] [--due ...] [--body-file <path>] [--json]
+notion-track set --page-id <id-or-url> --status "<status>" [--title ...] [--due ...] [--body-file <path>] [--json]
 ```
 
 Updates only. **Fails if the task doesn't exist** (exit 3) instead of creating
@@ -77,6 +82,19 @@ it — that's the point of `set` versus `upsert`. Only the flags you pass are
 touched; everything else on the row is left alone. Prefer `set` over `upsert`
 when the task is meant to already exist, so a typo surfaces as an error instead
 of a stray new row.
+
+### Writing the page body — `--body-file`
+
+Both `upsert` and `set` accept `--body-file <path>` (`-` for stdin): a
+Markdown file whose content becomes the page body. **Replace semantics —
+`--body-file` owns the body.** Every run makes the body exactly equal to the
+file, deleting whatever blocks were already there, hand-edited content
+included; running it twice on the same file is idempotent, but running it
+against a page someone has since edited in Notion silently discards their
+edit. Read the page first if you're not sure what's on it. Sub-pages and
+child databases nested under the page are preserved, not archived. See
+`--body-file` under Usage in the [README](../../README.md) for the supported
+Markdown subset, degrade-with-warning behavior, and cost.
 
 ### Read one task — `get`
 
@@ -186,8 +204,11 @@ front, because they change how you address and create tasks:
 
 ## When NOT to reach for this skill
 
-- Anything beyond task rows — page bodies, comments, arbitrary Notion pages,
-  other databases — is out of scope; `notion-track` only touches this one board.
+- Comments, arbitrary Notion pages, and other databases remain out of scope;
+  `notion-track` only touches this one board. The page **body** is now
+  writable via `upsert`/`set --body-file <file>` (Markdown, replace semantics
+  — it **owns** the body and overwrites anything there, so read before you
+  write). Sub-pages are preserved, not archived.
 - Bulk changes across many tasks: the tool has no batch command yet. Loop over
   individual `set` calls only with the user's explicit go-ahead, and stop on the
   first non-zero exit rather than plowing through.

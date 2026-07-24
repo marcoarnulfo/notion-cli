@@ -1,18 +1,20 @@
 package cli
 
 import (
+	"github.com/marcoarnulfo/notion-cli/internal/service"
 	"github.com/marcoarnulfo/notion-cli/internal/tracker"
 	"github.com/spf13/cobra"
 )
 
 // writeFlags are the fields upsert and set share.
 type writeFlags struct {
-	ticket string
-	pageID string
-	title  string
-	status string
-	due    string
-	asJSON bool
+	ticket   string
+	pageID   string
+	title    string
+	status   string
+	due      string
+	asJSON   bool
+	bodyFile string
 }
 
 // bindShared registers the flags that carry no addressing semantics, common
@@ -22,6 +24,8 @@ func (wf *writeFlags) bindShared(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&wf.status, "status", "", "status to set")
 	cmd.Flags().StringVar(&wf.due, "due", "", "due date, YYYY-MM-DD")
 	cmd.Flags().BoolVar(&wf.asJSON, "json", false, "print machine-readable JSON")
+	cmd.Flags().StringVar(&wf.bodyFile, "body-file", "",
+		"Markdown file whose content replaces the page body ('-' for stdin); replace semantics, owns the body")
 }
 
 // bind is upsert's binding: a page id cannot exist before the row does, so
@@ -62,15 +66,16 @@ func newUpsertCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			res, err := svc.Upsert(cmd.Context(), wf.fields())
-			if err != nil {
-				return err
+			var body *service.BodyRequest
+			var warnings []string
+			if wf.bodyFile != "" {
+				body, warnings, err = loadBody(wf.bodyFile, cmd.InOrStdin(), cmd.ErrOrStderr())
+				if err != nil {
+					return err
+				}
 			}
-			if wf.asJSON {
-				out := toPageJSON(res.Page, svc.Profile().Properties)
-				return printJSON(cmd.OutOrStdout(), map[string]any{"action": res.Action, "page": out})
-			}
-			return nil // quiet on success
+			res, err := svc.Upsert(cmd.Context(), wf.fields(), body)
+			return emitWrite(cmd, svc.Profile().Properties, res, warnings, wf.asJSON, err)
 		},
 	}
 	wf.bind(cmd)

@@ -135,6 +135,25 @@ Same fields as `upsert`, but fails with exit code 3 if the row doesn't exist yet
 
 `--ticket` and `--page-id` are mutually exclusive and exactly one is required. `--page-id` addresses a row directly by its Notion page id — no query by ticket key at all — which is faster and unambiguous when you already have it (e.g. from a prior `--json` call's `page_id`, see [JSON output](#json-output)). It accepts the full page URL you'd copy out of Notion's browser address bar, a bare 32-character hex id, or a dashed UUID; any other input fails immediately with exit code 2, before any request is made. Because `GET`ting a page by id works for anything shared with the integration — not just rows of the configured data source — a page id that resolves to a *different* data source than the active profile is rejected with exit code 2 rather than left to fail later with a confusing property-name error from Notion. `set --page-id` also rejects, with the same exit code, a page whose parent carries no data source at all — its membership can never be confirmed, and a write must not proceed on a page that cannot prove it belongs to this profile.
 
+### `--body-file` — write the page body from Markdown
+
+```
+notion-track upsert --ticket <key> --body-file notes.md
+notion-track set --page-id <id> --body-file -
+```
+
+Available on both `upsert` and `set`. `--body-file` takes a path to a Markdown file, or `-` to read from stdin; its content becomes the row's Notion page body, converted to native blocks. Properties (`--title`, `--status`, `--due`) and the body are independent — pass both, either, or neither.
+
+**Replace semantics.** `--body-file` **owns the page body**: every run makes the body equal to the file's content, deleting whatever blocks were already there — including anything added by hand in Notion since the last run. Running it twice on the same file yields the same body, not a duplicate. There is no append mode and no undo, so treat the file as the single source of truth for that page and read the page first (`get`) if you're not sure what's there. Sub-pages and child databases nested under the page are never touched — they're skipped rather than archived, and a warning on stderr names each one that was kept.
+
+**Supported Markdown.** Headings (`#`/`##`/`###`, deeper levels flatten to h3), paragraphs, bulleted and numbered lists, task checkboxes (`- [ ]` / `- [x]`), fenced and indented code blocks, blockquotes, `---` dividers, and inline **bold**, *italic*, `code`, ~~strikethrough~~, and links. List and quote nesting is supported to 2 levels. Tables, images, raw HTML, and nesting past 2 levels aren't dropped — each **degrades** to the closest supported block (a table becomes a plain-text code block, an image becomes a link, deeper nesting is promoted up a level) and prints a warning to stderr naming what happened, so nothing silently disappears but nothing blocks the write either. A file over 1 MiB is rejected before any request is made (exit code 2).
+
+**Cost.** There's no bulk-delete endpoint in Notion's API, so replacing a body is `O(n)` in the number of blocks already on the page: append the new content, then delete the old blocks one by one. A page with a lot of existing content takes correspondingly longer, and `notion-track` prints progress lines to stderr (blocks appended, blocks deleted so far) so a long run doesn't look hung.
+
+**Concurrency.** Two `--body-file` runs against the same page racing each other can both append before either deletes, leaving the body duplicated — there's no lock to take on a Notion page. Don't run concurrent body writes against one page.
+
+With `--json`, a successful write adds a `body` object: `{"blocks_written": N, "blocks_deleted": N}`. If the properties write succeeds but the body replace fails partway, the command still exits 1 (not 0), and `--json` prints `body: {"written": false, "error": "...", "blocks_written": N, "blocks_deleted": N}` — `written` tells you the body is *not* in the state the file describes, while `page` in the same output still reflects whatever properties were applied, since those are two separate Notion API calls and the first can succeed even if the second doesn't.
+
 ### `get` — read one row
 
 ```
@@ -302,7 +321,8 @@ These are current, deliberate tradeoffs — not bugs to be surprised by:
 2. **`upsert` and `get` fail on duplicate ticket keys instead of picking one.** If more than one row shares the same ticket key, `notion-track` refuses to guess which one you meant — it exits with code 4 and lists the offending rows. Run `notion-track doctor` to find and clean them up.
 3. **Two concurrent jobs creating the same new ticket can race into a duplicate.** `upsert`'s create-or-update decision reads the current rows, then writes; the Notion API offers no unique-constraint or compare-and-swap primitive to close that window. This is not preventable client-side — `doctor`'s duplicate scan is the mitigation, not a fix.
 4. **Only a Workspace Owner can set this up.** Creating the integration and sharing a database with it both require Workspace Owner permissions in Notion. A workspace guest — one of the reasons this tool exists in the first place — cannot do either step, but can use the tool freely once someone with Owner rights has.
-5. **No Markdown page body, and no interactive TUI yet.** `upsert`/`set` only touch the properties documented above — there is no `--body-file` to write page content, and there is no wizard or browsing UI; every command here is flag-driven. Both are tracked in the [Roadmap](#roadmap).
+5. **No interactive TUI yet.** There is no wizard or browsing UI; every command here is flag-driven. Tracked in the [Roadmap](#roadmap).
+6. **`--body-file` replaces the whole page body, with no lock and no undo.** It owns the body: each run overwrites everything there, hand-edited content included, and two runs racing the same page can duplicate it. See `--body-file` under [Usage](#usage) above.
 
 ## Use it from an AI agent
 
@@ -314,13 +334,12 @@ Contributions are welcome — this is a free, open-source project. See **[CONTRI
 
 ## Roadmap
 
-Implemented today: `init` (flag-driven, with `--list`), `upsert`, `set`, `get`, `list`, `doctor`; `--json` on every command that produces output; profiles; retry with backoff.
+Implemented today: `init` (flag-driven, with `--list`), `upsert`, `set`, `get`, `list`, `doctor`; `--body-file` on `upsert`/`set` to write the page body from Markdown; `--json` on every command that produces output; profiles; retry with backoff.
 
 Not yet built:
 
 - **Interactive `init` wizard** — a guided TUI alternative to today's flag-only form.
 - **Browsing TUI** — an interactive view over the tracked rows.
-- **Markdown page body** (`--body-file` on `upsert`/`set`) — currently only the properties listed under [Usage](#usage) can be written.
 - **Prebuilt binaries** — a GoReleaser pipeline publishing GitHub Releases for macOS/Linux/Windows; today, `go install` or building from source are the only options.
 - **A composite GitHub Action** wrapping the binary, so a workflow step doesn't need its own `go install`.
 - **An MCP server adapter** over the same `internal/service` layer the CLI uses today.

@@ -88,7 +88,7 @@ func TestSetByIDUpdatesTheCorrectPageWithoutQuerying(t *testing.T) {
 	defer srv.Close()
 
 	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile())
-	res, err := s.SetByID(context.Background(), testPageID, tracker.Fields{Status: "Fatto"})
+	res, err := s.SetByID(context.Background(), testPageID, tracker.Fields{Status: "Fatto"}, nil)
 	if err != nil {
 		t.Fatalf("SetByID: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestSetByIDOmitsTheTicketPropertyFromThePatchBody(t *testing.T) {
 	defer srv.Close()
 
 	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile())
-	if _, err := s.SetByID(context.Background(), testPageID, tracker.Fields{Status: "Fatto"}); err != nil {
+	if _, err := s.SetByID(context.Background(), testPageID, tracker.Fields{Status: "Fatto"}, nil); err != nil {
 		t.Fatalf("SetByID: %v", err)
 	}
 
@@ -172,7 +172,7 @@ func TestSetByIDRejectsAPageFromAnotherDataSource(t *testing.T) {
 	defer srv.Close()
 
 	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile())
-	_, err := s.SetByID(context.Background(), testPageID, tracker.Fields{Status: "Fatto"})
+	_, err := s.SetByID(context.Background(), testPageID, tracker.Fields{Status: "Fatto"}, nil)
 	if !errors.Is(err, ErrPageOutsideProfile) {
 		t.Fatalf("got %v, want ErrPageOutsideProfile", err)
 	}
@@ -219,7 +219,7 @@ func TestSetByIDRejectsAPageWithNoParentDataSource(t *testing.T) {
 	defer srv.Close()
 
 	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile())
-	_, err := s.SetByID(context.Background(), testPageID, tracker.Fields{Status: "Fatto"})
+	_, err := s.SetByID(context.Background(), testPageID, tracker.Fields{Status: "Fatto"}, nil)
 	if !errors.Is(err, ErrPageOutsideProfile) {
 		t.Fatalf("got %v, want ErrPageOutsideProfile", err)
 	}
@@ -275,7 +275,7 @@ func TestSetByIDRejectsAnEmptyPageID(t *testing.T) {
 	defer srv.Close()
 
 	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile())
-	_, err := s.SetByID(context.Background(), "", tracker.Fields{Status: "Fatto"})
+	_, err := s.SetByID(context.Background(), "", tracker.Fields{Status: "Fatto"}, nil)
 	if !errors.Is(err, ErrEmptyPageID) {
 		t.Fatalf("got %v, want ErrEmptyPageID", err)
 	}
