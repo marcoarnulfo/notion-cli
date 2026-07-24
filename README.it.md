@@ -19,8 +19,8 @@ L'autenticazione avviene solo con un **token di integrazione interna** di Notion
 - **Upsert idempotente** (`upsert`) — crea o aggiorna la riga di un ticket in base alla sua chiave. Due esecuzioni, una riga sola.
 - **Scrittura solo in aggiornamento** (`set`) — fallisce con un exit code dedicato se il ticket non esiste ancora, invece di crearlo silenziosamente.
 - **Lettura** (`get`, `list`) — una riga o molte, filtrabili per stato, in forma leggibile o `--json`.
-- **Diagnostica** (`doctor`) — verifica il token, l'accesso alla data source, il mapping delle proprietà (compreso il drift di tipo rispetto a quando `init` è stato eseguito) e scansiona l'intera data source alla ricerca di chiavi ticket duplicate.
-- **Configurazione guidata** (`init`) — scrive un profilo a partire dai flag, validato contro lo schema live della data source prima di salvare qualsiasi cosa; `init --list` scopre gli id delle data source visibili alla tua integrazione. In un terminale interattivo, offre anche di raccogliere e salvare il token di integrazione se non ne trova uno (vedi [Configurazione](#configurazione)).
+- **Diagnostica** (`doctor`) — verifica il token, l'accesso alla data source, il mapping delle proprietà (compreso il drift di tipo rispetto a quando `init` è stato eseguito), scansiona l'intera data source alla ricerca di chiavi ticket duplicate e avvisa se un file tracciato da git sembra contenere il tuo token di integrazione.
+- **Configurazione guidata** (`init`) — un `notion-track init` nudo in un terminale apre una procedura guidata che sceglie la data source e ti propone il mapping delle proprietà; la forma a flag scrive lo stesso profilo in modo non interattivo, validato contro lo schema live della data source prima di salvare qualsiasi cosa. `init --list` scopre gli id delle data source visibili alla tua integrazione. In un terminale interattivo offre anche di raccogliere e salvare il token di integrazione se non ne trova uno (vedi [Configurazione](#configurazione)).
 - **Profili** — più configurazioni di database, con nome, in un solo file YAML, selezionabili via flag, variabile d'ambiente o un default configurato.
 - **`--json` ovunque** — ogni comando che produce output (`get`, `list`, `doctor`, `upsert`, `set`) può emettere JSON leggibile da macchina, con una forma documentata e stabile.
 - **Pensato per la CI** — silenzioso in caso di successo, un exit code distinto per ogni classe di errore (auth, non trovato, duplicato, uso scorretto, generico), nessun prompt interattivo.
@@ -96,6 +96,16 @@ Flag globali, disponibili su ogni comando:
 
 ### `init` — configura un profilo
 
+Due forme. In un terminale, senza nient'altro sulla riga di comando:
+
+```
+notion-track init
+```
+
+apre una procedura guidata: recupera il tuo token (chiedendolo solo se non ne esiste ancora uno), elenca le data source condivise con la tua integrazione e ti fa scegliere con le frecce. Poi propone un mapping delle proprietà, dedotto dai nomi e dai tipi delle tue colonne, da confermare o correggere — ogni ruolo offre soltanto le colonne che può davvero usare, quindi un mapping che si romperebbe al primo utilizzo non è nemmeno selezionabile. `enter` salva; `esc` o `Ctrl-C` annullano, senza scrivere nulla e uscendo con codice diverso da zero, così uno script può distinguere i due casi. Anche `--profile` e `--config` funzionano qui: dicono dove finisce il profilo, non cosa contiene.
+
+La procedura guidata richiede un terminale **e** una riga di comando altrimenti nuda. Passare un qualsiasi flag di configurazione, o eseguire il comando senza un TTY — CI, una pipe, un agente — porta alla forma esplicita qui sotto, invariata:
+
 ```
 notion-track init --data-source-id <id> --ticket-prop <nome> --status-prop <nome> --title-prop <nome> [--due-prop <nome>] [--database-id <id>] [--list]
 ```
@@ -170,13 +180,17 @@ notion-track list [--status <stato>] [--json]
 
 Elenca tutte le righe, oppure solo quelle che corrispondono a `--status`. Un valore di stato sconosciuto fallisce subito con exit code 2, indicando i valori realmente ammessi da Notion per quella proprietà.
 
+Quando non corrisponde nulla, la forma leggibile stampa `no matching tasks` **su stderr** ed esce con 0 — stdout resta vuoto, così `list | wc -l` conta righe e nient'altro. `list --json` stampa `[]` e non dice nulla su stderr.
+
 ### `doctor` — verifica la configurazione
 
 ```
 notion-track doctor [--json]
 ```
 
-Esegue quattro controlli — `token`, `data_source`, `properties`, `duplicates` — e stampa ciascuno come `ok`, `warn` o `fail` con un messaggio di dettaglio azionabile. Un `warn` (ad es. il tipo della proprietà stato è cambiato da quando `init` è stato eseguito) non fa fallire il comando; qualsiasi `fail` lo fa uscire con codice diverso da zero. `properties` e `duplicates` vengono eseguiti anche quando `data_source` fallisce, così una configurazione rotta viene diagnosticata in un solo passaggio invece che un sintomo alla volta.
+Esegue cinque controlli — `token`, `data_source`, `properties`, `duplicates`, `secrets` — e stampa ciascuno come `ok`, `warn` o `fail` con un messaggio di dettaglio azionabile. Un `warn` (ad es. il tipo della proprietà stato è cambiato da quando `init` è stato eseguito) non fa fallire il comando; qualsiasi `fail` lo fa uscire con codice diverso da zero. `properties` e `duplicates` vengono eseguiti anche quando `data_source` fallisce, così una configurazione rotta viene diagnosticata in un solo passaggio invece che un sintomo alla volta.
+
+`secrets` è l'unico controllo che guarda la tua macchina invece che Notion: scansiona i file **tracciati** dal repository git corrente cercando qualcosa che abbia la forma di un token di integrazione, e avvisa indicando file e numero di riga — mai il testo trovato, che equivarrebbe a far trapelare il segreto una seconda volta, in scrollback e log di CI. I file non tracciati vengono lasciati stare: un token in un `.env` ignorato non è l'errore che questo controllo cerca. Fuori da un repository, o senza git installato, riporta `ok` con la motivazione invece di un avviso su cui nessuno può agire.
 
 ## Configurazione
 
@@ -269,14 +283,15 @@ Se il mapping configurato indica una colonna che la riga non porta davvero, il c
 
 `action` vale `"created"` o `"updated"`.
 
-`doctor --json` — un array di check, uno per `token` / `data_source` / `properties` / `duplicates`:
+`doctor --json` — un array di check, uno per `token` / `data_source` / `properties` / `duplicates` / `secrets`:
 
 ```json
 [
   { "name": "token", "status": "ok", "detail": "token from environment\n  authenticated as notion-track" },
   { "name": "data_source", "status": "ok", "detail": "reachable: Tasks" },
   { "name": "properties", "status": "ok", "detail": "all mapped properties exist with the expected types" },
-  { "name": "duplicates", "status": "ok", "detail": "42 rows, no repeated ticket keys" }
+  { "name": "duplicates", "status": "ok", "detail": "42 rows, no repeated ticket keys" },
+  { "name": "secrets", "status": "ok", "detail": "37 tracked files scanned, no token-looking strings" }
 ]
 ```
 
@@ -321,7 +336,7 @@ Sono tradeoff attuali e deliberati — non bug di cui sorprendersi:
 2. **`upsert` e `get` falliscono sui ticket duplicati invece di sceglierne uno.** Se più righe condividono la stessa chiave ticket, `notion-track` rifiuta di indovinare quale intendessi — esce con codice 4 ed elenca le righe in conflitto. Esegui `notion-track doctor` per trovarle e ripulirle.
 3. **Due job concorrenti che creano lo stesso ticket nuovo possono generare un duplicato per race condition.** La decisione crea-o-aggiorna di `upsert` legge le righe correnti e poi scrive; l'API di Notion non offre un vincolo di unicità né un compare-and-swap per chiudere quella finestra. Non è prevenibile lato client — la scansione dei duplicati di `doctor` è la mitigazione, non una soluzione.
 4. **Solo un Workspace Owner può fare questa configurazione.** Creare l'integrazione e condividere un database con essa richiedono entrambi permessi da Workspace Owner in Notion. Un guest del workspace — una delle ragioni per cui questo strumento esiste — non può fare nessuno dei due passaggi, ma può usare liberamente lo strumento una volta che qualcuno con permessi da Owner li ha completati.
-5. **Nessuna TUI interattiva ancora.** Non esiste un wizard o un'interfaccia di navigazione: ogni comando qui è guidato da flag. Tracciato nella [Roadmap](#roadmap).
+5. **Nessuna TUI di navigazione ancora.** `init` ha una procedura guidata interattiva, ma non esiste una vista interattiva sulle righe: ogni altro comando è guidato da flag. Tracciato nella [Roadmap](#roadmap).
 6. **`--body-file` sostituisce l'intero corpo della pagina, senza lock e senza annulla.** Possiede il corpo: ogni esecuzione sovrascrive tutto ciò che c'è, incluso il contenuto modificato a mano, e due esecuzioni in corsa sulla stessa pagina possono duplicarlo. Vedi `--body-file` sotto [Uso](#uso) sopra.
 
 ## Usarlo da un agente AI
@@ -334,11 +349,10 @@ I contributi sono benvenuti — questo è un progetto libero e open-source. Vedi
 
 ## Roadmap
 
-Implementato oggi: `init` (guidato da flag, con `--list`), `upsert`, `set`, `get`, `list`, `doctor`; `--body-file` su `upsert`/`set` per scrivere il corpo della pagina da Markdown; `--json` su ogni comando che produce output; profili; retry con backoff.
+Implementato oggi: `init` (procedura guidata interattiva e forma a flag, con `--list`), `upsert`, `set`, `get`, `list`, `doctor`; `--body-file` su `upsert`/`set` per scrivere il corpo della pagina da Markdown; `--json` su ogni comando che produce output; profili; retry con backoff.
 
 Non ancora costruito:
 
-- **Wizard interattivo per `init`** — un'alternativa TUI guidata all'attuale forma solo a flag.
 - **TUI di navigazione** — una vista interattiva sulle righe tracciate.
 - **Binari precompilati** — una pipeline GoReleaser che pubblica GitHub Releases per macOS/Linux/Windows; oggi le uniche opzioni sono `go install` o compilare da sorgente.
 - **Una composite GitHub Action** che avvolge il binario, così uno step di workflow non ha bisogno di un proprio `go install`.

@@ -20,7 +20,7 @@ It authenticates with a Notion **internal integration token** only — no browse
 - **Update-only write** (`set`) — fails with a distinct exit code if the ticket doesn't exist yet, instead of silently creating it.
 - **Read** (`get`, `list`) — one row or many, optionally filtered by status, human-readable or `--json`.
 - **Diagnostics** (`doctor`) — checks the token, data source access, the property mapping (including type drift since `init`), scans the whole data source for duplicate ticket keys, and warns if a git-tracked file looks like it carries your integration token.
-- **Guided setup** (`init`) — writes a profile from flags, validated against the data source's live schema before anything is saved; `init --list` discovers the data source ids your integration can see. At an interactive terminal, it also offers to collect and save the integration token if none is found (see [Configuration](#configuration)).
+- **Guided setup** (`init`) — a bare `notion-track init` at a terminal opens a wizard that picks the data source and proposes the property mapping for you; the flag form writes the same profile non-interactively, validated against the data source's live schema before anything is saved. `init --list` discovers the data source ids your integration can see. At an interactive terminal it also offers to collect and save the integration token if none is found (see [Configuration](#configuration)).
 - **Profiles** — several named database configurations in one YAML config file, selectable by flag, environment variable, or a configured default.
 - **`--json` everywhere** — every command that produces output (`get`, `list`, `doctor`, `upsert`, `set`) can emit machine-readable JSON with a documented, stable shape.
 - **CI-friendly by design** — quiet on success, a distinct exit code per failure class (auth, not found, duplicate, usage, generic), no interactive prompts.
@@ -95,6 +95,16 @@ Global flags, available on every command:
 | `--config string` | path to an explicit config file, instead of the default OS location |
 
 ### `init` — configure a profile
+
+Two forms. At a terminal, with nothing else on the command line:
+
+```
+notion-track init
+```
+
+opens a wizard: it picks up your token (asking for it only if there isn't one yet), lists the data sources shared with your integration, and lets you choose one with the arrow keys. It then proposes a property mapping, guessed from your column names and types, for you to confirm or change — each role offering only columns it can actually use, so a mapping that would break on first use cannot be chosen. `enter` saves; `esc` or `Ctrl-C` cancels, writing nothing and exiting non-zero so a script can tell the two apart. `--profile` and `--config` work here too: they say where the profile goes, not what is in it.
+
+The wizard needs a terminal *and* an otherwise-bare command line. Passing any configuring flag, or running without a TTY — CI, a pipe, an agent — takes the explicit form below, unchanged:
 
 ```
 notion-track init --data-source-id <id> --ticket-prop <name> --status-prop <name> --title-prop <name> [--due-prop <name>] [--database-id <id>] [--list]
@@ -326,7 +336,7 @@ These are current, deliberate tradeoffs — not bugs to be surprised by:
 2. **`upsert` and `get` fail on duplicate ticket keys instead of picking one.** If more than one row shares the same ticket key, `notion-track` refuses to guess which one you meant — it exits with code 4 and lists the offending rows. Run `notion-track doctor` to find and clean them up.
 3. **Two concurrent jobs creating the same new ticket can race into a duplicate.** `upsert`'s create-or-update decision reads the current rows, then writes; the Notion API offers no unique-constraint or compare-and-swap primitive to close that window. This is not preventable client-side — `doctor`'s duplicate scan is the mitigation, not a fix.
 4. **Only a Workspace Owner can set this up.** Creating the integration and sharing a database with it both require Workspace Owner permissions in Notion. A workspace guest — one of the reasons this tool exists in the first place — cannot do either step, but can use the tool freely once someone with Owner rights has.
-5. **No interactive TUI yet.** There is no wizard or browsing UI; every command here is flag-driven. Tracked in the [Roadmap](#roadmap).
+5. **No browsing TUI yet.** `init` has an interactive wizard, but there is no interactive view over the rows themselves; every other command is flag-driven. Tracked in the [Roadmap](#roadmap).
 6. **`--body-file` replaces the whole page body, with no lock and no undo.** It owns the body: each run overwrites everything there, hand-edited content included, and two runs racing the same page can duplicate it. See `--body-file` under [Usage](#usage) above.
 
 ## Use it from an AI agent
@@ -339,11 +349,10 @@ Contributions are welcome — this is a free, open-source project. See **[CONTRI
 
 ## Roadmap
 
-Implemented today: `init` (flag-driven, with `--list`), `upsert`, `set`, `get`, `list`, `doctor`; `--body-file` on `upsert`/`set` to write the page body from Markdown; `--json` on every command that produces output; profiles; retry with backoff.
+Implemented today: `init` (interactive wizard and flag-driven, with `--list`), `upsert`, `set`, `get`, `list`, `doctor`; `--body-file` on `upsert`/`set` to write the page body from Markdown; `--json` on every command that produces output; profiles; retry with backoff.
 
 Not yet built:
 
-- **Interactive `init` wizard** — a guided TUI alternative to today's flag-only form.
 - **Browsing TUI** — an interactive view over the tracked rows.
 - **Prebuilt binaries** — a GoReleaser pipeline publishing GitHub Releases for macOS/Linux/Windows; today, `go install` or building from source are the only options.
 - **A composite GitHub Action** wrapping the binary, so a workflow step doesn't need its own `go install`.
