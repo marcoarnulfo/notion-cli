@@ -15,6 +15,7 @@ type writeFlags struct {
 	due      string
 	asJSON   bool
 	bodyFile string
+	expand   bool
 }
 
 // bindShared registers the flags that carry no addressing semantics, common
@@ -26,6 +27,26 @@ func (wf *writeFlags) bindShared(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&wf.asJSON, "json", false, "print machine-readable JSON")
 	cmd.Flags().StringVar(&wf.bodyFile, "body-file", "",
 		"Markdown file whose content replaces the page body ('-' for stdin); replace semantics, owns the body")
+	cmd.Flags().BoolVar(&wf.expand, "expand", false,
+		"expand {{ticket}} and {{date}} placeholders in --body-file before sending it")
+}
+
+// bodyVars are the placeholder values for --expand, or nil when the flag is
+// off. Off by default on purpose: --body-file shipped before this existed, and
+// a body that legitimately contains {{...}} — a document about templating, a
+// snippet of Handlebars — must keep working exactly as it did.
+//
+// ticket is offered even when the row was addressed by --page-id, where it is
+// empty: a body written for either addressing form should not fail depending
+// on which one the caller used.
+func (wf *writeFlags) bodyVars() map[string]string {
+	if !wf.expand {
+		return nil
+	}
+	return map[string]string{
+		"ticket": wf.ticket,
+		"date":   now().Format("2006-01-02"),
+	}
 }
 
 // bind is upsert's binding: a page id cannot exist before the row does, so
@@ -69,7 +90,7 @@ func newUpsertCmd() *cobra.Command {
 			var body *service.BodyRequest
 			var warnings []string
 			if wf.bodyFile != "" {
-				body, warnings, err = loadBody(wf.bodyFile, cmd.InOrStdin(), cmd.ErrOrStderr())
+				body, warnings, err = loadBody(wf.bodyFile, cmd.InOrStdin(), cmd.ErrOrStderr(), wf.bodyVars())
 				if err != nil {
 					return err
 				}

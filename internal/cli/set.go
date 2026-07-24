@@ -23,7 +23,7 @@ func newSetCmd() *cobra.Command {
 			var body *service.BodyRequest
 			var warnings []string
 			if wf.bodyFile != "" {
-				body, warnings, err = loadBody(wf.bodyFile, cmd.InOrStdin(), cmd.ErrOrStderr())
+				body, warnings, err = loadBody(wf.bodyFile, cmd.InOrStdin(), cmd.ErrOrStderr(), wf.bodyVars())
 				if err != nil {
 					return err
 				}

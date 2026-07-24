@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/marcoarnulfo/notion-cli/internal/config"
+	"github.com/marcoarnulfo/notion-cli/internal/notion"
 	"github.com/marcoarnulfo/notion-cli/internal/service"
 	"github.com/spf13/cobra"
 )
@@ -24,7 +26,7 @@ func TestLoadBodyRejectsEmptyFile(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "empty.md")
 	os.WriteFile(p, []byte("   \n"), 0o600)
-	_, _, err := loadBody(p, nil, nil)
+	_, _, err := loadBody(p, nil, nil, nil)
 	if err == nil || exitCodeFor(err) != ExitUsage {
 		t.Fatalf("empty file must be a usage error, got %v (code %d)", err, exitCodeFor(err))
 	}
@@ -40,7 +42,7 @@ func TestLoadBodyRejectsFileOverOneMiB(t *testing.T) {
 	if err := os.WriteFile(p, data, 0o600); err != nil {
 		t.Fatalf("write huge fixture: %v", err)
 	}
-	_, _, err := loadBody(p, nil, nil)
+	_, _, err := loadBody(p, nil, nil, nil)
 	if err == nil {
 		t.Fatal("want error for a body file over 1MiB, got nil")
 	}
@@ -50,14 +52,14 @@ func TestLoadBodyRejectsFileOverOneMiB(t *testing.T) {
 }
 
 func TestLoadBodyRejectsMissingFile(t *testing.T) {
-	_, _, err := loadBody(filepath.Join(t.TempDir(), "nope.md"), nil, nil)
+	_, _, err := loadBody(filepath.Join(t.TempDir(), "nope.md"), nil, nil, nil)
 	if err == nil || exitCodeFor(err) != ExitUsage {
 		t.Fatalf("missing file must be a usage error, got %v", err)
 	}
 }
 
 func TestLoadBodyReadsStdin(t *testing.T) {
-	req, _, err := loadBody("-", strings.NewReader("# Title\n\nbody\n"), nil)
+	req, _, err := loadBody("-", strings.NewReader("# Title\n\nbody\n"), nil, nil)
 	if err != nil {
 		t.Fatalf("stdin body: %v", err)
 	}
@@ -125,4 +127,111 @@ func TestEmitWriteSendsWarningsToStderrNotStdout(t *testing.T) {
 	if strings.Contains(out.String(), "warning") {
 		t.Fatalf("warnings must NOT be on stdout: %q", out.String())
 	}
+}
+
+// withFixedClock pins --expand's {{date}} so a test can assert on the value
+// rather than recompute it the same way the code does, which would pass even
+// if both were wrong.
+func withFixedClock(t *testing.T, day string) {
+	t.Helper()
+	when, err := time.Parse("2006-01-02", day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := now
+	now = func() time.Time { return when }
+	t.Cleanup(func() { now = old })
+}
+
+func TestLoadBodyExpandsPlaceholdersWhenAskedTo(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(p, []byte("Closed {{ticket}} on {{date}}.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	req, _, err := loadBody(p, nil, nil, map[string]string{"ticket": "BDF-231", "date": "2026-07-24"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Asserted fragment by fragment: the Markdown parser is free to split one
+	// paragraph across several rich-text runs, which changes nothing about
+	// what Notion renders.
+	got := blockText(t, req.Blocks)
+	for _, want := range []string{"BDF-231", "2026-07-24"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("body = %q, want it to contain %q", got, want)
+		}
+	}
+	if strings.Contains(got, "{{") {
+		t.Errorf("body = %q, still carries a placeholder", got)
+	}
+}
+
+// The flag governs the whole feature: off, there are no variables at all, so
+// loadBody skips expansion entirely.
+func TestBodyVarsOnlyExistWhenExpandIsAsked(t *testing.T) {
+	withFixedClock(t, "2026-07-24")
+	wf := writeFlags{ticket: "BDF-231"}
+
+	if got := wf.bodyVars(); got != nil {
+		t.Fatalf("bodyVars = %v without --expand, want none", got)
+	}
+
+	wf.expand = true
+	vars := wf.bodyVars()
+	if vars["ticket"] != "BDF-231" {
+		t.Errorf("ticket = %q", vars["ticket"])
+	}
+	if vars["date"] != "2026-07-24" {
+		t.Errorf("date = %q, want today in ISO form", vars["date"])
+	}
+}
+
+// The default must stay exactly what it was before --expand existed: a body
+// that legitimately contains braces has to keep working.
+func TestLoadBodyLeavesPlaceholdersAloneByDefault(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(p, []byte("Use {{ticket}} in your template.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	req, _, err := loadBody(p, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := blockText(t, req.Blocks); !strings.Contains(got, "{{ticket}}") {
+		t.Errorf("body = %q, want the braces untouched", got)
+	}
+}
+
+func TestLoadBodyRejectsAnUnknownPlaceholderAsAUsageError(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(p, []byte("see {{tikcet}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := loadBody(p, nil, nil, map[string]string{"ticket": "BDF-231"})
+
+	if err == nil {
+		t.Fatal("a typo'd placeholder was accepted")
+	}
+	if code := exitCodeFor(err); code != ExitUsage {
+		t.Errorf("exit code = %d, want %d (usage)", code, ExitUsage)
+	}
+	if !strings.Contains(err.Error(), "tikcet") {
+		t.Errorf("error = %q, want it to name the placeholder", err)
+	}
+}
+
+// blockText flattens the rich text of every block into one string, which is
+// all these tests need to see.
+func blockText(t *testing.T, blocks []notion.Block) string {
+	t.Helper()
+	raw, err := json.Marshal(blocks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
 }

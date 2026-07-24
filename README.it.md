@@ -175,6 +175,14 @@ Disponibile sia su `upsert` sia su `set`. `--body-file` accetta il percorso di u
 
 **Costo.** L'API di Notion non offre un endpoint di cancellazione massiva, quindi sostituire un corpo costa `O(n)` nel numero di blocchi già presenti sulla pagina: si aggiunge il nuovo contenuto, poi si cancellano i vecchi blocchi uno alla volta. Una pagina con molto contenuto esistente richiede proporzionalmente più tempo, e `notion-track` stampa righe di avanzamento su stderr (blocchi aggiunti, blocchi cancellati finora) così un'esecuzione lunga non sembra bloccata.
 
+**Segnaposto (`--expand`).** Con `--expand`, `{{ticket}}` e `{{date}}` nel file del corpo vengono sostituiti prima che il file sia interpretato — `{{date}}` è la data di oggi, in forma `YYYY-MM-DD`. Gli spazi dentro le graffe sono ammessi (`{{ ticket }}`).
+
+```bash
+notion-track upsert --ticket BDF-231 --body-file note-di-rilascio.md --expand
+```
+
+Un segnaposto che nulla può riempire è un errore d'uso che indica la riga, invece di un corpo che arriva su Notion con un letterale `{{tikcet}}` dentro, che nessuno nota finché non legge la pagina. L'espansione è disattivata per default e non esiste una sintassi di escape: un corpo che contiene legittimamente delle graffe — un documento sul templating, uno snippet di Handlebars — semplicemente non passa il flag. Indirizzare una riga con `--page-id` lascia `{{ticket}}` vuoto, dato che nessuna chiave ticket è stata fornita.
+
 **Concorrenza.** Due esecuzioni di `--body-file` in corsa sulla stessa pagina possono entrambe aggiungere contenuto prima che una delle due cancelli il vecchio, duplicando il corpo — non c'è alcun lock da acquisire su una pagina Notion. Non eseguire scritture concorrenti del corpo sulla stessa pagina.
 
 Con `--json`, una scrittura riuscita aggiunge un oggetto `body`: `{"blocks_written": N, "blocks_deleted": N}`. Se la scrittura delle proprietà riesce ma la sostituzione del corpo fallisce a metà, il comando esce comunque con codice 1 (non 0), e `--json` stampa `body: {"written": false, "error": "...", "blocks_written": N, "blocks_deleted": N}` — `written` indica che il corpo *non* è nello stato descritto dal file, mentre `page` nello stesso output riflette comunque le proprietà effettivamente applicate, perché sono due chiamate API Notion separate e la prima può riuscire anche se la seconda fallisce.
@@ -363,7 +371,7 @@ I contributi sono benvenuti — questo è un progetto libero e open-source. Vedi
 
 ## Roadmap
 
-Implementato oggi: `init` (procedura guidata interattiva e forma a flag, con `--list`), la TUI di navigazione, `upsert`, `set`, `get`, `list`, `doctor`; `--body-file` su `upsert`/`set` per scrivere il corpo della pagina da Markdown; `--json` su ogni comando che produce output; profili; retry con backoff.
+Implementato oggi: `init` (procedura guidata interattiva e forma a flag, con `--list`), la TUI di navigazione, `upsert`, `set`, `get`, `list`, `doctor`; `--body-file` su `upsert`/`set` per scrivere il corpo della pagina da Markdown, con `--expand` per i segnaposto `{{ticket}}`/`{{date}}`; `--json` su ogni comando che produce output; profili; retry con backoff.
 
 Non ancora costruito:
 
