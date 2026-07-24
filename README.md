@@ -19,6 +19,7 @@ It authenticates with a Notion **internal integration token** only — no browse
 - **Idempotent upsert** (`upsert`) — create-or-update a ticket row by ticket key. Two runs, one row.
 - **Update-only write** (`set`) — fails with a distinct exit code if the ticket doesn't exist yet, instead of silently creating it.
 - **Read** (`get`, `list`) — one row or many, optionally filtered by status, human-readable or `--json`.
+- **Interactive browsing** (`notion-track` with no arguments, at a terminal) — a TUI over the tracked rows: filter by status, change a status inline, open a row in Notion, create one without leaving the view.
 - **Diagnostics** (`doctor`) — checks the token, data source access, the property mapping (including type drift since `init`), scans the whole data source for duplicate ticket keys, and warns if a git-tracked file looks like it carries your integration token.
 - **Guided setup** (`init`) — a bare `notion-track init` at a terminal opens a wizard that picks the data source and proposes the property mapping for you; the flag form writes the same profile non-interactively, validated against the data source's live schema before anything is saved. `init --list` discovers the data source ids your integration can see. At an interactive terminal it also offers to collect and save the integration token if none is found (see [Configuration](#configuration)).
 - **Profiles** — several named database configurations in one YAML config file, selectable by flag, environment variable, or a configured default.
@@ -93,6 +94,20 @@ Global flags, available on every command:
 |---|---|
 | `--profile string` | config profile to use (see [Configuration](#configuration)) |
 | `--config string` | path to an explicit config file, instead of the default OS location |
+
+### `notion-track` — the browsing TUI
+
+```
+notion-track
+```
+
+With no arguments at a terminal, `notion-track` opens an interactive view over the tracked rows: one line each, showing the ticket key, the title, the status and the due date. `enter` opens a full-screen detail; `s` moves the selected row to another status, picked from the values the schema actually accepts; `f` narrows the list to one status; `n` creates a row without leaving the view; `o` opens it in Notion, `y` copies its URL, `r` reloads, `/` filters by text, `q` quits.
+
+It is a view over the same `internal/service` layer every command uses — no separate logic, and nothing it can do that the flags cannot.
+
+Creating a row while a status filter is active gives it that status, so the new row lands in the view you are looking at. A write that fails leaves the list on screen and reports the reason in one line, rather than tearing the UI down: the rows are still readable and still correct.
+
+Without a terminal — piped, redirected, in CI — `notion-track` with no arguments prints help and exits, exactly as before.
 
 ### `init` — configure a profile
 
@@ -336,8 +351,7 @@ These are current, deliberate tradeoffs — not bugs to be surprised by:
 2. **`upsert` and `get` fail on duplicate ticket keys instead of picking one.** If more than one row shares the same ticket key, `notion-track` refuses to guess which one you meant — it exits with code 4 and lists the offending rows. Run `notion-track doctor` to find and clean them up.
 3. **Two concurrent jobs creating the same new ticket can race into a duplicate.** `upsert`'s create-or-update decision reads the current rows, then writes; the Notion API offers no unique-constraint or compare-and-swap primitive to close that window. This is not preventable client-side — `doctor`'s duplicate scan is the mitigation, not a fix.
 4. **Only a Workspace Owner can set this up.** Creating the integration and sharing a database with it both require Workspace Owner permissions in Notion. A workspace guest — one of the reasons this tool exists in the first place — cannot do either step, but can use the tool freely once someone with Owner rights has.
-5. **No browsing TUI yet.** `init` has an interactive wizard, but there is no interactive view over the rows themselves; every other command is flag-driven. Tracked in the [Roadmap](#roadmap).
-6. **`--body-file` replaces the whole page body, with no lock and no undo.** It owns the body: each run overwrites everything there, hand-edited content included, and two runs racing the same page can duplicate it. See `--body-file` under [Usage](#usage) above.
+5. **`--body-file` replaces the whole page body, with no lock and no undo.** It owns the body: each run overwrites everything there, hand-edited content included, and two runs racing the same page can duplicate it. See `--body-file` under [Usage](#usage) above.
 
 ## Use it from an AI agent
 
@@ -349,11 +363,10 @@ Contributions are welcome — this is a free, open-source project. See **[CONTRI
 
 ## Roadmap
 
-Implemented today: `init` (interactive wizard and flag-driven, with `--list`), `upsert`, `set`, `get`, `list`, `doctor`; `--body-file` on `upsert`/`set` to write the page body from Markdown; `--json` on every command that produces output; profiles; retry with backoff.
+Implemented today: `init` (interactive wizard and flag-driven, with `--list`), the browsing TUI, `upsert`, `set`, `get`, `list`, `doctor`; `--body-file` on `upsert`/`set` to write the page body from Markdown; `--json` on every command that produces output; profiles; retry with backoff.
 
 Not yet built:
 
-- **Browsing TUI** — an interactive view over the tracked rows.
 - **Prebuilt binaries** — a GoReleaser pipeline publishing GitHub Releases for macOS/Linux/Windows; today, `go install` or building from source are the only options.
 - **A composite GitHub Action** wrapping the binary, so a workflow step doesn't need its own `go install`.
 - **An MCP server adapter** over the same `internal/service` layer the CLI uses today.
