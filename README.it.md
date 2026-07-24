@@ -417,7 +417,19 @@ Sono tradeoff attuali e deliberati — non bug di cui sorprendersi:
 
 ## Usarlo da un agente AI
 
-Poiché il tool è muto in caso di successo, parla `--json` con uno schema stabile e restituisce [exit code differenziati](#exit-code), un agente può guidarlo con la stessa affidabilità di uno script — senza interpretare l'output umano. Nel repo, in **[`skills/notion-track/`](skills/notion-track/)**, c'è una skill pronta per [Claude Code](https://claude.com/claude-code): insegna all'agente quale comando usare e come restare al sicuro (leggere prima di scrivere, non inventare stati, ramificare sugli exit code). Si installa copiando il suo `SKILL.md` in `~/.claude/skills/notion-track/`, poi basta chiedere all'agente di "segnare quel task come fatto su Notion". Un server `notion-track mcp` è nella [roadmap](#roadmap) per gli host che parlano MCP invece della shell.
+Poiché il tool è muto in caso di successo, parla `--json` con uno schema stabile e restituisce [exit code differenziati](#exit-code), un agente può guidarlo con la stessa affidabilità di uno script — senza interpretare l'output umano. Nel repo, in **[`skills/notion-track/`](skills/notion-track/)**, c'è una skill pronta per [Claude Code](https://claude.com/claude-code): insegna all'agente quale comando usare e come restare al sicuro (leggere prima di scrivere, non inventare stati, ramificare sugli exit code). Si installa copiando il suo `SKILL.md` in `~/.claude/skills/notion-track/`, poi basta chiedere all'agente di "segnare quel task come fatto su Notion". Per gli host che parlano MCP invece della shell, **`notion-track mcp`** serve le stesse operazioni come tool su stdio:
+
+```json
+{
+  "mcpServers": {
+    "notion-track": { "command": "notion-track", "args": ["mcp"] }
+  }
+}
+```
+
+Espone `upsert_task`, `set_task`, `get_task` e `list_tasks`, restituendo la stessa forma JSON documentata sopra. È un adapter, non una seconda implementazione: ogni tool passa dallo stesso codice dei comandi CLI, quindi il controllo dei duplicati, la validazione dello stato e il mapping delle proprietà si comportano in modo identico per un agente. `stdout` trasporta il protocollo JSON-RPC e nient'altro.
+
+Questo non contraddice la ragione per cui questo strumento esiste. È l'endpoint MCP *ospitato* di Notion a essere bloccato dai firewall aziendali; un server *locale*, che gira sulla tua macchina con il tuo token di integrazione, raggiunge gli agenti proprio dove quello ospitato non arriva.
 
 ## Contribuire
 
@@ -425,13 +437,12 @@ I contributi sono benvenuti — questo è un progetto libero e open-source. Vedi
 
 ## Roadmap
 
-Implementato oggi: `init` (procedura guidata interattiva e forma a flag, con `--list`), la TUI di navigazione, `upsert`, `set`, `get`, `list`, `doctor`; `--dry-run` su `upsert`/`set`; `apply` per le scritture in blocco da manifest; `--body-file` su `upsert`/`set` per scrivere il corpo della pagina da Markdown, con `--expand` per i segnaposto `{{ticket}}`/`{{date}}`; `--json` su ogni comando che produce output; profili; retry con backoff.
+Implementato oggi: `init` (procedura guidata interattiva e forma a flag, con `--list`), la TUI di navigazione, `upsert`, `set`, `get`, `list`, `doctor`; `--dry-run` su `upsert`/`set`; `apply` per le scritture in blocco da manifest; `--body-file` su `upsert`/`set` per scrivere il corpo della pagina da Markdown, con `--expand` per i segnaposto `{{ticket}}`/`{{date}}`; `--json` su ogni comando che produce output; `mcp` per servire le stesse operazioni come tool MCP; profili; retry con backoff.
 
 Non ancora costruito:
 
 - **Binari precompilati** — una pipeline GoReleaser che pubblica GitHub Releases per macOS/Linux/Windows; oggi le uniche opzioni sono `go install` o compilare da sorgente.
 - **Una composite GitHub Action** che avvolge il binario, così uno step di workflow non ha bisogno di un proprio `go install`.
-- **Un adapter server MCP** sopra lo stesso livello `internal/service` usato oggi dalla CLI.
 
 ## Licenza
 
