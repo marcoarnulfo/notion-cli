@@ -417,7 +417,19 @@ These are current, deliberate tradeoffs — not bugs to be surprised by:
 
 ## Use it from an AI agent
 
-Because the tool is quiet on success, speaks `--json` with a stable schema, and returns [differentiated exit codes](#exit-codes), an agent can drive it as reliably as a script does — no scraping of human output. A ready-made [Claude Code](https://claude.com/claude-code) skill lives in **[`skills/notion-track/`](skills/notion-track/)**: it teaches an agent which command to reach for and how to stay safe (read before writing, never invent a status, branch on exit codes). Install it by copying its `SKILL.md` into `~/.claude/skills/notion-track/`, then ask your agent to "mark that task done on Notion". A `notion-track mcp` server is on the [roadmap](#roadmap) for hosts that speak MCP rather than the shell.
+Because the tool is quiet on success, speaks `--json` with a stable schema, and returns [differentiated exit codes](#exit-codes), an agent can drive it as reliably as a script does — no scraping of human output. A ready-made [Claude Code](https://claude.com/claude-code) skill lives in **[`skills/notion-track/`](skills/notion-track/)**: it teaches an agent which command to reach for and how to stay safe (read before writing, never invent a status, branch on exit codes). Install it by copying its `SKILL.md` into `~/.claude/skills/notion-track/`, then ask your agent to "mark that task done on Notion". For hosts that speak MCP rather than the shell, **`notion-track mcp`** serves the same operations as tools over stdio:
+
+```json
+{
+  "mcpServers": {
+    "notion-track": { "command": "notion-track", "args": ["mcp"] }
+  }
+}
+```
+
+It exposes `upsert_task`, `set_task`, `get_task` and `list_tasks`, returning the same JSON shape documented above. It is an adapter, not a second implementation: every tool reaches the same code the CLI commands do, so the duplicate check, the status validation and the property mapping behave identically for an agent. `stdout` carries the JSON-RPC protocol and nothing else.
+
+This does not contradict the reason this tool exists. Notion's *hosted* MCP endpoint is the one blocked by corporate firewalls; a *local* server, running on your machine with your own integration token, reaches agents exactly where the hosted one cannot.
 
 ## Contributing
 
@@ -431,7 +443,6 @@ Not yet built:
 
 - **Prebuilt binaries** — a GoReleaser pipeline publishing GitHub Releases for macOS/Linux/Windows; today, `go install` or building from source are the only options.
 - **A composite GitHub Action** wrapping the binary, so a workflow step doesn't need its own `go install`.
-- **An MCP server adapter** over the same `internal/service` layer the CLI uses today.
 
 ## License
 
