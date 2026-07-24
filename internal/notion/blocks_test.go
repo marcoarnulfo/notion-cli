@@ -77,7 +77,7 @@ func TestSplitIntoRequestsCountsNestedBlocksTowardTotal(t *testing.T) {
 		kids[i] = para(0)
 	}
 	big := Block{Type: "bulleted_list_item", RichText: []Span{{Content: "p"}}, Children: kids} // 100 blocks
-	blocks := []Block{big, big, big, big, big, big, big, big, big, big, big} // 11×100 = 1100 blocks
+	blocks := []Block{big, big, big, big, big, big, big, big, big, big, big}                   // 11×100 = 1100 blocks
 	batches := splitIntoRequests(blocks)
 	if len(batches) < 2 {
 		t.Fatalf("1100 nested blocks must span >1 batch by the 1000-block cap, got %d", len(batches))

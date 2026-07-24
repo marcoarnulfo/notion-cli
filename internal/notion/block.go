@@ -8,7 +8,7 @@ import "encoding/json"
 // not depend on the HTTP client, so internal/markdown can import it the same
 // way internal/tracker already imports Schema.
 type Block struct {
-	Type     string // paragraph, heading_1..3, bulleted_list_item,
+	Type string // paragraph, heading_1..3, bulleted_list_item,
 	// numbered_list_item, to_do, code, quote, divider
 	RichText []Span
 	Checked  bool    // to_do only
