@@ -23,6 +23,7 @@ It authenticates with a Notion **internal integration token** only — no browse
 - **Diagnostics** (`doctor`) — checks the token, data source access, the property mapping (including type drift since `init`), scans the whole data source for duplicate ticket keys, and warns if a git-tracked file looks like it carries your integration token.
 - **Guided setup** (`init`) — a bare `notion-track init` at a terminal opens a wizard that picks the data source and proposes the property mapping for you; the flag form writes the same profile non-interactively, validated against the data source's live schema before anything is saved. `init --list` discovers the data source ids your integration can see. At an interactive terminal it also offers to collect and save the integration token if none is found (see [Configuration](#configuration)).
 - **Profiles** — several named database configurations in one YAML config file, selectable by flag, environment variable, or a configured default.
+- **Bulk writes** (`apply`) — many upserts and sets from one JSON or CSV manifest, applied in order, stopping at the first failure.
 - **Dry run** (`--dry-run` on `upsert`/`set`) — reports whether it would create or update, which row and which columns, and writes nothing.
 - **`--json` everywhere** — every command that produces output (`get`, `list`, `doctor`, `upsert`, `set`) can emit machine-readable JSON with a documented, stable shape.
 - **CI-friendly by design** — quiet on success, a distinct exit code per failure class (auth, not found, duplicate, usage, generic), no interactive prompts.
@@ -205,6 +206,41 @@ notion-track list [--status <status>] [--json]
 Lists every row, or only those matching `--status`. An unknown status value fails fast with exit code 2, naming the values Notion actually allows for that property.
 
 When nothing matches, the human-readable form prints `no matching tasks` **to stderr** and exits 0 — stdout stays empty, so `list | wc -l` counts rows and nothing else. `list --json` prints `[]` and says nothing on stderr.
+
+### `apply` — many writes from one manifest
+
+```
+notion-track apply --file tasks.json [--dry-run] [--expand] [--json]
+```
+
+Applies a list of writes from a JSON or CSV file, one entry at a time, in order. The format is chosen from the extension.
+
+```json
+[
+  {"op": "upsert", "ticket": "BDF-1", "title": "Hardening", "status": "In progress"},
+  {"op": "set", "ticket": "BDF-2", "status": "Done", "body_file": "notes.md"}
+]
+```
+
+```csv
+op,ticket,title,status,due,body_file
+upsert,BDF-1,Hardening,In progress,2026-08-01,notes.md
+set,BDF-2,,Done,,
+```
+
+Fields: `op` (`upsert` or `set`, defaulting to `upsert` — the idempotent one, so a manifest run twice by mistake leaves the board as it was), `ticket` (required), `title`, `status`, `due`, `body_file`. An unknown field is an error rather than something quietly ignored: a manifest with `stuats` in it would otherwise leave every row's status unset and say nothing.
+
+`body_file` paths are resolved **relative to the manifest**, not to your working directory, so a manifest and the files it names travel together.
+
+**It stops at the first entry that fails**, reports which one and how many were applied, and exits with that entry's own code — so a pipeline branching on 3 (not found) or 4 (duplicate) still learns why the run stopped. Entries are applied sequentially, never in parallel: two writes racing on the same ticket key can create a duplicate, and a manifest is exactly where the same key is most likely to appear twice.
+
+```
+1/3 upsert BDF-1 updated
+2/3 upsert BDF-2 failed: unknown status "Nonexistent"; allowed values are: To do, In progress, Done
+stopped at entry 2 of 3: 1 applied, 2 not applied
+```
+
+`--dry-run` and `--expand` work here exactly as they do on `upsert` and `set`, which makes `apply --dry-run` the way to check a manifest before running it for real.
 
 ### `--dry-run` — see what a write would do
 
@@ -389,7 +425,7 @@ Contributions are welcome — this is a free, open-source project. See **[CONTRI
 
 ## Roadmap
 
-Implemented today: `init` (interactive wizard and flag-driven, with `--list`), the browsing TUI, `upsert`, `set`, `get`, `list`, `doctor`; `--dry-run` on `upsert`/`set`; `--body-file` on `upsert`/`set` to write the page body from Markdown, with `--expand` for `{{ticket}}`/`{{date}}` placeholders; `--json` on every command that produces output; profiles; retry with backoff.
+Implemented today: `init` (interactive wizard and flag-driven, with `--list`), the browsing TUI, `upsert`, `set`, `get`, `list`, `doctor`; `--dry-run` on `upsert`/`set`; `apply` for bulk writes from a manifest; `--body-file` on `upsert`/`set` to write the page body from Markdown, with `--expand` for `{{ticket}}`/`{{date}}` placeholders; `--json` on every command that produces output; profiles; retry with backoff.
 
 Not yet built:
 

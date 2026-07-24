@@ -23,6 +23,7 @@ L'autenticazione avviene solo con un **token di integrazione interna** di Notion
 - **Diagnostica** (`doctor`) — verifica il token, l'accesso alla data source, il mapping delle proprietà (compreso il drift di tipo rispetto a quando `init` è stato eseguito), scansiona l'intera data source alla ricerca di chiavi ticket duplicate e avvisa se un file tracciato da git sembra contenere il tuo token di integrazione.
 - **Configurazione guidata** (`init`) — un `notion-track init` nudo in un terminale apre una procedura guidata che sceglie la data source e ti propone il mapping delle proprietà; la forma a flag scrive lo stesso profilo in modo non interattivo, validato contro lo schema live della data source prima di salvare qualsiasi cosa. `init --list` scopre gli id delle data source visibili alla tua integrazione. In un terminale interattivo offre anche di raccogliere e salvare il token di integrazione se non ne trova uno (vedi [Configurazione](#configurazione)).
 - **Profili** — più configurazioni di database, con nome, in un solo file YAML, selezionabili via flag, variabile d'ambiente o un default configurato.
+- **Scritture in blocco** (`apply`) — molti upsert e set da un unico manifest JSON o CSV, applicati in ordine, con stop al primo errore.
 - **Dry run** (`--dry-run` su `upsert`/`set`) — riporta se creerebbe o aggiornerebbe, quale riga e quali colonne, e non scrive nulla.
 - **`--json` ovunque** — ogni comando che produce output (`get`, `list`, `doctor`, `upsert`, `set`) può emettere JSON leggibile da macchina, con una forma documentata e stabile.
 - **Pensato per la CI** — silenzioso in caso di successo, un exit code distinto per ogni classe di errore (auth, non trovato, duplicato, uso scorretto, generico), nessun prompt interattivo.
@@ -205,6 +206,41 @@ notion-track list [--status <stato>] [--json]
 Elenca tutte le righe, oppure solo quelle che corrispondono a `--status`. Un valore di stato sconosciuto fallisce subito con exit code 2, indicando i valori realmente ammessi da Notion per quella proprietà.
 
 Quando non corrisponde nulla, la forma leggibile stampa `no matching tasks` **su stderr** ed esce con 0 — stdout resta vuoto, così `list | wc -l` conta righe e nient'altro. `list --json` stampa `[]` e non dice nulla su stderr.
+
+### `apply` — molte scritture da un solo manifest
+
+```
+notion-track apply --file tasks.json [--dry-run] [--expand] [--json]
+```
+
+Applica un elenco di scritture da un file JSON o CSV, un'entry alla volta, in ordine. Il formato è scelto dall'estensione.
+
+```json
+[
+  {"op": "upsert", "ticket": "BDF-1", "title": "Hardening", "status": "In corso"},
+  {"op": "set", "ticket": "BDF-2", "status": "Fatto", "body_file": "note.md"}
+]
+```
+
+```csv
+op,ticket,title,status,due,body_file
+upsert,BDF-1,Hardening,In corso,2026-08-01,note.md
+set,BDF-2,,Fatto,,
+```
+
+Campi: `op` (`upsert` o `set`, con default `upsert` — quello idempotente, così un manifest eseguito due volte per sbaglio lascia la board com'era), `ticket` (obbligatorio), `title`, `status`, `due`, `body_file`. Un campo sconosciuto è un errore, non qualcosa da ignorare in silenzio: un manifest con dentro `stuats` lascerebbe altrimenti ogni riga senza stato senza dire nulla.
+
+I percorsi in `body_file` sono risolti **relativamente al manifest**, non alla directory di lavoro, così il manifest e i file che nomina viaggiano insieme.
+
+**Si ferma alla prima entry che fallisce**, riporta quale e quante ne sono state applicate, ed esce con l'exit code di quella entry — così una pipeline che si dirama su 3 (non trovato) o 4 (duplicato) scopre comunque perché l'esecuzione si è fermata. Le entry sono applicate in sequenza, mai in parallelo: due scritture in corsa sulla stessa chiave ticket possono creare un duplicato, e un manifest è proprio il posto dove la stessa chiave ha più probabilità di comparire due volte.
+
+```
+1/3 upsert BDF-1 updated
+2/3 upsert BDF-2 failed: unknown status "Nonexistent"; allowed values are: Da fare, In corso, Fatto
+stopped at entry 2 of 3: 1 applied, 2 not applied
+```
+
+`--dry-run` e `--expand` funzionano qui esattamente come su `upsert` e `set`, il che rende `apply --dry-run` il modo di verificare un manifest prima di eseguirlo davvero.
 
 ### `--dry-run` — vedere cosa farebbe una scrittura
 
@@ -389,7 +425,7 @@ I contributi sono benvenuti — questo è un progetto libero e open-source. Vedi
 
 ## Roadmap
 
-Implementato oggi: `init` (procedura guidata interattiva e forma a flag, con `--list`), la TUI di navigazione, `upsert`, `set`, `get`, `list`, `doctor`; `--dry-run` su `upsert`/`set`; `--body-file` su `upsert`/`set` per scrivere il corpo della pagina da Markdown, con `--expand` per i segnaposto `{{ticket}}`/`{{date}}`; `--json` su ogni comando che produce output; profili; retry con backoff.
+Implementato oggi: `init` (procedura guidata interattiva e forma a flag, con `--list`), la TUI di navigazione, `upsert`, `set`, `get`, `list`, `doctor`; `--dry-run` su `upsert`/`set`; `apply` per le scritture in blocco da manifest; `--body-file` su `upsert`/`set` per scrivere il corpo della pagina da Markdown, con `--expand` per i segnaposto `{{ticket}}`/`{{date}}`; `--json` su ogni comando che produce output; profili; retry con backoff.
 
 Non ancora costruito:
 
