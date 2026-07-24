@@ -20,6 +20,22 @@ func printJSON(w io.Writer, v any) error {
 	return enc.Encode(v)
 }
 
+// ticketIsTitle reports whether the profile maps the ticket key and the title
+// onto the same column, as a board keyed by task name does. The human-readable
+// output of list and get then has one value to show, not two, and printing both
+// roles side by side just repeats it.
+//
+// The empty check is not redundant: a hand-written config that maps neither
+// role leaves both names empty and equal, and that is a broken mapping for
+// doctor to report — not two roles deliberately sharing one column.
+//
+// --json deliberately keeps both keys even when they carry the same value: its
+// shape is a stable contract, and a script that reads .ticket must keep working
+// whatever the board is keyed by.
+func ticketIsTitle(props config.Properties) bool {
+	return props.Ticket != "" && props.Ticket == props.Title
+}
+
 // exitCodeFor maps an error onto the process exit code, so that pipelines can
 // tell "not found" from "token expired" without parsing messages.
 //

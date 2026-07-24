@@ -68,10 +68,16 @@ func newGetCmd() *cobra.Command {
 				// and what tests can capture.
 				return printJSON(cmd.OutOrStdout(), toPageJSON(page, profile.Properties))
 			}
+			status := page.Properties[profile.Properties.Status].Text
+			if ticketIsTitle(profile.Properties) {
+				cmd.Printf("%s  [%s]\n  %s\n",
+					page.Properties[profile.Properties.Title].Text, status, page.URL)
+				return nil
+			}
 			cmd.Printf("%s  %s  [%s]\n  %s\n",
 				page.Properties[profile.Properties.Ticket].Text,
 				page.Properties[profile.Properties.Title].Text,
-				page.Properties[profile.Properties.Status].Text,
+				status,
 				page.URL)
 			return nil
 		},

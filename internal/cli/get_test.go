@@ -15,8 +15,27 @@ import (
 	"github.com/marcoarnulfo/notion-cli/internal/notion"
 )
 
-// withStubbedAPI points the CLI at a fake Notion and a temp config file.
+// withStubbedAPI points the CLI at a fake Notion and a temp config file whose
+// profile maps ticket and title to two different columns — the common case.
 func withStubbedAPI(t *testing.T, handler http.HandlerFunc) string {
+	t.Helper()
+	return withStubbedAPIProfile(t, handler, `schema_version: 1
+default_profile: work
+profiles:
+  work:
+    database_id: db1
+    data_source_id: ds1
+    status_type: status
+    properties:
+      ticket: Ticket
+      status: Stato
+      title: Name
+`)
+}
+
+// withStubbedAPIProfile is withStubbedAPI with the profile spelled out, for the
+// tests that need a mapping other than the default one.
+func withStubbedAPIProfile(t *testing.T, handler http.HandlerFunc, configYAML string) string {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -30,7 +49,13 @@ func withStubbedAPI(t *testing.T, handler http.HandlerFunc) string {
 	t.Setenv(config.TokenEnv, "ntn_test")
 
 	path := filepath.Join(t.TempDir(), "config.yml")
-	os.WriteFile(path, []byte(`schema_version: 1
+	os.WriteFile(path, []byte(configYAML), 0o600)
+	return path
+}
+
+// titleKeyedProfile maps the ticket key and the title onto the same column, the
+// way a board keyed by task name does.
+const titleKeyedProfile = `schema_version: 1
 default_profile: work
 profiles:
   work:
@@ -38,12 +63,10 @@ profiles:
     data_source_id: ds1
     status_type: status
     properties:
-      ticket: Ticket
+      ticket: Name
       status: Stato
       title: Name
-`), 0o600)
-	return path
-}
+`
 
 const cliSchemaJSON = `{"id":"ds1","title":[{"plain_text":"Tasks"}],"properties":{
 	"Name":{"name":"Name","type":"title","title":{}},
@@ -300,6 +323,89 @@ func TestListJSONWithNoResultsIsAnEmptyArrayNotNull(t *testing.T) {
 	})
 	if strings.TrimSpace(out) != "[]" {
 		t.Fatalf("output = %q, want []", strings.TrimSpace(out))
+	}
+}
+
+// stubbedRow serves the schema on the schema endpoint and one row everywhere
+// else, which is all the human-output tests below need from a fake Notion.
+func stubbedRow(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/v1/data_sources/ds1" {
+		w.Write([]byte(cliSchemaJSON))
+		return
+	}
+	w.Write([]byte(`{"results":[` + cliRowJSON + `],"has_more":false}`))
+}
+
+// A board keyed by task name maps ticket and title onto one column, so the
+// human-readable row printed the same value twice, once per role. --json is
+// unaffected: it has separate keys that legitimately carry the same value.
+func TestListHumanOutputPrintsTheValueOnceWhenTicketIsTheTitle(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, stubbedRow, titleKeyedProfile)
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"list", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+
+	if n := strings.Count(out, "Hardening"); n != 1 {
+		t.Errorf("value printed %d times, want 1: %q", n, out)
+	}
+	if !strings.Contains(out, "[Fatto]") {
+		t.Errorf("status missing from %q", out)
+	}
+}
+
+// The collapse must be keyed on the two roles sharing a column, not applied to
+// every row: a profile that maps them apart still has two values to show.
+func TestListHumanOutputKeepsBothValuesWhenTheyAreDifferentColumns(t *testing.T) {
+	cfg := withStubbedAPI(t, stubbedRow)
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"list", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+
+	for _, want := range []string{"BDF-231", "Hardening", "[Fatto]"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("%q missing from %q", want, out)
+		}
+	}
+}
+
+func TestGetHumanOutputPrintsTheValueOnceWhenTicketIsTheTitle(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, stubbedRow, titleKeyedProfile)
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"get", "--ticket", "Hardening", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+
+	if n := strings.Count(out, "Hardening"); n != 1 {
+		t.Errorf("value printed %d times, want 1: %q", n, out)
+	}
+	for _, want := range []string{"[Fatto]", "https://notion.so/page1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("%q missing from %q", want, out)
+		}
+	}
+}
+
+func TestGetHumanOutputKeepsBothValuesWhenTheyAreDifferentColumns(t *testing.T) {
+	cfg := withStubbedAPI(t, stubbedRow)
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"get", "--ticket", "BDF-231", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+
+	for _, want := range []string{"BDF-231", "Hardening", "[Fatto]", "https://notion.so/page1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("%q missing from %q", want, out)
+		}
 	}
 }
 
