@@ -8,8 +8,10 @@ import (
 	"os"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/marcoarnulfo/notion-cli/internal/config"
 	"github.com/marcoarnulfo/notion-cli/internal/notion"
+	"github.com/marcoarnulfo/notion-cli/internal/tui"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -128,8 +130,128 @@ func promptForToken(cmd *cobra.Command) (string, error) {
 	return token, nil
 }
 
-// newInitCmd writes a profile from flags. The interactive TUI wizard is added
-// separately; this form is what CI and agents use.
+// configFlags are the flags that say *what* to configure. Passing any of them
+// is what tells init the caller already knows their answers, so the wizard
+// stays out of the way. --profile and --config are deliberately absent: they
+// say where to write the profile, not what goes in it, and the wizard honours
+// them.
+var configFlags = []string{
+	"data-source-id", "database-id", "ticket-prop", "status-prop",
+	"title-prop", "due-prop", "list",
+}
+
+func anyConfigFlagSet(cmd *cobra.Command) bool {
+	for _, name := range configFlags {
+		if cmd.Flags().Changed(name) {
+			return true
+		}
+	}
+	return false
+}
+
+// runWizard is the seam that keeps bubbletea's runtime out of the tests. A
+// test has no terminal to give it, and tea.NewProgram would block waiting for
+// input nobody is there to type. The Model itself is tested directly, in
+// internal/tui.
+var runWizard = func(m tui.Model) (tui.Result, error) {
+	final, err := tea.NewProgram(m).Run()
+	if err != nil {
+		return tui.Result{}, err
+	}
+	model, ok := final.(tui.Model)
+	if !ok {
+		return tui.Result{}, fmt.Errorf("wizard returned an unexpected model %T", final)
+	}
+	return model.Result(), nil
+}
+
+// runInitWizard is `notion-track init` with nothing else on the command line
+// at an interactive terminal: pick a data source, confirm the mapping, save.
+//
+// The token is collected before and outside the TUI. promptForToken already
+// reads without echo and restores the terminal on Ctrl-C (see interrupt.go);
+// rebuilding that inside a bubbletea text input would mean reimplementing the
+// one part where getting it wrong leaves the user's terminal broken. Anyone
+// who already has a token never sees the step at all.
+func runInitWizard(cmd *cobra.Command) error {
+	token, err := resolveInitToken(cmd)
+	if err != nil {
+		return err
+	}
+	client := newClient(token)
+
+	refs, err := client.ListDataSources(cmd.Context())
+	if err != nil {
+		return err
+	}
+	if len(refs) == 0 {
+		return Errorf(ExitError,
+			"no data sources are shared with this integration\n"+
+				"  fix: a workspace owner must open the database in Notion →\n"+
+				"       ••• → Connections → add the integration, then retry")
+	}
+
+	res, err := runWizard(tui.NewWizard(refs, func(id string) (*notion.Schema, error) {
+		return client.GetSchema(cmd.Context(), id)
+	}))
+	if err != nil {
+		return err
+	}
+	if res.Err != nil {
+		return res.Err
+	}
+	if res.Cancelled {
+		// Exit non-zero, so a script can tell "configured" from "the user
+		// changed their mind". The wizard cannot write a partial profile, so
+		// there is nothing to clean up.
+		return Errorf(ExitError, "init cancelled, nothing was written")
+	}
+
+	// Belt and braces: the wizard only ever offers columns of a usable type,
+	// so this cannot fail as things stand. It runs anyway because it is the
+	// one thing standing between a future wizard bug and a profile that is
+	// broken on first use — and it is where status_type comes from.
+	statusType, err := validateMapping(res.Schema,
+		res.Props.Ticket, res.Props.Status, res.Props.Title, res.Props.Due)
+	if err != nil {
+		return Errorf(ExitUsage, "%v", err)
+	}
+
+	return saveInitProfile(cmd, config.Profile{
+		DatabaseID:   res.Ref.DatabaseID,
+		DataSourceID: res.Ref.ID,
+		StatusType:   statusType,
+		Properties:   res.Props,
+	}, res.Schema.Title)
+}
+
+// saveInitProfile writes the profile both paths through init produce, so the
+// wizard and the flags cannot drift into writing subtly different configs.
+func saveInitProfile(cmd *cobra.Command, profile config.Profile, sourceTitle string) error {
+	path, _ := cmd.Flags().GetString("config")
+	cfg, err := loadExistingOrNew(path)
+	if err != nil {
+		return err
+	}
+
+	name, _ := cmd.Flags().GetString("profile")
+	if name == "" {
+		name = "default"
+	}
+	cfg.Profiles[name] = profile
+	if cfg.DefaultProfile == "" {
+		cfg.DefaultProfile = name
+	}
+
+	if err := saveConfigTo(cfg, path); err != nil {
+		return err
+	}
+	cmd.Printf("profile %q configured for data source %q\n", name, sourceTitle)
+	return nil
+}
+
+// newInitCmd writes a profile, from flags or from the interactive wizard. The
+// flag form is what CI and agents use, and it is untouched by the wizard.
 func newInitCmd() *cobra.Command {
 	var (
 		databaseID   string
@@ -146,6 +268,13 @@ func newInitCmd() *cobra.Command {
 		Short: "Configure a profile",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// A bare `init` at a terminal is the wizard. Anywhere else — CI,
+			// a pipe, an agent — it stays the usage error below: a TUI nobody
+			// can answer would hang the run.
+			if !anyConfigFlagSet(cmd) && isInteractive() {
+				return runInitWizard(cmd)
+			}
+
 			// Usage must be validated before anything that could prompt for
 			// and persist a secret: an interactive user running init without
 			// --data-source-id used to be asked for the token, and could
@@ -193,33 +322,14 @@ func newInitCmd() *cobra.Command {
 				return Errorf(ExitUsage, "%v", err)
 			}
 
-			path, _ := cmd.Flags().GetString("config")
-			cfg, err := loadExistingOrNew(path)
-			if err != nil {
-				return err
-			}
-
-			name, _ := cmd.Flags().GetString("profile")
-			if name == "" {
-				name = "default"
-			}
-			cfg.Profiles[name] = config.Profile{
+			return saveInitProfile(cmd, config.Profile{
 				DatabaseID:   databaseID,
 				DataSourceID: dataSourceID,
 				StatusType:   statusType,
 				Properties: config.Properties{
 					Ticket: ticketProp, Status: statusProp, Title: titleProp, Due: dueProp,
 				},
-			}
-			if cfg.DefaultProfile == "" {
-				cfg.DefaultProfile = name
-			}
-
-			if err := saveConfigTo(cfg, path); err != nil {
-				return err
-			}
-			cmd.Printf("profile %q configured for data source %q\n", name, schema.Title)
-			return nil
+			}, schema.Title)
 		},
 	}
 

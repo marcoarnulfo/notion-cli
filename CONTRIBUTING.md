@@ -59,7 +59,10 @@ internal/cli         cobra command tree, flag parsing, JSON rendering, exit-code
 internal/service     orchestrates client + config + domain for one profile (Upsert/Set/Get/List/Doctor)
 internal/notion      Notion API client (net/http only — no SDK), retry/backoff, typed errors
 internal/tracker     PURE domain: create-or-update decisions, payload building, status validation
+internal/markdown    PURE domain: Markdown → Notion block tree, chunking limits
 internal/config      config.yml (profiles, property mapping), credentials.yml (token) + NOTION_TOKEN / NOTION_TRACK_* env vars
+internal/tui         bubbletea models (init wizard); no network — calls arrive injected, so screens are testable without a terminal
+internal/secrets     scans git-tracked files for token-shaped strings, for doctor's "secrets" check
 ```
 
 Two rules here are **not negotiable**:

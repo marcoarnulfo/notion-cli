@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/marcoarnulfo/notion-cli/internal/config"
+	"github.com/marcoarnulfo/notion-cli/internal/notion"
+	"github.com/marcoarnulfo/notion-cli/internal/tui"
 )
 
 // withInteractivePrompt swaps the three prompt seams and restores them on
@@ -277,5 +279,176 @@ func TestInitInteractiveEmptyTokenExitsAuth(t *testing.T) {
 	})
 	if code != ExitAuth {
 		t.Fatalf("exit code = %d, want %d (ExitAuth)", code, ExitAuth)
+	}
+}
+
+// withFakeWizard swaps the bubbletea launch for a function that returns a
+// canned outcome, so the wiring around the wizard can be tested without a
+// terminal. The Model's own behaviour is covered in internal/tui.
+func withFakeWizard(t *testing.T, res tui.Result, err error) *int {
+	t.Helper()
+	var calls int
+	old := runWizard
+	runWizard = func(tui.Model) (tui.Result, error) {
+		calls++
+		return res, err
+	}
+	t.Cleanup(func() { runWizard = old })
+	return &calls
+}
+
+const wizardListJSON = `{"results":[{"id":"ds1","name":"Tasks",
+	"parent":{"type":"database_id","database_id":"db1"}}],"has_more":false}`
+
+// stubbedWizardAPI answers the two calls the wizard path makes before the TUI
+// opens: the data source listing, and the schema of whichever one is picked.
+func stubbedWizardAPI(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case "/v1/data_sources/ds1":
+		w.Write([]byte(cliSchemaJSON))
+	default:
+		w.Write([]byte(wizardListJSON))
+	}
+}
+
+func TestInitWithNoFlagsAtATerminalRunsTheWizard(t *testing.T) {
+	cfg := withStubbedAPI(t, stubbedWizardAPI)
+	withInteractivePrompt(t, true, nil, nil)
+	calls := withFakeWizard(t, tui.Result{
+		Ref: notion.DataSourceRef{ID: "ds1", Title: "Tasks", DatabaseID: "db1"},
+		Schema: &notion.Schema{DataSourceID: "ds1", Title: "Tasks", Properties: map[string]notion.Property{
+			"Name":   {Name: "Name", Type: "title"},
+			"Ticket": {Name: "Ticket", Type: "rich_text"},
+			"Stato":  {Name: "Stato", Type: "status"},
+		}},
+		Props: config.Properties{Ticket: "Ticket", Status: "Stato", Title: "Name"},
+	}, nil)
+
+	if code := executeArgs([]string{"init", "--config", cfg}); code != ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+	if *calls != 1 {
+		t.Fatalf("wizard ran %d times, want once", *calls)
+	}
+
+	written, err := config.LoadFrom(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := written.Profiles["default"]
+	// The database id comes off the picked data source, which is why the
+	// wizard never has to ask for it.
+	if p.DatabaseID != "db1" || p.DataSourceID != "ds1" {
+		t.Errorf("ids = %q/%q, want db1/ds1", p.DatabaseID, p.DataSourceID)
+	}
+	if p.Properties.Ticket != "Ticket" || p.Properties.Status != "Stato" || p.Properties.Title != "Name" {
+		t.Errorf("properties = %+v", p.Properties)
+	}
+	// status_type is derived from the live schema by validateMapping, not
+	// carried by the wizard.
+	if p.StatusType != "status" {
+		t.Errorf("status_type = %q, want status", p.StatusType)
+	}
+}
+
+// --profile says where to write, not what to write, so it must not turn the
+// wizard off.
+func TestInitWithOnlyProfileFlagStillRunsTheWizard(t *testing.T) {
+	cfg := withStubbedAPI(t, stubbedWizardAPI)
+	withInteractivePrompt(t, true, nil, nil)
+	calls := withFakeWizard(t, tui.Result{
+		Ref: notion.DataSourceRef{ID: "ds1", Title: "Tasks", DatabaseID: "db1"},
+		Schema: &notion.Schema{Title: "Tasks", Properties: map[string]notion.Property{
+			"Name":   {Name: "Name", Type: "title"},
+			"Ticket": {Name: "Ticket", Type: "rich_text"},
+			"Stato":  {Name: "Stato", Type: "status"},
+		}},
+		Props: config.Properties{Ticket: "Ticket", Status: "Stato", Title: "Name"},
+	}, nil)
+
+	if code := executeArgs([]string{"init", "--profile", "work", "--config", cfg}); code != ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+	if *calls != 1 {
+		t.Fatalf("wizard ran %d times, want once", *calls)
+	}
+
+	written, err := config.LoadFrom(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := written.Profiles["work"]; !ok {
+		t.Errorf("profiles = %v, want one named work", written.Profiles)
+	}
+}
+
+// Walking away must leave no trace and must be distinguishable from success,
+// or a script cannot tell "configured" from "changed my mind".
+func TestCancellingTheWizardWritesNothingAndExitsNonZero(t *testing.T) {
+	cfg := withStubbedAPI(t, stubbedWizardAPI)
+	withInteractivePrompt(t, true, nil, nil)
+	withFakeWizard(t, tui.Result{Cancelled: true}, nil)
+
+	if err := os.Remove(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := executeArgs([]string{"init", "--config", cfg}); code == ExitOK {
+		t.Fatal("cancelling the wizard exited 0")
+	}
+	if _, err := os.Stat(cfg); !os.IsNotExist(err) {
+		t.Errorf("a config was written despite the cancellation: %v", err)
+	}
+}
+
+// The flag path is what CI and agents use, and the wizard must stay out of it.
+func TestInitWithConfigFlagsNeverOpensTheWizard(t *testing.T) {
+	cfg := withStubbedAPI(t, stubbedWizardAPI)
+	withInteractivePrompt(t, true, nil, nil)
+	calls := withFakeWizard(t, tui.Result{}, nil)
+
+	code := executeArgs([]string{
+		"init", "--data-source-id", "ds1",
+		"--ticket-prop", "Ticket", "--status-prop", "Stato", "--title-prop", "Name",
+		"--config", cfg,
+	})
+
+	if code != ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+	if *calls != 0 {
+		t.Fatal("the wizard ran on the flag path")
+	}
+}
+
+// The guarantee CI depends on: no terminal means no TUI, just the same usage
+// error as before the wizard existed.
+func TestInitWithNoFlagsWithoutATerminalStillFailsOnUsage(t *testing.T) {
+	cfg := withStubbedAPI(t, stubbedWizardAPI)
+	withInteractivePrompt(t, false, nil, nil)
+	calls := withFakeWizard(t, tui.Result{}, nil)
+
+	if code := executeArgs([]string{"init", "--config", cfg}); code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d (usage)", code, ExitUsage)
+	}
+	if *calls != 0 {
+		t.Fatal("the wizard ran without a terminal")
+	}
+}
+
+// An integration nobody shared a database with cannot be configured, and the
+// wizard must say so instead of opening onto an empty list.
+func TestTheWizardRefusesToOpenWithNoDataSources(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"results":[],"has_more":false}`))
+	})
+	withInteractivePrompt(t, true, nil, nil)
+	calls := withFakeWizard(t, tui.Result{}, nil)
+
+	if code := executeArgs([]string{"init", "--config", cfg}); code == ExitOK {
+		t.Fatal("exit code 0 with no data sources to configure")
+	}
+	if *calls != 0 {
+		t.Fatal("the wizard opened with nothing to pick")
 	}
 }
