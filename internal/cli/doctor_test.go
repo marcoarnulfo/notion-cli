@@ -3,11 +3,27 @@ package cli
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/marcoarnulfo/notion-cli/internal/config"
 )
+
+// stubbedDoctorAPI answers every call doctor makes with a healthy response, so
+// a test about one check is not also a test of the other four.
+func stubbedDoctorAPI(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case "/v1/users/me":
+		w.Write([]byte(`{"name":"notion-track"}`))
+	case "/v1/data_sources/ds1":
+		w.Write([]byte(cliSchemaJSON))
+	default:
+		w.Write([]byte(`{"results":[],"has_more":false}`))
+	}
+}
 
 // A user with different tokens in NOTION_TOKEN and credentials.yml has no
 // other way to tell which one doctor actually used, so the token check must
@@ -83,7 +99,7 @@ func TestDoctorReportsEveryCheck(t *testing.T) {
 			t.Fatalf("exit code = %d", code)
 		}
 	})
-	for _, want := range []string{"token", "data_source", "properties", "duplicates"} {
+	for _, want := range []string{"token", "data_source", "properties", "duplicates", "secrets"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output is missing the %q check: %s", want, out)
 		}
@@ -370,5 +386,97 @@ func TestInitHeadlessRejectsAPropertyOfTheWrongType(t *testing.T) {
 	})
 	if code == ExitOK {
 		t.Fatal("init accepted a ticket property whose type (status) is not usable as a ticket key")
+	}
+}
+
+// gitRepoWithFile builds a repository with one staged file and makes it the
+// working directory, which is what the tracked-token scan reads. Skipped
+// rather than failed when git is missing: that is an environment gap, not a
+// defect in the code under test.
+func gitRepoWithFile(t *testing.T, name, content string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	if out, err := exec.Command("git", "-C", dir, "init").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", dir, "add", "--", name).CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v\n%s", err, out)
+	}
+	t.Chdir(dir)
+}
+
+// The token is built at run time so this file never carries a token-shaped
+// literal of its own — it is tracked, and the scan under test would find it.
+func fakeTokenLiteral() string { return "ntn_" + strings.Repeat("b", 46) }
+
+// A committed token is the one mistake this tool makes easy. doctor warns, and
+// warning is all it does: the row is still readable and every other command
+// still works, so failing the run would be out of proportion.
+func TestDoctorWarnsAboutATokenInATrackedFile(t *testing.T) {
+	cfg := withStubbedAPI(t, stubbedDoctorAPI)
+	gitRepoWithFile(t, "app.yml", "token: "+fakeTokenLiteral()+"\n")
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"doctor", "--config", cfg}); code != ExitOK {
+			t.Errorf("exit code = %d, want %d: a token warning must not fail the run", code, ExitOK)
+		}
+	})
+
+	if !strings.Contains(out, "app.yml:1") {
+		t.Errorf("output does not name the offending file and line: %s", out)
+	}
+	// Naming the secret in the warning about the secret would leak it a second
+	// time, into terminal scrollback and CI logs.
+	if strings.Contains(out, fakeTokenLiteral()) {
+		t.Error("the warning printed the token itself")
+	}
+}
+
+func TestDoctorReportsACleanRepository(t *testing.T) {
+	cfg := withStubbedAPI(t, stubbedDoctorAPI)
+	gitRepoWithFile(t, "app.yml", "token: ntn_test\n")
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"doctor", "--config", cfg}); code != ExitOK {
+			t.Errorf("exit code = %d", code)
+		}
+	})
+
+	if !strings.Contains(out, "secrets") {
+		t.Errorf("output is missing the secrets check: %s", out)
+	}
+	if strings.Contains(out, "app.yml") {
+		t.Errorf("a placeholder was reported as a token: %s", out)
+	}
+}
+
+// Running outside a repository is the normal case for a user who installed the
+// binary and is checking their setup from anywhere. It is not a problem to
+// report, so it must not warn.
+func TestDoctorOutsideARepositoryDoesNotWarn(t *testing.T) {
+	cfg := withStubbedAPI(t, stubbedDoctorAPI)
+	dir := t.TempDir()
+	if err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Run(); err == nil {
+		t.Skip("temp dir is inside a git work tree")
+	}
+	t.Chdir(dir)
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"doctor", "--config", cfg}); code != ExitOK {
+			t.Errorf("exit code = %d", code)
+		}
+	})
+
+	if !strings.Contains(out, "secrets") {
+		t.Errorf("output is missing the secrets check: %s", out)
+	}
+	if strings.Contains(out, "! secrets") {
+		t.Errorf("not being in a repository was reported as a warning: %s", out)
 	}
 }

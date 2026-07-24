@@ -19,7 +19,7 @@ It authenticates with a Notion **internal integration token** only — no browse
 - **Idempotent upsert** (`upsert`) — create-or-update a ticket row by ticket key. Two runs, one row.
 - **Update-only write** (`set`) — fails with a distinct exit code if the ticket doesn't exist yet, instead of silently creating it.
 - **Read** (`get`, `list`) — one row or many, optionally filtered by status, human-readable or `--json`.
-- **Diagnostics** (`doctor`) — checks the token, data source access, the property mapping (including type drift since `init`), and scans the whole data source for duplicate ticket keys.
+- **Diagnostics** (`doctor`) — checks the token, data source access, the property mapping (including type drift since `init`), scans the whole data source for duplicate ticket keys, and warns if a git-tracked file looks like it carries your integration token.
 - **Guided setup** (`init`) — writes a profile from flags, validated against the data source's live schema before anything is saved; `init --list` discovers the data source ids your integration can see. At an interactive terminal, it also offers to collect and save the integration token if none is found (see [Configuration](#configuration)).
 - **Profiles** — several named database configurations in one YAML config file, selectable by flag, environment variable, or a configured default.
 - **`--json` everywhere** — every command that produces output (`get`, `list`, `doctor`, `upsert`, `set`) can emit machine-readable JSON with a documented, stable shape.
@@ -178,7 +178,9 @@ When nothing matches, the human-readable form prints `no matching tasks` **to st
 notion-track doctor [--json]
 ```
 
-Runs four checks — `token`, `data_source`, `properties`, `duplicates` — and prints each as `ok`, `warn`, or `fail` with an actionable detail message. A `warn` (e.g. the status property's type changed since `init` ran) does not fail the command; any `fail` makes it exit non-zero. `properties` and `duplicates` still run even when `data_source` fails, so a broken setup gets diagnosed in one pass instead of one symptom at a time.
+Runs five checks — `token`, `data_source`, `properties`, `duplicates`, `secrets` — and prints each as `ok`, `warn`, or `fail` with an actionable detail message. A `warn` (e.g. the status property's type changed since `init` ran) does not fail the command; any `fail` makes it exit non-zero. `properties` and `duplicates` still run even when `data_source` fails, so a broken setup gets diagnosed in one pass instead of one symptom at a time.
+
+`secrets` is the only check that looks at your machine rather than at Notion: it scans the files the current git repository *tracks* for anything shaped like an integration token, and warns with the file and line number — never with the matched text, which would leak the secret a second time into scrollback and CI logs. Untracked files are left alone: a token in an ignored `.env` is not the mistake this is for. Running outside a repository, or without git installed, reports `ok` with the reason rather than a warning nobody can act on.
 
 ## Configuration
 
@@ -271,14 +273,15 @@ If the configured property mapping names a column the row doesn't actually carry
 
 `action` is `"created"` or `"updated"`.
 
-`doctor --json` — an array of checks, one per `token` / `data_source` / `properties` / `duplicates`:
+`doctor --json` — an array of checks, one per `token` / `data_source` / `properties` / `duplicates` / `secrets`:
 
 ```json
 [
   { "name": "token", "status": "ok", "detail": "token from environment\n  authenticated as notion-track" },
   { "name": "data_source", "status": "ok", "detail": "reachable: Tasks" },
   { "name": "properties", "status": "ok", "detail": "all mapped properties exist with the expected types" },
-  { "name": "duplicates", "status": "ok", "detail": "42 rows, no repeated ticket keys" }
+  { "name": "duplicates", "status": "ok", "detail": "42 rows, no repeated ticket keys" },
+  { "name": "secrets", "status": "ok", "detail": "37 tracked files scanned, no token-looking strings" }
 ]
 ```
 
