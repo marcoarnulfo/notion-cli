@@ -16,6 +16,7 @@ type writeFlags struct {
 	asJSON   bool
 	bodyFile string
 	expand   bool
+	dryRun   bool
 }
 
 // bindShared registers the flags that carry no addressing semantics, common
@@ -29,6 +30,8 @@ func (wf *writeFlags) bindShared(cmd *cobra.Command) {
 		"Markdown file whose content replaces the page body ('-' for stdin); replace semantics, owns the body")
 	cmd.Flags().BoolVar(&wf.expand, "expand", false,
 		"expand {{ticket}} and {{date}} placeholders in --body-file before sending it")
+	cmd.Flags().BoolVar(&wf.dryRun, "dry-run", false,
+		"report what would be written, and write nothing")
 }
 
 // bodyVars are the placeholder values for --expand, or nil when the flag is
@@ -95,7 +98,7 @@ func newUpsertCmd() *cobra.Command {
 					return err
 				}
 			}
-			res, err := svc.Upsert(cmd.Context(), wf.fields(), body)
+			res, err := svc.DryRun(wf.dryRun).Upsert(cmd.Context(), wf.fields(), body)
 			return emitWrite(cmd, svc.Profile().Properties, res, warnings, wf.asJSON, err)
 		},
 	}

@@ -79,6 +79,36 @@ func readBodySource(path string, stdin io.Reader) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(f, limit))
 }
 
+// emitPlan renders what --dry-run would have done.
+//
+// The human form goes to stdout, like every other result: it is the answer to
+// the question that was asked, not a diagnostic about it.
+func emitPlan(cmd *cobra.Command, plan *service.Plan, asJSON bool) error {
+	if asJSON {
+		return printJSON(cmd.OutOrStdout(), map[string]any{"dry_run": true, "plan": plan})
+	}
+
+	verb := "would update"
+	if plan.Action == "created" {
+		verb = "would create"
+	}
+	if plan.PageID != "" {
+		cmd.Printf("%s %s\n", verb, plan.PageID)
+	} else {
+		cmd.Printf("%s a new row\n", verb)
+	}
+	for _, p := range plan.Properties {
+		cmd.Printf("  %-20s %s\n", p.Column, p.Value)
+	}
+	if plan.BodyBlocks > 0 {
+		cmd.Printf("  %-20s %d blocks (replacing the current body)\n", "page body", plan.BodyBlocks)
+	}
+	if plan.URL != "" {
+		cmd.Printf("  %s\n", plan.URL)
+	}
+	return nil
+}
+
 // printWarnings writes each warning to w (stderr) with a "warning: " prefix.
 func printWarnings(w io.Writer, warnings []string) {
 	for _, msg := range warnings {
@@ -92,6 +122,12 @@ func printWarnings(w io.Writer, warnings []string) {
 // --json, and finally returns err so the process exits with the right code.
 func emitWrite(cmd *cobra.Command, props config.Properties, res service.Result, warnings []string, asJSON bool, err error) error {
 	printWarnings(cmd.ErrOrStderr(), warnings)
+	// A dry run reports what it would have done and stops. It cannot reach the
+	// partial-failure path below, because nothing was written for a body write
+	// to fail after.
+	if err == nil && res.Plan != nil {
+		return emitPlan(cmd, res.Plan, asJSON)
+	}
 	if res.Body != nil {
 		printWarnings(cmd.ErrOrStderr(), res.Body.Warnings)
 	}

@@ -23,6 +23,7 @@ L'autenticazione avviene solo con un **token di integrazione interna** di Notion
 - **Diagnostica** (`doctor`) — verifica il token, l'accesso alla data source, il mapping delle proprietà (compreso il drift di tipo rispetto a quando `init` è stato eseguito), scansiona l'intera data source alla ricerca di chiavi ticket duplicate e avvisa se un file tracciato da git sembra contenere il tuo token di integrazione.
 - **Configurazione guidata** (`init`) — un `notion-track init` nudo in un terminale apre una procedura guidata che sceglie la data source e ti propone il mapping delle proprietà; la forma a flag scrive lo stesso profilo in modo non interattivo, validato contro lo schema live della data source prima di salvare qualsiasi cosa. `init --list` scopre gli id delle data source visibili alla tua integrazione. In un terminale interattivo offre anche di raccogliere e salvare il token di integrazione se non ne trova uno (vedi [Configurazione](#configurazione)).
 - **Profili** — più configurazioni di database, con nome, in un solo file YAML, selezionabili via flag, variabile d'ambiente o un default configurato.
+- **Dry run** (`--dry-run` su `upsert`/`set`) — riporta se creerebbe o aggiornerebbe, quale riga e quali colonne, e non scrive nulla.
 - **`--json` ovunque** — ogni comando che produce output (`get`, `list`, `doctor`, `upsert`, `set`) può emettere JSON leggibile da macchina, con una forma documentata e stabile.
 - **Pensato per la CI** — silenzioso in caso di successo, un exit code distinto per ogni classe di errore (auth, non trovato, duplicato, uso scorretto, generico), nessun prompt interattivo.
 - **Retry con backoff** sul rate limiting di Notion (429) e sulle risposte transitorie 502/503/504/529, rispettando `Retry-After` quando Notion lo invia.
@@ -205,6 +206,23 @@ Elenca tutte le righe, oppure solo quelle che corrispondono a `--status`. Un val
 
 Quando non corrisponde nulla, la forma leggibile stampa `no matching tasks` **su stderr** ed esce con 0 — stdout resta vuoto, così `list | wc -l` conta righe e nient'altro. `list --json` stampa `[]` e non dice nulla su stderr.
 
+### `--dry-run` — vedere cosa farebbe una scrittura
+
+```bash
+notion-track upsert --ticket BDF-231 --status Fatto --dry-run
+```
+
+```
+would update 1f2e3d4c-...
+  Ticket               BDF-231
+  Stato                Fatto
+  https://notion.so/...
+```
+
+Disponibile su `upsert` e `set`. Riporta se la riga verrebbe creata o aggiornata, quale riga, e quali colonne verrebbero scritte — e non scrive nulla. Con `--json` l'output è `{"dry_run": true, "plan": {...}}`, così uno script lo distingue da una scrittura realmente avvenuta.
+
+"Senza toccare l'API" può solo significare senza *scrivere*: se una chiave ticket si risolve in una creazione o in un aggiornamento, e se un valore di stato esiste davvero, sono domande a cui può rispondere solo la data source live. Un dry run fa quindi le stesse letture di un'esecuzione vera e si ferma prima della prima scrittura — inclusa la stessa validazione, così uno stato che la tua board rifiuterebbe fallisce adesso e non nell'esecuzione vera che stavi per lanciare.
+
 ### `doctor` — verifica la configurazione
 
 ```
@@ -371,7 +389,7 @@ I contributi sono benvenuti — questo è un progetto libero e open-source. Vedi
 
 ## Roadmap
 
-Implementato oggi: `init` (procedura guidata interattiva e forma a flag, con `--list`), la TUI di navigazione, `upsert`, `set`, `get`, `list`, `doctor`; `--body-file` su `upsert`/`set` per scrivere il corpo della pagina da Markdown, con `--expand` per i segnaposto `{{ticket}}`/`{{date}}`; `--json` su ogni comando che produce output; profili; retry con backoff.
+Implementato oggi: `init` (procedura guidata interattiva e forma a flag, con `--list`), la TUI di navigazione, `upsert`, `set`, `get`, `list`, `doctor`; `--dry-run` su `upsert`/`set`; `--body-file` su `upsert`/`set` per scrivere il corpo della pagina da Markdown, con `--expand` per i segnaposto `{{ticket}}`/`{{date}}`; `--json` su ogni comando che produce output; profili; retry con backoff.
 
 Non ancora costruito:
 

@@ -56,6 +56,7 @@ var ErrPageOutsideProfile = errors.New("page belongs to a different data source 
 type Service struct {
 	client  *notion.Client
 	profile config.Profile
+	dryRun  bool
 
 	mu     sync.Mutex
 	schema *notion.Schema // read lazily, guarded by mu
@@ -64,6 +65,17 @@ type Service struct {
 // New builds a Service for a profile.
 func New(client *notion.Client, profile config.Profile) *Service {
 	return &Service{client: client, profile: profile}
+}
+
+// DryRun makes every write stop short of writing and report a Plan instead.
+//
+// It lives on the Service rather than on each method's signature so that the
+// guard sits in one place per operation, right before the write, and cannot be
+// forgotten by a future caller of Upsert or Set — including the TUI and the
+// MCP adapter, which reach the same code.
+func (s *Service) DryRun(on bool) *Service {
+	s.dryRun = on
+	return s
 }
 
 // Profile exposes the profile this service was built for, so that callers can
@@ -93,6 +105,10 @@ type Result struct {
 	Action string // "created" or "updated"
 	Page   notion.Page
 	Body   *BodyResult // non-nil only when a body was written
+	// Plan is non-nil exactly when the service is in dry-run mode, and then
+	// nothing was written: Page is the row as it stands now, not as it would
+	// look afterwards.
+	Plan *Plan
 }
 
 // BodyRequest carries an optional Markdown body to replace on a page. A nil
@@ -219,11 +235,28 @@ func (s *Service) Upsert(ctx context.Context, f tracker.Fields, body *BodyReques
 		return Result{}, err
 	}
 
-	var page notion.Page
 	action := "updated"
 	if decision.Action == tracker.ActionCreate {
-		page, err = s.client.CreatePage(ctx, s.profile.DataSourceID, props)
 		action = "created"
+	}
+	if s.dryRun {
+		// BuildProperties above has already run, so a status the board would
+		// reject fails here exactly as it would on a real run — which is most
+		// of the point of asking first.
+		var existing notion.Page
+		if decision.Action != tracker.ActionCreate {
+			existing = matches[0]
+		}
+		return Result{
+			Action: action,
+			Page:   existing,
+			Plan:   planFor(action, existing.ID, existing.URL, f, s.profile.Properties, blockCount(body)),
+		}, nil
+	}
+
+	var page notion.Page
+	if decision.Action == tracker.ActionCreate {
+		page, err = s.client.CreatePage(ctx, s.profile.DataSourceID, props)
 	} else {
 		page, err = s.client.UpdatePage(ctx, decision.PageID, props)
 	}
@@ -261,11 +294,29 @@ func (s *Service) Set(ctx context.Context, f tracker.Fields, body *BodyRequest) 
 	if err != nil {
 		return Result{}, err
 	}
+	if s.dryRun {
+		existing := matches[0]
+		return Result{
+			Action: "updated",
+			Page:   existing,
+			Plan:   planFor("updated", existing.ID, existing.URL, f, s.profile.Properties, blockCount(body)),
+		}, nil
+	}
+
 	page, err := s.client.UpdatePage(ctx, decision.PageID, props)
 	if err != nil {
 		return Result{Action: "updated"}, err
 	}
 	return s.withBody(ctx, page, "updated", body)
+}
+
+// blockCount is how many blocks a body request would write, and zero when
+// there is no body to write.
+func blockCount(body *BodyRequest) int {
+	if body == nil {
+		return 0
+	}
+	return len(body.Blocks)
 }
 
 // Get returns the row for a ticket.
@@ -364,6 +415,14 @@ func (s *Service) SetByID(ctx context.Context, pageID string, f tracker.Fields, 
 	if err != nil {
 		return Result{}, err
 	}
+	if s.dryRun {
+		return Result{
+			Action: "updated",
+			Page:   page,
+			Plan:   planFor("updated", page.ID, page.URL, f, s.profile.Properties, blockCount(body)),
+		}, nil
+	}
+
 	updated, err := s.client.UpdatePage(ctx, page.ID, props)
 	if err != nil {
 		return Result{Action: "updated"}, err
