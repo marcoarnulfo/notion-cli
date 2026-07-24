@@ -175,6 +175,14 @@ Available on both `upsert` and `set`. `--body-file` takes a path to a Markdown f
 
 **Cost.** There's no bulk-delete endpoint in Notion's API, so replacing a body is `O(n)` in the number of blocks already on the page: append the new content, then delete the old blocks one by one. A page with a lot of existing content takes correspondingly longer, and `notion-track` prints progress lines to stderr (blocks appended, blocks deleted so far) so a long run doesn't look hung.
 
+**Placeholders (`--expand`).** With `--expand`, `{{ticket}}` and `{{date}}` in the body file are substituted before the file is parsed — `{{date}}` being today, as `YYYY-MM-DD`. Whitespace inside the braces is fine (`{{ ticket }}`).
+
+```bash
+notion-track upsert --ticket BDF-231 --body-file release-notes.md --expand
+```
+
+A placeholder nothing can fill in is a usage error naming the line, rather than a body reaching Notion with a literal `{{tikcet}}` in it that nobody notices until they read the page. Expansion is off by default and there is no escape syntax: a body that legitimately contains braces — a document about templating, a snippet of Handlebars — simply does not pass the flag. Addressing a row with `--page-id` leaves `{{ticket}}` empty, since no ticket key was given.
+
 **Concurrency.** Two `--body-file` runs against the same page racing each other can both append before either deletes, leaving the body duplicated — there's no lock to take on a Notion page. Don't run concurrent body writes against one page.
 
 With `--json`, a successful write adds a `body` object: `{"blocks_written": N, "blocks_deleted": N}`. If the properties write succeeds but the body replace fails partway, the command still exits 1 (not 0), and `--json` prints `body: {"written": false, "error": "...", "blocks_written": N, "blocks_deleted": N}` — `written` tells you the body is *not* in the state the file describes, while `page` in the same output still reflects whatever properties were applied, since those are two separate Notion API calls and the first can succeed even if the second doesn't.
@@ -363,7 +371,7 @@ Contributions are welcome — this is a free, open-source project. See **[CONTRI
 
 ## Roadmap
 
-Implemented today: `init` (interactive wizard and flag-driven, with `--list`), the browsing TUI, `upsert`, `set`, `get`, `list`, `doctor`; `--body-file` on `upsert`/`set` to write the page body from Markdown; `--json` on every command that produces output; profiles; retry with backoff.
+Implemented today: `init` (interactive wizard and flag-driven, with `--list`), the browsing TUI, `upsert`, `set`, `get`, `list`, `doctor`; `--body-file` on `upsert`/`set` to write the page body from Markdown, with `--expand` for `{{ticket}}`/`{{date}}` placeholders; `--json` on every command that produces output; profiles; retry with backoff.
 
 Not yet built:
 

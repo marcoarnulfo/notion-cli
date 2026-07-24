@@ -6,11 +6,13 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/marcoarnulfo/notion-cli/internal/config"
 	"github.com/marcoarnulfo/notion-cli/internal/markdown"
 	"github.com/marcoarnulfo/notion-cli/internal/notion"
 	"github.com/marcoarnulfo/notion-cli/internal/service"
+	"github.com/marcoarnulfo/notion-cli/internal/template"
 	"github.com/spf13/cobra"
 )
 
@@ -19,11 +21,16 @@ import (
 // dying mid-replace.
 const maxBodyFileBytes = 1 << 20
 
+// now is the clock, as a seam: --expand's {{date}} has to be assertable in a
+// test without the test knowing what day it is run on.
+var now = time.Now
+
 // loadBody reads and parses a --body-file into a validated BodyRequest, all
 // before any network call. path "-" reads stdin. Every input problem is a
 // usage error (exit 2). progress is where the service later writes ephemeral
-// progress lines (stderr).
-func loadBody(path string, stdin io.Reader, progress io.Writer) (*service.BodyRequest, []string, error) {
+// progress lines (stderr). vars, when non-nil, expands placeholders before
+// parsing.
+func loadBody(path string, stdin io.Reader, progress io.Writer, vars map[string]string) (*service.BodyRequest, []string, error) {
 	raw, err := readBodySource(path, stdin)
 	if err != nil {
 		return nil, nil, Errorf(ExitUsage, "reading body file %s: %v", path, err)
@@ -33,6 +40,17 @@ func loadBody(path string, stdin io.Reader, progress io.Writer) (*service.BodyRe
 	}
 	if strings.TrimSpace(string(raw)) == "" {
 		return nil, nil, Errorf(ExitUsage, "body file %s is empty", path)
+	}
+	// Before parsing, not after: the expanded text is what the author meant to
+	// write, so Markdown structure a value introduces (a ticket key inside a
+	// heading, say) is honoured, and the parser never sees braces it would
+	// have to carry through untouched.
+	if vars != nil {
+		expanded, err := template.Expand(string(raw), vars)
+		if err != nil {
+			return nil, nil, Errorf(ExitUsage, "%s: %v", path, err)
+		}
+		raw = []byte(expanded)
 	}
 	blocks, warnings, err := markdown.ToBlocks(raw)
 	if err != nil {
