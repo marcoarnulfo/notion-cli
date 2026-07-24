@@ -19,6 +19,7 @@ L'autenticazione avviene solo con un **token di integrazione interna** di Notion
 - **Upsert idempotente** (`upsert`) — crea o aggiorna la riga di un ticket in base alla sua chiave. Due esecuzioni, una riga sola.
 - **Scrittura solo in aggiornamento** (`set`) — fallisce con un exit code dedicato se il ticket non esiste ancora, invece di crearlo silenziosamente.
 - **Lettura** (`get`, `list`) — una riga o molte, filtrabili per stato, in forma leggibile o `--json`.
+- **Navigazione interattiva** (`notion-track` senza argomenti, a un terminale) — una TUI sulle righe tracciate: filtro per stato, cambio di stato inline, apertura della riga in Notion, creazione senza uscire dalla vista.
 - **Diagnostica** (`doctor`) — verifica il token, l'accesso alla data source, il mapping delle proprietà (compreso il drift di tipo rispetto a quando `init` è stato eseguito), scansiona l'intera data source alla ricerca di chiavi ticket duplicate e avvisa se un file tracciato da git sembra contenere il tuo token di integrazione.
 - **Configurazione guidata** (`init`) — un `notion-track init` nudo in un terminale apre una procedura guidata che sceglie la data source e ti propone il mapping delle proprietà; la forma a flag scrive lo stesso profilo in modo non interattivo, validato contro lo schema live della data source prima di salvare qualsiasi cosa. `init --list` scopre gli id delle data source visibili alla tua integrazione. In un terminale interattivo offre anche di raccogliere e salvare il token di integrazione se non ne trova uno (vedi [Configurazione](#configurazione)).
 - **Profili** — più configurazioni di database, con nome, in un solo file YAML, selezionabili via flag, variabile d'ambiente o un default configurato.
@@ -93,6 +94,20 @@ Flag globali, disponibili su ogni comando:
 |---|---|
 | `--profile string` | profilo di configurazione da usare (vedi [Configurazione](#configurazione)) |
 | `--config string` | percorso di un file di configurazione esplicito, al posto della posizione predefinita del sistema operativo |
+
+### `notion-track` — la TUI di navigazione
+
+```
+notion-track
+```
+
+Senza argomenti e a un terminale, `notion-track` apre una vista interattiva sulle righe tracciate: una riga ciascuna, con chiave del ticket, titolo, stato e scadenza. `enter` apre il dettaglio a schermo intero; `s` sposta la riga selezionata in un altro stato, scelto fra i valori che lo schema ammette davvero; `f` restringe l'elenco a un solo stato; `n` crea una riga senza uscire dalla vista; `o` la apre in Notion, `y` ne copia l'URL, `r` ricarica, `/` filtra per testo, `q` esce.
+
+È una vista sullo stesso layer `internal/service` che usa ogni comando — nessuna logica separata, e niente che possa fare più dei flag.
+
+Creare una riga mentre è attivo un filtro di stato le assegna quello stato, così la nuova riga compare nella vista che stai guardando. Una scrittura fallita lascia l'elenco a schermo e riporta il motivo in una riga, invece di smontare l'interfaccia: le righe restano leggibili e restano corrette.
+
+Senza un terminale — in pipe, con redirezione, in CI — `notion-track` senza argomenti stampa l'help ed esce, esattamente come prima.
 
 ### `init` — configura un profilo
 
@@ -336,8 +351,7 @@ Sono tradeoff attuali e deliberati — non bug di cui sorprendersi:
 2. **`upsert` e `get` falliscono sui ticket duplicati invece di sceglierne uno.** Se più righe condividono la stessa chiave ticket, `notion-track` rifiuta di indovinare quale intendessi — esce con codice 4 ed elenca le righe in conflitto. Esegui `notion-track doctor` per trovarle e ripulirle.
 3. **Due job concorrenti che creano lo stesso ticket nuovo possono generare un duplicato per race condition.** La decisione crea-o-aggiorna di `upsert` legge le righe correnti e poi scrive; l'API di Notion non offre un vincolo di unicità né un compare-and-swap per chiudere quella finestra. Non è prevenibile lato client — la scansione dei duplicati di `doctor` è la mitigazione, non una soluzione.
 4. **Solo un Workspace Owner può fare questa configurazione.** Creare l'integrazione e condividere un database con essa richiedono entrambi permessi da Workspace Owner in Notion. Un guest del workspace — una delle ragioni per cui questo strumento esiste — non può fare nessuno dei due passaggi, ma può usare liberamente lo strumento una volta che qualcuno con permessi da Owner li ha completati.
-5. **Nessuna TUI di navigazione ancora.** `init` ha una procedura guidata interattiva, ma non esiste una vista interattiva sulle righe: ogni altro comando è guidato da flag. Tracciato nella [Roadmap](#roadmap).
-6. **`--body-file` sostituisce l'intero corpo della pagina, senza lock e senza annulla.** Possiede il corpo: ogni esecuzione sovrascrive tutto ciò che c'è, incluso il contenuto modificato a mano, e due esecuzioni in corsa sulla stessa pagina possono duplicarlo. Vedi `--body-file` sotto [Uso](#uso) sopra.
+5. **`--body-file` sostituisce l'intero corpo della pagina, senza lock e senza annulla.** Possiede il corpo: ogni esecuzione sovrascrive tutto ciò che c'è, incluso il contenuto modificato a mano, e due esecuzioni in corsa sulla stessa pagina possono duplicarlo. Vedi `--body-file` sotto [Uso](#uso) sopra.
 
 ## Usarlo da un agente AI
 
@@ -349,11 +363,10 @@ I contributi sono benvenuti — questo è un progetto libero e open-source. Vedi
 
 ## Roadmap
 
-Implementato oggi: `init` (procedura guidata interattiva e forma a flag, con `--list`), `upsert`, `set`, `get`, `list`, `doctor`; `--body-file` su `upsert`/`set` per scrivere il corpo della pagina da Markdown; `--json` su ogni comando che produce output; profili; retry con backoff.
+Implementato oggi: `init` (procedura guidata interattiva e forma a flag, con `--list`), la TUI di navigazione, `upsert`, `set`, `get`, `list`, `doctor`; `--body-file` su `upsert`/`set` per scrivere il corpo della pagina da Markdown; `--json` su ogni comando che produce output; profili; retry con backoff.
 
 Non ancora costruito:
 
-- **TUI di navigazione** — una vista interattiva sulle righe tracciate.
 - **Binari precompilati** — una pipeline GoReleaser che pubblica GitHub Releases per macOS/Linux/Windows; oggi le uniche opzioni sono `go install` o compilare da sorgente.
 - **Una composite GitHub Action** che avvolge il binario, così uno step di workflow non ha bisogno di un proprio `go install`.
 - **Un adapter server MCP** sopra lo stesso livello `internal/service` usato oggi dalla CLI.

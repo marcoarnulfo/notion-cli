@@ -53,8 +53,14 @@ func newRootCmd() *cobra.Command {
 			if len(args) > 0 {
 				return Errorf(ExitUsage, "unknown command %q", args[0])
 			}
-			// With no arguments the TUI takes over; until it lands, show help.
-			return cmd.Help()
+			// With no arguments the browsing TUI takes over — but only at a
+			// terminal. Piped or redirected, `notion-track` is still expected
+			// to print help and exit, and a full-screen UI would be garbage on
+			// the other end of the pipe.
+			if !isInteractive() {
+				return cmd.Help()
+			}
+			return runBrowse(cmd)
 		},
 	}
 	// cobra's Print* helpers fall back to stderr when no out writer is set,
