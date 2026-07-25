@@ -2,12 +2,21 @@
 
 A [Claude Code](https://claude.com/claude-code) skill that teaches an agent to
 manage your Notion tasks through the `notion-track` CLI — create, update status,
-read, and list task rows — running the commands over the shell.
+read, list, and bulk-apply task rows — running the commands over the shell.
 
 The tool is already agent-friendly on its own: `--json` everywhere with a stable
-schema, differentiated exit codes, and actionable errors. This skill is what
-tells the agent *which* command to reach for and how to stay safe (read before
-you write, never invent a status, branch on exit codes).
+schema, differentiated exit codes, `--dry-run` on every write, and actionable
+errors. This skill is what tells the agent *which* command to reach for and how
+to stay safe (read before you write, check with `--dry-run`, never invent a
+status, branch on exit codes).
+
+## Shell or MCP
+
+This skill drives the CLI over the shell, which needs nothing beyond the binary.
+If your host speaks MCP instead, `notion-track mcp` serves the same operations
+as tools over stdio — same code underneath, same JSON shapes, so the safety
+rules in `SKILL.md` apply either way. See "Use it from an AI agent" in the
+[README](../../README.md).
 
 ## Install
 
