@@ -5,9 +5,10 @@ description: >-
   create tasks, change their status (mark done / in progress / archived), read a
   single task, and list tasks with a status filter. Use whenever the user wants
   to touch a task on their Notion board — create one, move it to another status,
-  look one up, or list what's in a given state. Triggers on: "task su Notion",
-  "segna come fatto", "mettilo in corso", "aggiorna lo stato", "crea un task",
-  "elenca i task", "che task ho da fare", "mark done", "update the status",
+  look one up, list what's in a given state, or apply many changes at once from
+  a file. Triggers on: "task su Notion", "segna come fatto", "mettilo in corso",
+  "aggiorna lo stato", "crea un task", "elenca i task", "che task ho da fare",
+  "creali tutti", "aggiornali tutti", "mark done", "update the status",
   "notion-track". The user often phrases these in Italian.
 ---
 
@@ -27,6 +28,11 @@ and there is no undo. Before a `set` or an `upsert` that updates an existing
 task, confirm you're aiming at the right row — with `get`, or by having just
 listed it. When the user's request is ambiguous about *which* task, ask rather
 than guess.
+
+Every write command takes **`--dry-run`**, which reports whether it would
+create or update, which row, and which columns — and writes nothing. Use it
+whenever you are not certain a write will land where you intend, and always
+before applying a manifest you built rather than one the user wrote.
 
 Everything a machine reads should come from `--json`, never from parsing the
 human-readable lines.
@@ -54,7 +60,7 @@ one is required. `upsert` only takes `--ticket` (see below for why).
 ### Create or update a task by name — `upsert`
 
 ```sh
-notion-track upsert --ticket "<name>" [--status "<status>"] [--title "<title>"] [--due YYYY-MM-DD] [--body-file <path>] [--json]
+notion-track upsert --ticket "<name>" [--status "<status>"] [--title "<title>"] [--due YYYY-MM-DD] [--body-file <path>] [--dry-run] [--json]
 ```
 
 Creates the row if no task has that key, updates it if one does. Running it
@@ -73,8 +79,8 @@ properties that did get applied — check `body.written` before assuming a
 ### Change an existing task — `set`
 
 ```sh
-notion-track set --ticket "<name>"     --status "<status>" [--title ...] [--due ...] [--body-file <path>] [--json]
-notion-track set --page-id <id-or-url> --status "<status>" [--title ...] [--due ...] [--body-file <path>] [--json]
+notion-track set --ticket "<name>"     --status "<status>" [--title ...] [--due ...] [--body-file <path>] [--dry-run] [--json]
+notion-track set --page-id <id-or-url> --status "<status>" [--title ...] [--due ...] [--body-file <path>] [--dry-run] [--json]
 ```
 
 Updates only. **Fails if the task doesn't exist** (exit 3) instead of creating
@@ -82,6 +88,21 @@ it — that's the point of `set` versus `upsert`. Only the flags you pass are
 touched; everything else on the row is left alone. Prefer `set` over `upsert`
 when the task is meant to already exist, so a typo surfaces as an error instead
 of a stray new row.
+
+### Check first — `--dry-run`
+
+```sh
+notion-track upsert --ticket "<name>" --status "<status>" --dry-run [--json]
+```
+
+Available on `upsert`, `set` and `apply`. It reports what the write *would* do
+— created or updated, which row, which columns — and writes nothing, exiting 0.
+With `--json` the output is `{"dry_run":true,"plan":{...}}`, so you can tell it
+apart from a write that happened.
+
+It runs the same validation a real write does, so a status the board rejects
+fails on the dry run rather than on the real one. That makes `--dry-run` the
+cheapest way to answer "will this do what I think?" before touching the board.
 
 ### Writing the page body — `--body-file`
 
@@ -95,6 +116,13 @@ edit. Read the page first if you're not sure what's on it. Sub-pages and
 child databases nested under the page are preserved, not archived. See
 `--body-file` under Usage in the [README](../../README.md) for the supported
 Markdown subset, degrade-with-warning behavior, and cost.
+
+Add **`--expand`** to substitute `{{ticket}}` and `{{date}}` (today, as
+`YYYY-MM-DD`) in the file before it is sent. Without the flag those braces are
+left exactly as written, so a body that legitimately contains `{{...}}` is safe
+by default. A placeholder that is neither of the two known names is an error
+naming the line, not something quietly passed through — so never invent
+placeholder names.
 
 ### Read one task — `get`
 
@@ -117,6 +145,38 @@ All rows, or only those in one status. `--json` returns an **array** (`[]` when
 empty, never `null`), each element with the same fields as `get`. This is the
 way to answer "what do I have in progress?" or to find a task's page id.
 
+### Many changes at once — `apply`
+
+```sh
+notion-track apply --file <manifest.json|manifest.csv> [--dry-run] [--expand] [--json]
+```
+
+**Use this instead of looping over `set`/`upsert`.** One entry per write,
+applied in order, in a single process.
+
+```json
+[
+  {"op": "upsert", "ticket": "BDF-1", "title": "Hardening", "status": "In corso"},
+  {"op": "set", "ticket": "BDF-2", "status": "Fatto"}
+]
+```
+
+The format comes from the file extension (`.json` or `.csv`; a CSV needs a
+header row with the same field names). Fields: `op` (`upsert` or `set`,
+defaulting to `upsert`), `ticket` (required), `title`, `status`, `due`,
+`body_file`. An unknown field is an error rather than something ignored, so
+spell them exactly. `body_file` paths are resolved relative to the manifest,
+not to the working directory.
+
+**It stops at the first entry that fails** and exits with that entry's own code
+(3, 4, …), after reporting how many were applied — so a partial run is
+something you can see and resume from, not something to reconstruct. With
+`--json`: `{"applied":N,"total":M,"entries":[...]}`, where each entry carries
+its `action` or its `error`.
+
+Write the manifest to a file, run `apply --dry-run` first when you built it
+yourself, and show the user the plan before applying it for real.
+
 ### Diagnose — `doctor`
 
 ```sh
@@ -124,8 +184,11 @@ notion-track doctor [--json]
 ```
 
 Run this first if any command errors in a way you don't understand. It checks
-the token, database access, the property mapping, and duplicate keys, and prints
-what's wrong and how to fix it.
+the token, database access, the property mapping, duplicate keys, and whether a
+git-tracked file in the current repository looks like it carries the user's
+integration token — and prints what's wrong and how to fix it. Only a `fail`
+makes it exit non-zero; a `warn` (including the token scan) is worth reporting
+to the user but does not block anything.
 
 ## Exit codes — branch on these, don't parse messages
 
@@ -137,6 +200,10 @@ what's wrong and how to fix it.
 | 4 | duplicate key | more than one row has that ticket key; the tool refuses to guess. Surface it and run `doctor` to list the duplicates |
 | 5 | auth failure | the token is missing or invalid; tell the user to run `notion-track init` |
 | 1 | other error | report it |
+
+`apply` reports the exit code of the entry that stopped it, so the same table
+applies: a run that ends with 3 means one of its entries addressed a row that
+does not exist, not that the manifest was malformed (that would be 2).
 
 A rejected status (exit 2) is common and recoverable: the board accepts only a
 fixed set of status values. Never invent one — use a value the board already
@@ -168,6 +235,19 @@ Answer "what am I working on?":
 
 ```sh
 notion-track list --status "In corso" --json
+```
+
+Apply several changes the user asked for in one go — check, then commit to it:
+
+```sh
+cat > /tmp/changes.json <<'EOF'
+[
+  {"op": "set", "ticket": "Deploy staging", "status": "Fatto"},
+  {"op": "set", "ticket": "Backup NAS", "status": "In corso"}
+]
+EOF
+notion-track apply --file /tmp/changes.json --dry-run   # show this to the user
+notion-track apply --file /tmp/changes.json
 ```
 
 ## Know this workspace before acting
@@ -209,6 +289,11 @@ front, because they change how you address and create tasks:
   writable via `upsert`/`set --body-file <file>` (Markdown, replace semantics
   — it **owns** the body and overwrites anything there, so read before you
   write). Sub-pages are preserved, not archived.
-- Bulk changes across many tasks: the tool has no batch command yet. Loop over
-  individual `set` calls only with the user's explicit go-ahead, and stop on the
-  first non-zero exit rather than plowing through.
+- Bulk changes across many tasks are now `apply`'s job, not a shell loop's:
+  reach for a manifest rather than calling the binary once per row. A loop is
+  only worth it when each row's flags depend on the previous row's output.
+- If your host speaks MCP, `notion-track mcp` serves the same operations as
+  tools (`upsert_task`, `set_task`, `get_task`, `list_tasks`) over stdio, with
+  the same JSON shapes documented here. It is the same code underneath, so
+  everything on this page — read before you write, never invent a status,
+  branch on the outcome — applies there unchanged.
