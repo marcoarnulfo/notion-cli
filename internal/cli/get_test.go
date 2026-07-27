@@ -528,3 +528,86 @@ func TestListRejectsAnUnknownStatusBeforeQuerying(t *testing.T) {
 		t.Fatal("an unknown status reached the API")
 	}
 }
+
+// stubForGet answers schema and query with the shared fixtures.
+func stubForGet(t *testing.T, profile string) string {
+	t.Helper()
+	return withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(cliSchemaJSON))
+			return
+		}
+		w.Write([]byte(`{"results":[` + cliRowJSON + `],"has_more":false}`))
+	}, profile)
+}
+
+func TestGetJSONCarriesTheAssignee(t *testing.T) {
+	cfg := stubForGet(t, assigneeProfile)
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{
+			"get", "--ticket", "BDF-231", "--json", "--config", cfg,
+		}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+
+	var row map[string]any
+	if err := json.Unmarshal([]byte(out), &row); err != nil {
+		t.Fatalf("output is not JSON: %s", out)
+	}
+	if row["assignee"] != "Mirko Spinato" {
+		t.Errorf("assignee = %v, want %q", row["assignee"], "Mirko Spinato")
+	}
+}
+
+func TestGetJSONAlwaysCarriesTheAssigneeKey(t *testing.T) {
+	// A script reading .assignee must not have to branch on the key existing,
+	// so it is present even for a profile that never mapped the role.
+	cfg := stubForGet(t, assigneeProfileNoIdentity)
+
+	out := captureStdout(t, func() {
+		executeArgs([]string{"get", "--ticket", "BDF-231", "--json", "--config", cfg})
+	})
+
+	var row map[string]any
+	if err := json.Unmarshal([]byte(out), &row); err != nil {
+		t.Fatalf("output is not JSON: %s", out)
+	}
+	if _, ok := row["assignee"]; !ok {
+		t.Errorf("the assignee key is missing from %v", row)
+	}
+}
+
+func TestGetHumanOutputShowsTheAssignee(t *testing.T) {
+	cfg := stubForGet(t, assigneeProfile)
+
+	out := captureStdout(t, func() {
+		executeArgs([]string{"get", "--ticket", "BDF-231", "--config", cfg})
+	})
+
+	if !strings.Contains(out, "@Mirko Spinato") {
+		t.Errorf("output = %q, want it to name the assignee", out)
+	}
+}
+
+func TestGetHumanOutputIsUnchangedWithoutTheRole(t *testing.T) {
+	// Non-regression: a profile written before this feature must print exactly
+	// what it printed before, down to the byte.
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(cliSchemaJSON))
+			return
+		}
+		w.Write([]byte(`{"results":[` + cliRowJSON + `],"has_more":false}`))
+	})
+
+	out := captureStdout(t, func() {
+		executeArgs([]string{"get", "--ticket", "BDF-231", "--config", cfg})
+	})
+
+	want := "BDF-231  Hardening  [Fatto]\n  https://notion.so/page1\n"
+	if out != want {
+		t.Errorf("output = %q, want %q", out, want)
+	}
+}

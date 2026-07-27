@@ -29,6 +29,9 @@ type Row struct {
 	PageID         string `json:"page_id"`
 	URL            string `json:"url"`
 	LastEditedTime string `json:"last_edited_time"`
+	// Assignee is empty both when nobody is assigned and when the role is not
+	// mapped: the key is always present so an agent never has to branch on it.
+	Assignee string `json:"assignee"`
 }
 
 // Fields are the writable values of a row. An empty field means "leave this

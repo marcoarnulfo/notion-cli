@@ -22,6 +22,9 @@ type pageJSON struct {
 	PageID         string `json:"page_id"`
 	URL            string `json:"url"`
 	LastEditedTime string `json:"last_edited_time"`
+	// Assignee is empty both when nobody is assigned and when the role is not
+	// mapped: the key is always present so a script never has to branch on it.
+	Assignee string `json:"assignee"`
 }
 
 func toPageJSON(p notion.Page, props config.Properties) pageJSON {
@@ -32,6 +35,7 @@ func toPageJSON(p notion.Page, props config.Properties) pageJSON {
 		PageID:         p.ID,
 		URL:            p.URL,
 		LastEditedTime: p.LastEditedTime.Format(time.RFC3339),
+		Assignee:       p.Properties[props.Assignee].Text,
 	}
 }
 
@@ -69,16 +73,19 @@ func newGetCmd() *cobra.Command {
 				return printJSON(cmd.OutOrStdout(), toPageJSON(page, profile.Properties))
 			}
 			status := page.Properties[profile.Properties.Status].Text
+			assignee := ""
+			if name := page.Properties[profile.Properties.Assignee].Text; name != "" {
+				assignee = "  @" + name
+			}
 			if ticketIsTitle(profile.Properties) {
-				cmd.Printf("%s  [%s]\n  %s\n",
-					page.Properties[profile.Properties.Title].Text, status, page.URL)
+				cmd.Printf("%s  [%s]%s\n  %s\n",
+					page.Properties[profile.Properties.Title].Text, status, assignee, page.URL)
 				return nil
 			}
-			cmd.Printf("%s  %s  [%s]\n  %s\n",
+			cmd.Printf("%s  %s  [%s]%s\n  %s\n",
 				page.Properties[profile.Properties.Ticket].Text,
 				page.Properties[profile.Properties.Title].Text,
-				status,
-				page.URL)
+				status, assignee, page.URL)
 			return nil
 		},
 	}
