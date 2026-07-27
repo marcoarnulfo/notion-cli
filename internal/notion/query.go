@@ -25,6 +25,39 @@ func EqualsFilter(property, propType, value string) Filter {
 	}
 }
 
+// IsEmptyFilter matches rows where a property carries no value. Like
+// EqualsFilter, the body is keyed by property type, so the caller passes the
+// type from the schema.
+func IsEmptyFilter(property, propType string) Filter {
+	return Filter{
+		"property": property,
+		propType:   map[string]bool{"is_empty": true},
+	}
+}
+
+// AndFilter combines filters into a compound one, skipping the nil entries a
+// caller building a filter from optional flags naturally produces.
+//
+// A lone filter is returned unwrapped, and no filters at all yield nil (which
+// QueryPages reads as "every row"): both keep the request identical to what
+// callers sent before compounding existed.
+func AndFilter(filters ...Filter) Filter {
+	var present []Filter
+	for _, f := range filters {
+		if f != nil {
+			present = append(present, f)
+		}
+	}
+	switch len(present) {
+	case 0:
+		return nil
+	case 1:
+		return present[0]
+	default:
+		return Filter{"and": present}
+	}
+}
+
 // QueryPages returns every row matching filter, following pagination.
 // A nil filter returns all rows.
 func (c *Client) QueryPages(ctx context.Context, dataSourceID string, filter Filter) ([]Page, error) {

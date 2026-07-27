@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -117,4 +118,48 @@ func TestQueryPagesStopsOnAStalledCursor(t *testing.T) {
 	if !strings.Contains(err.Error(), "stalled") {
 		t.Fatalf("error does not explain the stall: %v", err)
 	}
+}
+
+func TestIsEmptyFilter(t *testing.T) {
+	got := IsEmptyFilter("Referente", "select")
+	want := Filter{"property": "Referente", "select": map[string]bool{"is_empty": true}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("IsEmptyFilter = %#v, want %#v", got, want)
+	}
+}
+
+func TestAndFilter(t *testing.T) {
+	status := EqualsFilter("Stato", "status", "Da fare")
+	assignee := EqualsFilter("Referente", "select", "Mirko Spinato")
+
+	t.Run("no filters at all", func(t *testing.T) {
+		if got := AndFilter(); got != nil {
+			t.Errorf("AndFilter() = %#v, want nil so QueryPages returns every row", got)
+		}
+	})
+
+	t.Run("one filter is passed through unwrapped", func(t *testing.T) {
+		// Wrapping a lone filter in {"and": [...]} would work, but it changes
+		// the request every existing caller sends for no gain.
+		if got := AndFilter(status); !reflect.DeepEqual(got, status) {
+			t.Errorf("AndFilter(one) = %#v, want the filter itself", got)
+		}
+	})
+
+	t.Run("two filters compound", func(t *testing.T) {
+		got := AndFilter(status, assignee)
+		clauses, ok := got["and"].([]Filter)
+		if !ok {
+			t.Fatalf("AndFilter(two)[\"and\"] = %#v, want []Filter", got["and"])
+		}
+		if len(clauses) != 2 {
+			t.Fatalf("clauses = %d, want 2", len(clauses))
+		}
+	})
+
+	t.Run("nil filters are skipped", func(t *testing.T) {
+		if got := AndFilter(nil, status, nil); !reflect.DeepEqual(got, status) {
+			t.Errorf("AndFilter(nil, one, nil) = %#v, want the filter itself", got)
+		}
+	})
 }
