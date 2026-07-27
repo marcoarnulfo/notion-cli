@@ -1,6 +1,8 @@
 package tracker
 
 import (
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -172,4 +174,82 @@ func TestBuildPropertiesRejectsAnUnsupportedPropertyType(t *testing.T) {
 	if _, err := BuildProperties(Fields{Due: "3"}, props, schema); err == nil {
 		t.Fatal("expected an unsupported property type to be rejected")
 	}
+}
+
+func TestBuildPropertiesAssignee(t *testing.T) {
+	schema := &notion.Schema{Properties: map[string]notion.Property{
+		"Nome task": {Name: "Nome task", Type: "title"},
+		"Referente": {Name: "Referente", Type: "select", Options: []string{"Marco Arnulfo", "Mirko Spinato"}},
+	}}
+	props := config.Properties{Title: "Nome task", Assignee: "Referente"}
+
+	t.Run("writes the select", func(t *testing.T) {
+		got, err := BuildProperties(Fields{Assignee: "Mirko Spinato"}, props, schema)
+		if err != nil {
+			t.Fatalf("BuildProperties: %v", err)
+		}
+		want := map[string]any{"select": map[string]string{"name": "Mirko Spinato"}}
+		if !reflect.DeepEqual(got["Referente"], want) {
+			t.Errorf("Referente = %#v, want %#v", got["Referente"], want)
+		}
+	})
+
+	t.Run("unassign clears the select with an explicit null", func(t *testing.T) {
+		got, err := BuildProperties(Fields{Unassign: true}, props, schema)
+		if err != nil {
+			t.Fatalf("BuildProperties: %v", err)
+		}
+		value, ok := got["Referente"]
+		if !ok {
+			t.Fatal("Referente is absent from the payload; clearing must be explicit")
+		}
+		want := map[string]any{"select": nil}
+		if !reflect.DeepEqual(value, want) {
+			t.Errorf("Referente = %#v, want %#v", value, want)
+		}
+	})
+
+	t.Run("neither passed leaves the column alone", func(t *testing.T) {
+		got, err := BuildProperties(Fields{Status: ""}, props, schema)
+		if err != nil {
+			t.Fatalf("BuildProperties: %v", err)
+		}
+		if _, ok := got["Referente"]; ok {
+			t.Error("Referente is in the payload but nothing asked to write it")
+		}
+	})
+
+	t.Run("both passed is a conflict", func(t *testing.T) {
+		_, err := BuildProperties(Fields{Assignee: "Mirko Spinato", Unassign: true}, props, schema)
+		if !errors.Is(err, ErrConflictingAssignee) {
+			t.Fatalf("error = %v, want ErrConflictingAssignee", err)
+		}
+	})
+
+	t.Run("unmapped role with a value is an error, not a silent drop", func(t *testing.T) {
+		unmapped := config.Properties{Title: "Nome task"}
+		_, err := BuildProperties(Fields{Assignee: "Mirko Spinato"}, unmapped, schema)
+		if err == nil {
+			t.Fatal("BuildProperties = nil error, want a failure naming --assignee-prop")
+		}
+	})
+
+	t.Run("unmapped role with unassign is an error too", func(t *testing.T) {
+		unmapped := config.Properties{Title: "Nome task"}
+		_, err := BuildProperties(Fields{Unassign: true}, unmapped, schema)
+		if err == nil {
+			t.Fatal("BuildProperties = nil error, want a failure naming --assignee-prop")
+		}
+	})
+
+	t.Run("a value the column does not offer is rejected", func(t *testing.T) {
+		_, err := BuildProperties(Fields{Assignee: "Marko"}, props, schema)
+		var invalid *ValidationError
+		if !errors.As(err, &invalid) {
+			t.Fatalf("error = %v, want *ValidationError", err)
+		}
+		if invalid.Field != "assignee" {
+			t.Errorf("Field = %q, want %q", invalid.Field, "assignee")
+		}
+	})
 }
