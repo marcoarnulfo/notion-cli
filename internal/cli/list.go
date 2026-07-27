@@ -60,10 +60,7 @@ func newListCmd() *cobra.Command {
 			merged := ticketIsTitle(profile.Properties)
 			for _, p := range pages {
 				status := p.Properties[profile.Properties.Status].Text
-				assignee := ""
-				if name := p.Properties[profile.Properties.Assignee].Text; name != "" {
-					assignee = "  @" + name
-				}
+				assignee := assigneeSuffix(p, profile.Properties)
 				if merged {
 					cmd.Printf(listMergedRowFormat, p.Properties[profile.Properties.Title].Text, status, assignee)
 					continue

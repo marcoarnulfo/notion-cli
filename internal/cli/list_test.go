@@ -96,9 +96,7 @@ func TestListHumanRowsAreUnchangedWithoutTheRole(t *testing.T) {
 		executeArgs([]string{"list", "--config", cfg})
 	})
 
-	// Get the actual output to determine the expected format
-	// Run: go test ./internal/cli/ -run TestListHumanRowsAreUnchangedWithoutTheRole -v
-	// and copy the actual output from the failure message
+	// The row format as it stood before the assignee feature: it must not shift.
 	want := "BDF-231              Hardening                                [Fatto]\n"
 	if out != want {
 		t.Errorf("output = %q, want %q", out, want)

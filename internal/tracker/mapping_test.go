@@ -125,4 +125,22 @@ func TestGuessMappingAssignee(t *testing.T) {
 			t.Errorf("Assignee = %q, want it not to reuse the status column", got.Assignee)
 		}
 	})
+
+	t.Run("never reuses the single select status claimed by the only-candidate fallback", func(t *testing.T) {
+		// A board with a single select named like the role: status's "only
+		// candidate wins" fallback claims it before assignee gets a look, and
+		// without the guard assignee would recognise the same column by name
+		// and claim it too — one column serving two roles.
+		schema := &notion.Schema{Properties: map[string]notion.Property{
+			"Nome task": {Name: "Nome task", Type: "title"},
+			"Referente": {Name: "Referente", Type: "select"},
+		}}
+		got := GuessMapping(schema)
+		if got.Status != "Referente" {
+			t.Fatalf("Status = %q, want %q", got.Status, "Referente")
+		}
+		if got.Assignee != "" {
+			t.Errorf("Assignee = %q, want no guess", got.Assignee)
+		}
+	})
 }

@@ -36,6 +36,19 @@ func ticketIsTitle(props config.Properties) bool {
 	return props.Ticket != "" && props.Ticket == props.Title
 }
 
+// assigneeSuffix formats a row's assignee for human-readable output: a
+// leading two-space column separator and an "@" so it reads as a mention, or
+// the empty string when there is nothing to show. get and list both append
+// this to the same row, so the separator is a shared presentation rule like
+// ticketIsTitle's merge, not something to inline twice and risk drifting
+// apart between the two commands.
+func assigneeSuffix(p notion.Page, props config.Properties) string {
+	if name := p.Properties[props.Assignee].Text; name != "" {
+		return "  @" + name
+	}
+	return ""
+}
+
 // exitCodeFor maps an error onto the process exit code, so that pipelines can
 // tell "not found" from "token expired" without parsing messages.
 //

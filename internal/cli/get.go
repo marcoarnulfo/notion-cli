@@ -73,10 +73,7 @@ func newGetCmd() *cobra.Command {
 				return printJSON(cmd.OutOrStdout(), toPageJSON(page, profile.Properties))
 			}
 			status := page.Properties[profile.Properties.Status].Text
-			assignee := ""
-			if name := page.Properties[profile.Properties.Assignee].Text; name != "" {
-				assignee = "  @" + name
-			}
+			assignee := assigneeSuffix(page, profile.Properties)
 			if ticketIsTitle(profile.Properties) {
 				cmd.Printf("%s  [%s]%s\n  %s\n",
 					page.Properties[profile.Properties.Title].Text, status, assignee, page.URL)

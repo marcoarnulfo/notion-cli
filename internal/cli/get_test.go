@@ -564,7 +564,7 @@ func TestGetJSONCarriesTheAssignee(t *testing.T) {
 func TestGetJSONAlwaysCarriesTheAssigneeKey(t *testing.T) {
 	// A script reading .assignee must not have to branch on the key existing,
 	// so it is present even for a profile that never mapped the role.
-	cfg := stubForGet(t, assigneeProfileNoIdentity)
+	cfg := withStubbedAPI(t, stubbedRow)
 
 	out := captureStdout(t, func() {
 		executeArgs([]string{"get", "--ticket", "BDF-231", "--json", "--config", cfg})
@@ -574,8 +574,12 @@ func TestGetJSONAlwaysCarriesTheAssigneeKey(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &row); err != nil {
 		t.Fatalf("output is not JSON: %s", out)
 	}
-	if _, ok := row["assignee"]; !ok {
-		t.Errorf("the assignee key is missing from %v", row)
+	assignee, ok := row["assignee"]
+	if !ok {
+		t.Fatalf("the assignee key is missing from %v", row)
+	}
+	if assignee != "" {
+		t.Errorf("assignee = %v, want %q", assignee, "")
 	}
 }
 
