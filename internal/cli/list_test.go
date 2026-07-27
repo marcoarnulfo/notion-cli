@@ -1,0 +1,106 @@
+package cli
+
+import (
+	"encoding/json"
+	"net/http"
+	"strings"
+	"testing"
+)
+
+// stubForList answers schema and query, keeping the filter of the last query.
+func stubForList(t *testing.T, profile string, sent *map[string]any) string {
+	t.Helper()
+	return withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(cliSchemaJSON))
+			return
+		}
+		var body struct {
+			Filter map[string]any `json:"filter"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		*sent = body.Filter
+		w.Write([]byte(`{"results":[` + cliRowJSON + `],"has_more":false}`))
+	}, profile)
+}
+
+func TestListFiltersByAssignee(t *testing.T) {
+	var sent map[string]any
+	cfg := stubForList(t, assigneeProfile, &sent)
+
+	captureStdout(t, func() {
+		if code := executeArgs([]string{
+			"list", "--assignee", "mirko", "--config", cfg,
+		}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+
+	if sent["property"] != "Referente" {
+		t.Fatalf("filter = %#v, want it on the Referente column", sent)
+	}
+	if got := sent["select"].(map[string]any)["equals"]; got != "Mirko Spinato" {
+		t.Errorf("filter value = %v, want the canonical option", got)
+	}
+}
+
+func TestListUnassigned(t *testing.T) {
+	var sent map[string]any
+	cfg := stubForList(t, assigneeProfile, &sent)
+
+	captureStdout(t, func() {
+		executeArgs([]string{"list", "--unassigned", "--config", cfg})
+	})
+
+	if got := sent["select"].(map[string]any)["is_empty"]; got != true {
+		t.Errorf("filter = %#v, want is_empty", sent)
+	}
+}
+
+func TestListAssigneeAndUnassignedAreExclusive(t *testing.T) {
+	var sent map[string]any
+	cfg := stubForList(t, assigneeProfile, &sent)
+
+	if code := executeArgs([]string{
+		"list", "--assignee", "mirko", "--unassigned", "--config", cfg,
+	}); code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+	}
+}
+
+func TestListHumanRowsShowTheAssignee(t *testing.T) {
+	var sent map[string]any
+	cfg := stubForList(t, assigneeProfile, &sent)
+
+	out := captureStdout(t, func() {
+		executeArgs([]string{"list", "--config", cfg})
+	})
+
+	if !strings.Contains(out, "@Mirko Spinato") {
+		t.Errorf("output = %q, want the assignee in the row", out)
+	}
+}
+
+func TestListHumanRowsAreUnchangedWithoutTheRole(t *testing.T) {
+	// Non-regression on the row format: the columns must not shift for a
+	// profile that never mapped the role.
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(cliSchemaJSON))
+			return
+		}
+		w.Write([]byte(`{"results":[` + cliRowJSON + `],"has_more":false}`))
+	})
+
+	out := captureStdout(t, func() {
+		executeArgs([]string{"list", "--config", cfg})
+	})
+
+	// Get the actual output to determine the expected format
+	// Run: go test ./internal/cli/ -run TestListHumanRowsAreUnchangedWithoutTheRole -v
+	// and copy the actual output from the failure message
+	want := "BDF-231              Hardening                                [Fatto]\n"
+	if out != want {
+		t.Errorf("output = %q, want %q", out, want)
+	}
+}

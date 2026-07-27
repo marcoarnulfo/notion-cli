@@ -8,26 +8,32 @@ import (
 
 // The merged column is exactly as wide as the two it replaces (20 + the
 // separating space + 40), so the status lands in the same screen column
-// whether or not the ticket and the title share a property.
+// whether or not the ticket and the title share a property. The assignee is
+// appended as a trailing %s that is empty when there is nothing to show,
+// keeping the existing columns byte-identical for profiles without the role.
 const (
-	listRowFormat       = "%-20s %-40s [%s]\n"
-	listMergedRowFormat = "%-61s [%s]\n"
+	listRowFormat       = "%-20s %-40s [%s]%s\n"
+	listMergedRowFormat = "%-61s [%s]%s\n"
 )
 
 func newListCmd() *cobra.Command {
 	var status string
+	var assignee string
+	var unassigned bool
 	var asJSON bool
 
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List rows, optionally filtered by status",
+		Short: "List rows, optionally filtered by status or assignee",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			svc, err := buildService(cmd)
 			if err != nil {
 				return err
 			}
-			pages, err := svc.List(cmd.Context(), service.ListFilter{Status: status})
+			pages, err := svc.List(cmd.Context(), service.ListFilter{
+				Status: status, Assignee: assignee, Unassigned: unassigned,
+			})
 			if err != nil {
 				return err
 			}
@@ -54,19 +60,27 @@ func newListCmd() *cobra.Command {
 			merged := ticketIsTitle(profile.Properties)
 			for _, p := range pages {
 				status := p.Properties[profile.Properties.Status].Text
+				assignee := ""
+				if name := p.Properties[profile.Properties.Assignee].Text; name != "" {
+					assignee = "  @" + name
+				}
 				if merged {
-					cmd.Printf(listMergedRowFormat, p.Properties[profile.Properties.Title].Text, status)
+					cmd.Printf(listMergedRowFormat, p.Properties[profile.Properties.Title].Text, status, assignee)
 					continue
 				}
 				cmd.Printf(listRowFormat,
 					p.Properties[profile.Properties.Ticket].Text,
 					p.Properties[profile.Properties.Title].Text,
-					status)
+					status, assignee)
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&status, "status", "", "filter by status value")
+	cmd.Flags().StringVar(&assignee, "assignee", "",
+		"only rows assigned to this person; a partial name is enough, and 'me' stands for NOTION_TRACK_ME")
+	cmd.Flags().BoolVar(&unassigned, "unassigned", false, "only rows with no assignee")
+	cmd.MarkFlagsMutuallyExclusive("assignee", "unassigned")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print machine-readable JSON")
 	return cmd
 }
