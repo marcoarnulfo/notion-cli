@@ -21,15 +21,18 @@ const schemaJSON = `{
   "properties":{
     "Name":{"name":"Name","type":"title","title":{}},
     "Ticket":{"name":"Ticket","type":"rich_text","rich_text":{}},
-    "Stato":{"name":"Stato","type":"status","status":{"options":[{"name":"In corso"},{"name":"Fatto"}]}}
+    "Stato":{"name":"Stato","type":"status","status":{"options":[{"name":"In corso"},{"name":"Fatto"}]}},
+    "Referente":{"name":"Referente","type":"select","select":{"options":[{"name":"Andrea Ghidara"},{"name":"Marco Arnulfo"},{"name":"Mirko Spinato"}]}}
   }}`
 
 const rowJSON = `{
   "id":"page1","url":"https://notion.so/page1","last_edited_time":"2026-07-20T10:00:00.000Z",
+  "parent":{"type":"data_source_id","data_source_id":"ds1"},
   "properties":{
     "Name":{"type":"title","title":[{"plain_text":"Hardening"}]},
     "Ticket":{"type":"rich_text","rich_text":[{"plain_text":"BDF-231"}]},
-    "Stato":{"type":"status","status":{"name":"In corso"}}
+    "Stato":{"type":"status","status":{"name":"In corso"}},
+    "Referente":{"type":"select","select":{"name":"Mirko Spinato"}}
   }}`
 
 func testProfile() config.Profile {
@@ -39,6 +42,40 @@ func testProfile() config.Profile {
 		StatusType:   "status",
 		Properties:   config.Properties{Ticket: "Ticket", Status: "Stato", Title: "Name"},
 	}
+}
+
+// assigneeProfile is testProfile with the role mapped, and an optional identity.
+func assigneeProfile(me string) config.Profile {
+	p := testProfile()
+	p.Properties.Assignee = "Referente"
+	p.Me = me
+	return p
+}
+
+// capturingRoutes is routes() plus a copy of the properties payload of the last
+// write: an assignee test asserts on what was sent, not on what came back.
+func capturingRoutes(t *testing.T, queryResults string, written *map[string]any) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/pages" ||
+			r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/v1/pages/") {
+			var body struct {
+				Properties map[string]any `json:"properties"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decoding the write payload: %v", err)
+			}
+			*written = body.Properties
+		}
+		switch {
+		case r.URL.Path == "/v1/data_sources/ds1":
+			w.Write([]byte(schemaJSON))
+		case r.URL.Path == "/v1/data_sources/ds1/query":
+			w.Write([]byte(`{"results":[` + queryResults + `],"has_more":false}`))
+		default:
+			w.Write([]byte(rowJSON))
+		}
+	}))
 }
 
 // routes returns a server answering schema reads, queries, creates and updates
@@ -424,4 +461,111 @@ func TestSchemaCacheIsSafeForConcurrentUse(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestUpsertResolvesAssignee(t *testing.T) {
+	var written map[string]any
+	srv := capturingRoutes(t, "", &written)
+	defer srv.Close()
+
+	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), assigneeProfile(""))
+	_, err := s.Upsert(context.Background(), tracker.Fields{Ticket: "BDF-231", Assignee: "mirko"}, nil)
+	if err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	got, _ := json.Marshal(written["Referente"])
+	if want := `{"select":{"name":"Mirko Spinato"}}`; string(got) != want {
+		t.Errorf("Referente = %s, want %s", got, want)
+	}
+}
+
+func TestSetByIDResolvesAssignee(t *testing.T) {
+	// The third write path is the one a refactor forgets: it never queries by
+	// ticket, so it does not share Set's code.
+	var written map[string]any
+	srv := capturingRoutes(t, rowJSON, &written)
+	defer srv.Close()
+
+	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), assigneeProfile(""))
+	// testPageID (defined in pageid_test.go), not the literal "page1" the row
+	// JSON carries as its id: SetByID's pageID argument is what NormalizePageID
+	// validates, and "page1" is not one of its three accepted shapes.
+	_, err := s.SetByID(context.Background(), testPageID, tracker.Fields{Assignee: "mirko"}, nil)
+	if err != nil {
+		t.Fatalf("SetByID: %v", err)
+	}
+
+	got, _ := json.Marshal(written["Referente"])
+	if want := `{"select":{"name":"Mirko Spinato"}}`; string(got) != want {
+		t.Errorf("Referente = %s, want %s", got, want)
+	}
+}
+
+func TestResolveAssigneeMe(t *testing.T) {
+	var seen []string
+	srv := routes(t, "", &seen)
+	defer srv.Close()
+	ctx := context.Background()
+
+	t.Run("uses the profile identity", func(t *testing.T) {
+		s := New(notion.New("t", notion.WithBaseURL(srv.URL)), assigneeProfile("Marco Arnulfo"))
+		f, err := s.resolveAssignee(ctx, tracker.Fields{Assignee: "me"})
+		if err != nil {
+			t.Fatalf("resolveAssignee: %v", err)
+		}
+		if f.Assignee != "Marco Arnulfo" {
+			t.Errorf("Assignee = %q, want %q", f.Assignee, "Marco Arnulfo")
+		}
+	})
+
+	t.Run("a partial identity resolves too", func(t *testing.T) {
+		s := New(notion.New("t", notion.WithBaseURL(srv.URL)), assigneeProfile("mirko"))
+		f, err := s.resolveAssignee(ctx, tracker.Fields{Assignee: "me"})
+		if err != nil {
+			t.Fatalf("resolveAssignee: %v", err)
+		}
+		if f.Assignee != "Mirko Spinato" {
+			t.Errorf("Assignee = %q, want %q", f.Assignee, "Mirko Spinato")
+		}
+	})
+
+	t.Run("no identity configured", func(t *testing.T) {
+		s := New(notion.New("t", notion.WithBaseURL(srv.URL)), assigneeProfile(""))
+		_, err := s.resolveAssignee(ctx, tracker.Fields{Assignee: "me"})
+		if !errors.Is(err, ErrNoIdentity) {
+			t.Fatalf("error = %v, want ErrNoIdentity", err)
+		}
+	})
+}
+
+func TestResolveAssigneeEdges(t *testing.T) {
+	var seen []string
+	srv := routes(t, "", &seen)
+	defer srv.Close()
+	ctx := context.Background()
+
+	t.Run("an absent assignee is left alone", func(t *testing.T) {
+		s := New(notion.New("t", notion.WithBaseURL(srv.URL)), assigneeProfile(""))
+		if _, err := s.resolveAssignee(ctx, tracker.Fields{Status: "Fatto"}); err != nil {
+			t.Fatalf("an absent assignee must not fail: %v", err)
+		}
+	})
+
+	t.Run("an unknown name fails with the allowed values", func(t *testing.T) {
+		s := New(notion.New("t", notion.WithBaseURL(srv.URL)), assigneeProfile(""))
+		_, err := s.resolveAssignee(ctx, tracker.Fields{Assignee: "Marko"})
+		var invalid *tracker.ValidationError
+		if !errors.As(err, &invalid) {
+			t.Fatalf("error = %v, want *tracker.ValidationError", err)
+		}
+	})
+
+	t.Run("unmapped role with a value", func(t *testing.T) {
+		s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile()) // no Assignee
+		_, err := s.resolveAssignee(ctx, tracker.Fields{Assignee: "mirko"})
+		if err == nil {
+			t.Fatal("resolveAssignee = nil error, want a failure naming --assignee-prop")
+		}
+	})
 }

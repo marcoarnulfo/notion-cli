@@ -49,6 +49,18 @@ var ErrEmptyPageID = errors.New("page id must not be empty")
 // exist on that page's actual data source.
 var ErrPageOutsideProfile = errors.New("page belongs to a different data source than the active profile")
 
+// ErrNoIdentity means "--assignee me" was used without anything saying who
+// "me" is.
+var ErrNoIdentity = errors.New(
+	"--assignee me needs to know who you are\n" +
+		"  fix: export NOTION_TRACK_ME=<name>, or run 'notion-track init --me <name>'")
+
+// ErrEmptyAssignee mirrors ErrEmptyTicket: cobra reports that a flag was
+// passed, never that it carries a value, so `--assignee ""` would otherwise
+// reach BuildProperties and be read as "leave this alone" — silently doing
+// nothing in a command the user wrote specifically to change something.
+var ErrEmptyAssignee = errors.New("assignee must not be empty; use --unassign to clear it")
+
 // Service performs notion-track's operations against one profile.
 //
 // One Service may be shared by concurrent callers — the TUI runs its commands
@@ -210,12 +222,61 @@ func (s *Service) findByTicket(ctx context.Context, key string) ([]notion.Page, 
 	return s.client.QueryPages(ctx, s.profile.DataSourceID, filter)
 }
 
+// resolveAssignee turns what the user typed into the exact option the column
+// carries, and turns "me" into the configured identity.
+//
+// It runs in the service rather than inside BuildProperties because --dry-run
+// builds its plan from the same Fields (see planFor): resolving deeper would
+// make the plan print "mirko" while the write performs "Mirko Spinato" — a dry
+// run that does not describe the write it is describing.
+func (s *Service) resolveAssignee(ctx context.Context, f tracker.Fields) (tracker.Fields, error) {
+	if f.Assignee == "" {
+		return f, nil
+	}
+
+	query := f.Assignee
+	if query == "me" {
+		if s.profile.Me == "" {
+			return f, ErrNoIdentity
+		}
+		query = s.profile.Me
+	}
+
+	name := s.profile.Properties.Assignee
+	if name == "" {
+		return f, fmt.Errorf(
+			"assignee was set to %q but no assignee property is mapped; "+
+				"run 'notion-track init --assignee-prop <name>' to map it", f.Assignee)
+	}
+	schema, err := s.Schema(ctx)
+	if err != nil {
+		return f, err
+	}
+	prop, ok := schema.Properties[name]
+	if !ok {
+		return f, fmt.Errorf(
+			"property %q is configured but does not exist in the data source; "+
+				"run 'notion-track doctor' to see the current schema", name)
+	}
+
+	resolved, err := tracker.ResolveOption("assignee", query, prop.Options)
+	if err != nil {
+		return f, err
+	}
+	f.Assignee = resolved
+	return f, nil
+}
+
 // Upsert creates the row for a ticket or updates it if it already exists.
 // body, when non-nil, replaces the page body after the properties are
 // written; a nil body leaves the page body untouched.
 func (s *Service) Upsert(ctx context.Context, f tracker.Fields, body *BodyRequest) (Result, error) {
 	if f.Ticket == "" {
 		return Result{}, ErrEmptyTicket
+	}
+	f, err := s.resolveAssignee(ctx, f)
+	if err != nil {
+		return Result{}, err
 	}
 	matches, err := s.findByTicket(ctx, f.Ticket)
 	if err != nil {
@@ -273,6 +334,10 @@ func (s *Service) Upsert(ctx context.Context, f tracker.Fields, body *BodyReques
 func (s *Service) Set(ctx context.Context, f tracker.Fields, body *BodyRequest) (Result, error) {
 	if f.Ticket == "" {
 		return Result{}, ErrEmptyTicket
+	}
+	f, err := s.resolveAssignee(ctx, f)
+	if err != nil {
+		return Result{}, err
 	}
 	matches, err := s.findByTicket(ctx, f.Ticket)
 	if err != nil {
@@ -403,6 +468,10 @@ func (s *Service) GetByID(ctx context.Context, pageID string) (notion.Page, erro
 // page body after the properties are written; a nil body leaves the page
 // body untouched.
 func (s *Service) SetByID(ctx context.Context, pageID string, f tracker.Fields, body *BodyRequest) (Result, error) {
+	f, err := s.resolveAssignee(ctx, f)
+	if err != nil {
+		return Result{}, err
+	}
 	page, err := s.resolvePage(ctx, pageID, true)
 	if err != nil {
 		return Result{}, err
