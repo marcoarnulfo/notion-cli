@@ -79,3 +79,50 @@ func TestGuessMappingIsDeterministicWithSeveralKnownNames(t *testing.T) {
 		}
 	}
 }
+
+func TestGuessMappingAssignee(t *testing.T) {
+	t.Run("recognises a known name", func(t *testing.T) {
+		schema := &notion.Schema{Properties: map[string]notion.Property{
+			"Nome task": {Name: "Nome task", Type: "title"},
+			"Stato":     {Name: "Stato", Type: "status"},
+			"Referente": {Name: "Referente", Type: "select"},
+			"Urgenza":   {Name: "Urgenza", Type: "select"},
+		}}
+		got := GuessMapping(schema)
+		if got.Assignee != "Referente" {
+			t.Errorf("Assignee = %q, want %q", got.Assignee, "Referente")
+		}
+		if got.Status != "Stato" {
+			t.Errorf("Status = %q, want %q", got.Status, "Stato")
+		}
+	})
+
+	t.Run("does not guess an unrecognisable lone select", func(t *testing.T) {
+		// A wrong guess the user waves through is worse than a question, and
+		// this role is optional: leaving it blank costs nothing.
+		schema := &notion.Schema{Properties: map[string]notion.Property{
+			"Nome task": {Name: "Nome task", Type: "title"},
+			"Stato":     {Name: "Stato", Type: "status"},
+			"Urgenza":   {Name: "Urgenza", Type: "select"},
+		}}
+		if got := GuessMapping(schema); got.Assignee != "" {
+			t.Errorf("Assignee = %q, want no guess", got.Assignee)
+		}
+	})
+
+	t.Run("never reuses the column taken by status", func(t *testing.T) {
+		// Both roles draw from selects. With one select named like a status,
+		// status claims it and assignee must not claim it too.
+		schema := &notion.Schema{Properties: map[string]notion.Property{
+			"Nome task": {Name: "Nome task", Type: "title"},
+			"Stato":     {Name: "Stato", Type: "select"},
+		}}
+		got := GuessMapping(schema)
+		if got.Status != "Stato" {
+			t.Fatalf("Status = %q, want %q", got.Status, "Stato")
+		}
+		if got.Assignee == got.Status {
+			t.Errorf("Assignee = %q, want it not to reuse the status column", got.Assignee)
+		}
+	})
+}
