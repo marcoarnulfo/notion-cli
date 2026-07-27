@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/marcoarnulfo/notion-cli/internal/config"
 	"github.com/marcoarnulfo/notion-cli/internal/notion"
+	"github.com/marcoarnulfo/notion-cli/internal/tracker"
 	"github.com/marcoarnulfo/notion-cli/internal/tui"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -137,7 +138,7 @@ func promptForToken(cmd *cobra.Command) (string, error) {
 // them.
 var configFlags = []string{
 	"data-source-id", "database-id", "ticket-prop", "status-prop",
-	"title-prop", "due-prop", "list",
+	"title-prop", "due-prop", "assignee-prop", "me", "list",
 }
 
 func anyConfigFlagSet(cmd *cobra.Command) bool {
@@ -212,7 +213,7 @@ func runInitWizard(cmd *cobra.Command) error {
 	// one thing standing between a future wizard bug and a profile that is
 	// broken on first use — and it is where status_type comes from.
 	statusType, err := validateMapping(res.Schema,
-		res.Props.Ticket, res.Props.Status, res.Props.Title, res.Props.Due)
+		res.Props.Ticket, res.Props.Status, res.Props.Title, res.Props.Due, res.Props.Assignee)
 	if err != nil {
 		return Errorf(ExitUsage, "%v", err)
 	}
@@ -222,6 +223,9 @@ func runInitWizard(cmd *cobra.Command) error {
 		DataSourceID: res.Ref.ID,
 		StatusType:   statusType,
 		Properties:   res.Props,
+		// The wizard has no equivalent of --me yet: an identity here would come
+		// from typing, and the wizard is not wired to collect it.
+		Me: "",
 	}, res.Schema.Title)
 }
 
@@ -260,6 +264,8 @@ func newInitCmd() *cobra.Command {
 		statusProp   string
 		titleProp    string
 		dueProp      string
+		assigneeProp string
+		me           string
 		list         bool
 	)
 
@@ -317,9 +323,29 @@ func newInitCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			statusType, err := validateMapping(schema, ticketProp, statusProp, titleProp, dueProp)
+			statusType, err := validateMapping(schema, ticketProp, statusProp, titleProp, dueProp, assigneeProp)
 			if err != nil {
 				return Errorf(ExitUsage, "%v", err)
+			}
+
+			resolvedMe := ""
+			if me != "" {
+				if assigneeProp == "" {
+					return Errorf(ExitUsage,
+						"--me needs an assignee column to resolve against\n"+
+							"  fix: pass --assignee-prop <name> as well")
+				}
+				resolvedMe, err = tracker.ResolveOption("me", me, schema.Properties[assigneeProp].Options)
+				if err != nil {
+					return Errorf(ExitUsage, "%v", err)
+				}
+				// config.yml is meant to be committed and shared, so an identity
+				// written there is everyone's identity: say so at the one moment
+				// the user is choosing to write it.
+				cmd.PrintErrf(
+					"warning: %q is stored in the config file, which is meant to be shared.\n"+
+						"  For a personal identity, export %s instead.\n",
+					resolvedMe, config.MeEnv)
 			}
 
 			return saveInitProfile(cmd, config.Profile{
@@ -328,7 +354,9 @@ func newInitCmd() *cobra.Command {
 				StatusType:   statusType,
 				Properties: config.Properties{
 					Ticket: ticketProp, Status: statusProp, Title: titleProp, Due: dueProp,
+					Assignee: assigneeProp,
 				},
+				Me: resolvedMe,
 			}, schema.Title)
 		},
 	}
@@ -339,6 +367,8 @@ func newInitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&statusProp, "status-prop", "", "property holding the status")
 	cmd.Flags().StringVar(&titleProp, "title-prop", "", "title property")
 	cmd.Flags().StringVar(&dueProp, "due-prop", "", "date property (optional)")
+	cmd.Flags().StringVar(&assigneeProp, "assignee-prop", "", "select property holding the assignee (optional)")
+	cmd.Flags().StringVar(&me, "me", "", "the assignee value '--assignee me' stands for (optional)")
 	cmd.Flags().BoolVar(&list, "list", false, "list the data sources shared with the integration and exit")
 	return cmd
 }
@@ -349,9 +379,11 @@ func newInitCmd() *cobra.Command {
 // ticket, status and title are required: internal/service/doctor.go reports
 // each of them as a "fail" when unmapped, and get/list/upsert key every
 // lookup off them, so writing a profile with one left blank produces a
-// config that is broken on first use. due is the only role doctor treats as
-// optional, so it is the only one that may be left unmapped here too.
-func validateMapping(schema *notion.Schema, ticket, status, title, due string) (string, error) {
+// config that is broken on first use. due and assignee are the roles doctor
+// treats as optional, so they are the only ones that may be left unmapped
+// here too: a board that tracks nobody in particular simply has no assignee
+// column to map.
+func validateMapping(schema *notion.Schema, ticket, status, title, due, assignee string) (string, error) {
 	check := func(role, flag, name string, required bool, want ...string) (string, error) {
 		if name == "" {
 			if required {
@@ -380,6 +412,9 @@ func validateMapping(schema *notion.Schema, ticket, status, title, due string) (
 		return "", err
 	}
 	if _, err := check("due", "due-prop", due, false, "date"); err != nil {
+		return "", err
+	}
+	if _, err := check("assignee", "assignee-prop", assignee, false, "select"); err != nil {
 		return "", err
 	}
 	statusType, err := check("status", "status-prop", status, true, "status", "select")

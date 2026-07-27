@@ -452,3 +452,127 @@ func TestTheWizardRefusesToOpenWithNoDataSources(t *testing.T) {
 		t.Fatal("the wizard opened with nothing to pick")
 	}
 }
+
+// initArgs is the flag form of init for the shared fixture board, with
+// whatever the test adds on top.
+//
+// --profile work is not decoration: withStubbedAPI writes a config whose
+// default_profile is already "work", and saveInitProfile writes to "default"
+// when no profile is named, leaving default_profile untouched because it is not
+// empty. Without this, the test reads back the OLD profile and fails against a
+// perfectly correct implementation.
+func initArgs(cfg string, extra ...string) []string {
+	args := []string{
+		"init", "--data-source-id", "ds1", "--profile", "work",
+		"--ticket-prop", "Ticket", "--status-prop", "Stato", "--title-prop", "Name",
+	}
+	args = append(args, extra...)
+	return append(args, "--config", cfg)
+}
+
+// writtenProfile reads back the profile init just wrote.
+//
+// The env is cleared first: Resolve applies NOTION_TRACK_ME over whatever the
+// file says, so without this the assertion on Me would read the developer's
+// shell instead of the file under test.
+func writtenProfile(t *testing.T, path string) config.Profile {
+	t.Helper()
+	t.Setenv(config.MeEnv, "")
+	cfg, err := config.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("reading back the config: %v", err)
+	}
+	p, err := cfg.Resolve("")
+	if err != nil {
+		t.Fatalf("resolving the written profile: %v", err)
+	}
+	return p
+}
+
+func TestInitMapsTheAssigneeColumn(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaJSON))
+	})
+	withIsolatedUserConfigDir(t)
+	withInteractivePrompt(t, false, nil, nil)
+
+	if code := executeArgs(initArgs(cfg, "--assignee-prop", "Referente")); code != ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+	if got := writtenProfile(t, cfg).Properties.Assignee; got != "Referente" {
+		t.Errorf("assignee = %q, want %q", got, "Referente")
+	}
+}
+
+func TestInitRejectsAnAssigneeColumnOfTheWrongType(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaJSON))
+	})
+	withIsolatedUserConfigDir(t)
+	withInteractivePrompt(t, false, nil, nil)
+
+	// Name is the title column: usable as a title, never as an assignee.
+	if code := executeArgs(initArgs(cfg, "--assignee-prop", "Name")); code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+	}
+}
+
+func TestAssigneeFlagsAreConfigFlags(t *testing.T) {
+	// A config flag means "the caller knows their answers", which is what keeps
+	// init out of the wizard. Forgetting to register one makes
+	// `init --assignee-prop X` at a terminal open the TUI instead.
+	for _, name := range []string{"assignee-prop", "me"} {
+		var found bool
+		for _, f := range configFlags {
+			if f == name {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%q is missing from configFlags", name)
+		}
+	}
+}
+
+func TestInitMeStoresTheCanonicalValue(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaJSON))
+	})
+	withIsolatedUserConfigDir(t)
+	withInteractivePrompt(t, false, nil, nil)
+
+	code := executeArgs(initArgs(cfg, "--assignee-prop", "Referente", "--me", "mirko"))
+	if code != ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+	if got := writtenProfile(t, cfg).Me; got != "Mirko Spinato" {
+		t.Errorf("me = %q, want the canonical option %q", got, "Mirko Spinato")
+	}
+}
+
+func TestInitMeNeedsTheAssigneeColumn(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaJSON))
+	})
+	withIsolatedUserConfigDir(t)
+	withInteractivePrompt(t, false, nil, nil)
+
+	if code := executeArgs(initArgs(cfg, "--me", "mirko")); code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+	}
+}
+
+func TestInitMeWarnsThatTheConfigIsShared(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaJSON))
+	})
+	withIsolatedUserConfigDir(t)
+	withInteractivePrompt(t, false, nil, nil)
+
+	errOut := captureStderr(t, func() {
+		executeArgs(initArgs(cfg, "--assignee-prop", "Referente", "--me", "mirko"))
+	})
+	if !strings.Contains(errOut, config.MeEnv) {
+		t.Errorf("stderr = %q, want it to point at %s", errOut, config.MeEnv)
+	}
+}
