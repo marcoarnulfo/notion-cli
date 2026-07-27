@@ -308,7 +308,7 @@ would update 1f2e3d4c-...
 notion-track doctor [--json]
 ```
 
-Runs five checks — `token`, `data_source`, `properties`, `duplicates`, `secrets` — plus a sixth, `assignee`, between `properties` and `duplicates`, when the role is mapped; each prints as `ok`, `warn`, or `fail` with an actionable detail message. A `warn` (e.g. the status property's type changed since `init` ran) does not fail the command; any `fail` makes it exit non-zero. `properties` and `duplicates` still run even when `data_source` fails, so a broken setup gets diagnosed in one pass instead of one symptom at a time.
+Runs five checks — `token`, `data_source`, `properties`, `duplicates`, `secrets` — plus a sixth, `assignee`, between `properties` and `duplicates`, when the role is mapped; each prints as `ok`, `warn`, or `fail` with an actionable detail message. A `warn` (e.g. the status property's type changed since `init` ran) does not fail the command; any `fail` makes it exit non-zero. Only `duplicates` still runs when `data_source` fails — it doesn't need the schema, so a broken setup at least gets scanned for duplicate ticket keys instead of stopping there; `properties` and `assignee` both need the live schema, so a `data_source` failure skips them until it's fixed.
 
 `assignee` verifies that the configured identity (`me:`, or `NOTION_TRACK_ME`) still resolves to an option the mapped column offers — an option renamed in Notion would otherwise turn every `--assignee me` into a runtime failure discovered only when a write is attempted. It only ever reports `ok` or `warn`, never `fail`, and it also warns when the identity comes from `me:` in the config file rather than `NOTION_TRACK_ME` — see [Environment variables](#environment-variables) for why that distinction matters.
 
