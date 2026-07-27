@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/marcoarnulfo/notion-cli/internal/config"
 	"github.com/marcoarnulfo/notion-cli/internal/notion"
 	"github.com/marcoarnulfo/notion-cli/internal/tracker"
 )
@@ -192,4 +193,42 @@ func TestWritesStillHappenWithoutDryRun(t *testing.T) {
 	if writes := wrote(seen); len(writes) == 0 {
 		t.Fatalf("nothing was written: %v", seen)
 	}
+}
+
+func TestPlanForAssignee(t *testing.T) {
+	props := config.Properties{
+		Ticket: "Nome task", Title: "Nome task", Status: "Stato", Assignee: "Referente",
+	}
+
+	t.Run("a set names the column and the canonical value", func(t *testing.T) {
+		plan := planFor("updated", "page-1", "https://notion.so/x",
+			tracker.Fields{Assignee: "Mirko Spinato"}, props, 0)
+
+		var found bool
+		for _, p := range plan.Properties {
+			if p.Column == "Referente" && p.Value == "Mirko Spinato" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("Properties = %#v, want Referente -> Mirko Spinato", plan.Properties)
+		}
+	})
+
+	t.Run("a clear is reported, not silently dropped", func(t *testing.T) {
+		// Without this the most destructive write in the feature produces an
+		// empty plan: "would update", and nothing else.
+		plan := planFor("updated", "page-1", "", tracker.Fields{Unassign: true}, props, 0)
+
+		if len(plan.Cleared) != 1 || plan.Cleared[0] != "Referente" {
+			t.Errorf("Cleared = %#v, want [Referente]", plan.Cleared)
+		}
+	})
+
+	t.Run("nothing cleared when nothing asked", func(t *testing.T) {
+		plan := planFor("updated", "page-1", "", tracker.Fields{Status: "Fatto"}, props, 0)
+		if len(plan.Cleared) != 0 {
+			t.Errorf("Cleared = %#v, want empty", plan.Cleared)
+		}
+	})
 }

@@ -24,6 +24,11 @@ type Plan struct {
 	Properties []PlannedProperty `json:"properties"`
 	// BodyBlocks is how many blocks --body-file would replace the body with.
 	BodyBlocks int `json:"body_blocks,omitempty"`
+	// Cleared names the columns a write would empty. Properties cannot carry
+	// them: it reports what would be *written*, and skips empty values by
+	// design, which would make a clear invisible in the one command that exists
+	// to make writes visible.
+	Cleared []string `json:"cleared,omitempty"`
 }
 
 // PlannedProperty is one column a write would set.
@@ -46,12 +51,16 @@ func planFor(action, pageID, url string, f tracker.Fields, props config.Properti
 		{Column: props.Title, Value: f.Title},
 		{Column: props.Status, Value: f.Status},
 		{Column: props.Due, Value: f.Due},
+		{Column: props.Assignee, Value: f.Assignee},
 	} {
 		// An unmapped role has no column to name, and a field left off the
 		// command line has no value to write.
 		if p.Column != "" && p.Value != "" {
 			plan.Properties = append(plan.Properties, p)
 		}
+	}
+	if f.Unassign && props.Assignee != "" {
+		plan.Cleared = append(plan.Cleared, props.Assignee)
 	}
 	return plan
 }

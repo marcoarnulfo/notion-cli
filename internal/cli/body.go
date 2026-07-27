@@ -100,6 +100,9 @@ func emitPlan(cmd *cobra.Command, plan *service.Plan, asJSON bool) error {
 	for _, p := range plan.Properties {
 		cmd.Printf("  %-20s %s\n", p.Column, p.Value)
 	}
+	for _, column := range plan.Cleared {
+		cmd.Printf("  %-20s %s\n", "clear", column)
+	}
 	if plan.BodyBlocks > 0 {
 		cmd.Printf("  %-20s %d blocks (replacing the current body)\n", "page body", plan.BodyBlocks)
 	}
