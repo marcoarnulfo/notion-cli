@@ -156,6 +156,73 @@ func TestParseRejectsANonStringValue(t *testing.T) {
 	}
 }
 
+func TestManifestAssignee(t *testing.T) {
+	t.Run("csv", func(t *testing.T) {
+		data := []byte("op,ticket,assignee,unassign\nset,BDF-1,Mirko Spinato,\nset,BDF-2,,true\n")
+		entries, err := Parse("tasks.csv", data)
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if entries[0].Assignee != "Mirko Spinato" {
+			t.Errorf("Assignee = %q", entries[0].Assignee)
+		}
+		if !entries[1].Unassign {
+			t.Error("Unassign = false, want true")
+		}
+	})
+
+	t.Run("json", func(t *testing.T) {
+		data := []byte(`[{"op":"set","ticket":"BDF-1","assignee":"mirko"},
+		                 {"op":"set","ticket":"BDF-2","unassign":"true"}]`)
+		entries, err := Parse("tasks.json", data)
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if entries[0].Assignee != "mirko" {
+			t.Errorf("Assignee = %q", entries[0].Assignee)
+		}
+		if !entries[1].Unassign {
+			t.Error("Unassign = false, want true")
+		}
+	})
+
+	t.Run("a bad boolean is a parse error naming the entry", func(t *testing.T) {
+		data := []byte("op,ticket,unassign\nset,BDF-1,perhaps\n")
+		_, err := Parse("tasks.csv", data)
+		if err == nil {
+			t.Fatal("Parse = nil error, want a failure")
+		}
+		if !strings.Contains(err.Error(), "1") {
+			t.Errorf("error = %q, want it to name entry 1", err)
+		}
+	})
+
+	t.Run("an unknown field still fails", func(t *testing.T) {
+		data := []byte("op,ticket,assigne\nset,BDF-1,Mirko\n")
+		if _, err := Parse("tasks.csv", data); err == nil {
+			t.Fatal("a typo in a column name must not be ignored")
+		}
+	})
+
+	t.Run("json accepts a real boolean for unassign", func(t *testing.T) {
+		data := []byte(`[{"op":"set","ticket":"BDF-2","unassign":true}]`)
+		entries, err := Parse("tasks.json", data)
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if !entries[0].Unassign {
+			t.Error("Unassign = false, want true")
+		}
+	})
+
+	t.Run("a boolean anywhere else is still an error", func(t *testing.T) {
+		data := []byte(`[{"op":"set","ticket":"BDF-2","title":true}]`)
+		if _, err := Parse("tasks.json", data); err == nil {
+			t.Fatal("Parse = nil error, want the non-string check to still bite")
+		}
+	})
+}
+
 func TestParseAcceptsAnEmptyManifest(t *testing.T) {
 	entries, err := Parse("m.json", []byte(`[]`))
 	if err != nil {

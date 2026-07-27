@@ -248,3 +248,47 @@ func TestApplyRequiresAFile(t *testing.T) {
 		t.Fatalf("exit code = %d, want %d (usage)", code, ExitUsage)
 	}
 }
+
+func TestApplyWritesTheAssignee(t *testing.T) {
+	var written map[string]any
+	cfg := stubForAssignee(t, assigneeProfile, &written)
+
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "tasks.csv")
+	os.WriteFile(manifestPath, []byte("op,ticket,unassign\nset,BDF-231,true\n"), 0o600)
+
+	captureStdout(t, func() {
+		if code := executeArgs([]string{
+			"apply", "--file", manifestPath, "--config", cfg,
+		}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+
+	got, _ := json.Marshal(written["Referente"])
+	if want := `{"select":null}`; string(got) != want {
+		t.Errorf("Referente = %s, want %s", got, want)
+	}
+}
+
+func TestApplyRejectsSettingAndClearingTheSameEntry(t *testing.T) {
+	var written map[string]any
+	cfg := stubForAssignee(t, assigneeProfile, &written)
+
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "tasks.csv")
+	os.WriteFile(manifestPath, []byte("op,ticket,assignee,unassign\nset,BDF-231,mirko,true\n"), 0o600)
+
+	captureStdout(t, func() {
+		// Exit 2, not 1: apply never touches cobra, so the typed error is the
+		// only thing carrying the usage verdict out of the domain layer.
+		if code := executeArgs([]string{
+			"apply", "--file", manifestPath, "--config", cfg,
+		}); code != ExitUsage {
+			t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+		}
+	})
+	if written != nil {
+		t.Errorf("a rejected entry still wrote %v", written)
+	}
+}

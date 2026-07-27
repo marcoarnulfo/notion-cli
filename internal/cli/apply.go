@@ -38,14 +38,14 @@ func (o applyOutcome) fail(err error) applyOutcome {
 
 const applyExample = `  # tasks.json
   [
-    {"op": "upsert", "ticket": "BDF-1", "title": "Hardening", "status": "In progress"},
-    {"op": "set", "ticket": "BDF-2", "status": "Done"}
+    {"op": "upsert", "ticket": "BDF-1", "title": "Hardening", "status": "In progress", "assignee": "mirko"},
+    {"op": "set", "ticket": "BDF-2", "status": "Done", "unassign": true}
   ]
 
   # tasks.csv
-  op,ticket,title,status,due,body_file
-  upsert,BDF-1,Hardening,In progress,2026-08-01,notes.md
-  set,BDF-2,,Done,,`
+  op,ticket,title,status,due,body_file,assignee,unassign
+  upsert,BDF-1,Hardening,In progress,2026-08-01,notes.md,mirko,
+  set,BDF-2,,Done,,,,true`
 
 func newApplyCmd() *cobra.Command {
 	var (
@@ -152,6 +152,7 @@ func applyOne(cmd *cobra.Command, svc *service.Service, entry manifest.Entry, di
 
 	fields := tracker.Fields{
 		Ticket: entry.Ticket, Title: entry.Title, Status: entry.Status, Due: entry.Due,
+		Assignee: entry.Assignee, Unassign: entry.Unassign,
 	}
 
 	var res service.Result

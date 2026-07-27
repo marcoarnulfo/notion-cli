@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -35,6 +36,11 @@ type Entry struct {
 	// rather than to the working directory, so a manifest and the files it
 	// names travel together.
 	BodyFile string `json:"body_file,omitempty"`
+	Assignee string `json:"assignee,omitempty"`
+	// Unassign clears the assignee. It is a string in the file and a bool here
+	// because CSV has no way to say "an explicitly empty list": "true"/"false"
+	// is the only form both formats can express identically.
+	Unassign bool `json:"unassign,omitempty"`
 
 	// Index is the entry's 1-based position, for error messages. It is not
 	// part of the file format.
@@ -44,7 +50,7 @@ type Entry struct {
 // fieldNames are the CSV columns and JSON keys an entry may carry. Anything
 // else is a typo: silently ignoring an unknown column is how "stuats" ends up
 // leaving every row's status unset with no warning.
-var fieldNames = []string{"op", "ticket", "title", "status", "due", "body_file"}
+var fieldNames = []string{"op", "ticket", "title", "status", "due", "body_file", "assignee", "unassign"}
 
 // Parse reads a manifest, choosing the format from path's extension.
 func Parse(path string, data []byte) ([]Entry, error) {
@@ -74,7 +80,13 @@ func parseJSON(data []byte) ([]Entry, error) {
 		for key, value := range obj {
 			text, ok := value.(string)
 			if !ok {
-				return nil, fmt.Errorf("entry %d: %q must be a string", i+1, key)
+				// JSON has a boolean; unassign is the one field where using
+				// it is the obvious thing to write.
+				if b, isBool := value.(bool); isBool && key == "unassign" {
+					text = strconv.FormatBool(b)
+				} else {
+					return nil, fmt.Errorf("entry %d: %q must be a string", i+1, key)
+				}
 			}
 			if err := assign(&entry, key, text); err != nil {
 				return nil, fmt.Errorf("entry %d: %w", i+1, err)
@@ -135,6 +147,17 @@ func assign(e *Entry, field, value string) error {
 		e.Due = value
 	case "body_file":
 		e.BodyFile = value
+	case "assignee":
+		e.Assignee = value
+	case "unassign":
+		if value == "" {
+			return nil
+		}
+		parsed, err := strconv.ParseBool(strings.ToLower(value))
+		if err != nil {
+			return fmt.Errorf("unassign must be true or false, got %q", value)
+		}
+		e.Unassign = parsed
 	default:
 		return fmt.Errorf("unknown field %q; known fields: %s", field, strings.Join(sorted(), ", "))
 	}
