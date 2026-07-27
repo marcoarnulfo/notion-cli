@@ -20,18 +20,26 @@ func (e *ValidationError) Error() string {
 		e.Field, e.Value, strings.Join(e.Allowed, ", "))
 }
 
-// ValidateStatus checks a status value against the options read from the
-// server.
+// ValidateOption checks a value against the options read from the server.
 //
 // This matters most for select properties: Notion creates an unknown select
 // option on write, so an unchecked typo becomes a permanent bogus value in the
 // database. Status properties reject unknown values server-side, but failing
 // here still produces a far better message than the API's.
 //
+// field names the role in the message, and — more importantly — travels into
+// ValidationError, which is what maps this failure onto exit code 2 for callers
+// that never touch cobra (apply, the MCP server).
+//
 // An empty allowed list disables the check.
-func ValidateStatus(value string, allowed []string) error {
+func ValidateOption(field, value string, allowed []string) error {
 	if len(allowed) == 0 || slices.Contains(allowed, value) {
 		return nil
 	}
-	return &ValidationError{Field: "status", Value: value, Allowed: allowed}
+	return &ValidationError{Field: field, Value: value, Allowed: allowed}
+}
+
+// ValidateStatus is ValidateOption for the status role.
+func ValidateStatus(value string, allowed []string) error {
+	return ValidateOption("status", value, allowed)
 }
