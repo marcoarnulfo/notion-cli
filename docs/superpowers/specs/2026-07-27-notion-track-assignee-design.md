@@ -22,8 +22,10 @@ leggerlo, filtrarci sopra e svuotarlo.
 ### Non-goal dichiarati
 
 - **Non tocca i quattro ruoli esistenti.** Nessun comando cambia comportamento quando
-  `assignee` non è mappato: l'output umano, il JSON e gli exit code restano identici byte
-  per byte per ogni profilo scritto prima di questa feature.
+  `assignee` non è mappato: l'output umano e gli exit code restano identici byte per byte
+  per ogni profilo scritto prima di questa feature. Il JSON guadagna esattamente una chiave
+  additiva, `assignee` (§6.1), sempre presente e vuota quando il ruolo non è mappato — un
+  consumatore `jq` che legge le chiavi esistenti non nota differenza.
 - **Non gestisce colonne di tipo `people`.** Vedi §2: la decisione è motivata da un fatto
   del dominio, non da pigrizia, ed è pensata per essere estesa senza rotture (§14).
 - **Non crea né modifica colonne su Notion.** Se la board non ha una colonna adatta, `init`
