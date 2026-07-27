@@ -18,7 +18,7 @@ L'autenticazione avviene solo con un **token di integrazione interna** di Notion
 
 - **Upsert idempotente** (`upsert`) — crea o aggiorna la riga di un ticket in base alla sua chiave. Due esecuzioni, una riga sola.
 - **Scrittura solo in aggiornamento** (`set`) — fallisce con un exit code dedicato se il ticket non esiste ancora, invece di crearlo silenziosamente.
-- **Lettura** (`get`, `list`) — una riga o molte, filtrabili per stato, in forma leggibile o `--json`.
+- **Lettura** (`get`, `list`) — una riga o molte, filtrabili per stato o referente, in forma leggibile o `--json`.
 - **Navigazione interattiva** (`notion-track` senza argomenti, a un terminale) — una TUI sulle righe tracciate: filtro per stato, cambio di stato inline, apertura della riga in Notion, creazione senza uscire dalla vista.
 - **Diagnostica** (`doctor`) — verifica il token, l'accesso alla data source, il mapping delle proprietà (compreso il drift di tipo rispetto a quando `init` è stato eseguito), scansiona l'intera data source alla ricerca di chiavi ticket duplicate e avvisa se un file tracciato da git sembra contenere il tuo token di integrazione.
 - **Configurazione guidata** (`init`) — un `notion-track init` nudo in un terminale apre una procedura guidata che sceglie la data source e ti propone il mapping delle proprietà; la forma a flag scrive lo stesso profilo in modo non interattivo, validato contro lo schema live della data source prima di salvare qualsiasi cosa. `init --list` scopre gli id delle data source visibili alla tua integrazione. In un terminale interattivo offre anche di raccogliere e salvare il token di integrazione se non ne trova uno (vedi [Configurazione](#configurazione)).
@@ -87,6 +87,15 @@ Non esiste ancora una release con binari precompilati — GoReleaser e le GitHub
    notion-track upsert --ticket BDF-231 --title "Hardening" --status "In corso"
    notion-track upsert --ticket BDF-231 --status "Fatto"   # aggiorna la stessa riga, nessun duplicato
    ```
+8. **(Facoltativo) Traccia chi possiede ogni riga.** Mappa una colonna `select` con `--assignee-prop` (vedi [Uso](#uso) più sotto), esporta la tua identità una volta sola, e `me` funziona ovunque sia accettato `--assignee`:
+   ```bash
+   # una volta sola, nel tuo shell profile
+   export NOTION_TRACK_ME="Marco Arnulfo"
+
+   notion-track set --ticket BDF-231 --status "In corso" --assignee me
+   notion-track list --assignee me --status "Da fare"
+   notion-track list --unassigned
+   ```
 
 ## Uso
 
@@ -124,7 +133,7 @@ apre una procedura guidata: recupera il tuo token (chiedendolo solo se non ne es
 La procedura guidata richiede un terminale **e** una riga di comando altrimenti nuda. Passare un qualsiasi flag di configurazione, o eseguire il comando senza un TTY — CI, una pipe, un agente — porta alla forma esplicita qui sotto, invariata:
 
 ```
-notion-track init --data-source-id <id> --ticket-prop <nome> --status-prop <nome> --title-prop <nome> [--due-prop <nome>] [--database-id <id>] [--list]
+notion-track init --data-source-id <id> --ticket-prop <nome> --status-prop <nome> --title-prop <nome> [--due-prop <nome>] [--assignee-prop <nome>] [--me <valore>] [--database-id <id>] [--list]
 ```
 
 | Flag | Significato |
@@ -134,10 +143,14 @@ notion-track init --data-source-id <id> --ticket-prop <nome> --status-prop <nome
 | `--status-prop string` | proprietà che contiene lo stato — deve essere `status` o `select` (obbligatorio) |
 | `--title-prop string` | proprietà titolo (obbligatorio) |
 | `--due-prop string` | proprietà data (opzionale) |
+| `--assignee-prop string` | proprietà `select` che indica chi possiede la riga (opzionale) |
+| `--me string` | il valore a cui risolve `--assignee me`; risolto e validato contro le opzioni di `--assignee-prop` prima di essere salvato (opzionale, richiede `--assignee-prop`) |
 | `--database-id string` | id del database, registrato solo come riferimento — ogni lettura/scrittura usa `--data-source-id`, non questo |
 | `--list` | elenca gli id delle data source condivise con l'integrazione, ed esce |
 
-Ogni proprietà mappata viene verificata contro lo schema live della data source; `init` rifiuta di scrivere un profilo che si romperebbe al primo uso (tipo sbagliato, o proprietà inesistente). `--ticket-prop`, `--status-prop` e `--title-prop` sono di fatto obbligatori — `init` restituisce un errore di uso indicando quale manca — anche se `--due-prop` è l'unico realmente opzionale. Il profilo viene scritto con il nome passato tramite `--profile` (default `"default"`); se è il primo profilo nel file diventa anche `default_profile`. Rilanciare `init` con lo stesso nome di `--profile` sovrascrive quel profilo senza toccare gli altri.
+Ogni proprietà mappata viene verificata contro lo schema live della data source; `init` rifiuta di scrivere un profilo che si romperebbe al primo uso (tipo sbagliato, o proprietà inesistente). `--ticket-prop`, `--status-prop` e `--title-prop` sono di fatto obbligatori — `init` restituisce un errore di uso indicando quale manca — anche se `--due-prop` e `--assignee-prop` sono opzionali. Il profilo viene scritto con il nome passato tramite `--profile` (default `"default"`); se è il primo profilo nel file diventa anche `default_profile`. Rilanciare `init` con lo stesso nome di `--profile` sovrascrive quel profilo senza toccare gli altri.
+
+`--assignee-prop` si comporta come `--due-prop`: una board che non traccia referenti in particolare lo lascia semplicemente non mappato, e ogni comando si comporta esattamente come prima di questa funzionalità. `--me` risolve il proprio valore contro le opzioni di `--assignee-prop` nello stesso modo di `--assignee me`, così un refuso non può finire nel file, e salva il nome canonico — ma poiché `config.yml` è pensato per essere committato e condiviso, `init --me` stampa un avviso che raccomanda `NOTION_TRACK_ME` invece di affidarsi al valore appena scritto (vedi [Variabili d'ambiente](#variabili-dambiente)).
 
 **Richiesta del token.** Se non trova nessun token né in `NOTION_TOKEN` né in `credentials.yml`, `init` si comporta diversamente a seconda di come viene eseguito:
 
@@ -147,7 +160,7 @@ Ogni proprietà mappata viene verificata contro lo schema live della data source
 ### `upsert` — crea o aggiorna una riga per chiave ticket
 
 ```
-notion-track upsert --ticket <chiave> [--title <titolo>] [--status <stato>] [--due YYYY-MM-DD] [--json]
+notion-track upsert --ticket <chiave> [--title <titolo>] [--status <stato>] [--due YYYY-MM-DD] [--assignee <valore>] [--unassign] [--json]
 ```
 
 Il comando principale. Interroga la data source per la riga la cui proprietà ticket è uguale a `--ticket`: la aggiorna se la trova, altrimenti la crea. `0` corrispondenze → crea, `1` corrispondenza → aggiorna, `>1` corrispondenze → fallisce con exit code 4 (vedi [Limitazioni](#limitazioni)). Silenzioso in caso di successo; con `--json` stampa `{"action": "created"|"updated", "page": {...}}`.
@@ -155,12 +168,29 @@ Il comando principale. Interroga la data source per la riga la cui proprietà ti
 ### `set` — aggiorna solo una riga esistente
 
 ```
-notion-track set (--ticket <chiave> | --page-id <id>) [--title <titolo>] [--status <stato>] [--due YYYY-MM-DD] [--json]
+notion-track set (--ticket <chiave> | --page-id <id>) [--title <titolo>] [--status <stato>] [--due YYYY-MM-DD] [--assignee <valore>] [--unassign] [--json]
 ```
 
 Stessi campi di `upsert`, ma fallisce con exit code 3 se la riga non esiste ancora, invece di crearla. Usalo dove una riga mancante è un sintomo da far emergere, non un dettaglio da ignorare.
 
 `--ticket` e `--page-id` sono mutuamente esclusivi ed è obbligatorio esattamente uno dei due. `--page-id` indirizza una riga direttamente tramite il suo page id di Notion — nessuna query per chiave ticket — il che è più rapido e privo di ambiguità quando lo si ha già a disposizione (ad es. dal `page_id` restituito da una precedente chiamata `--json`, vedi [Output JSON](#output-json)). Accetta l'URL completo della pagina copiato dalla barra degli indirizzi di Notion, un id esadecimale nudo di 32 caratteri, o un UUID con trattini; qualsiasi altro input fallisce immediatamente con exit code 2, prima di qualunque chiamata di rete. Poiché leggere una pagina per id funziona per qualsiasi pagina condivisa con l'integrazione — non solo per le righe della data source configurata — un page id che risolve verso una data source *diversa* da quella del profilo attivo viene rifiutato con exit code 2 invece di fallire più avanti con un criptico errore sui nomi delle proprietà da parte di Notion. Anche `set --page-id` rifiuta, con lo stesso exit code, una pagina il cui parent non riporta alcuna data source — la sua appartenenza non può mai essere confermata, e una scrittura non deve procedere su una pagina che non può dimostrare di appartenere a questo profilo.
+
+### `--assignee` / `--unassign` — assegna o svuota il referente di una riga
+
+```bash
+notion-track set --ticket BDF-231 --assignee "Mirko Spinato"
+notion-track set --ticket BDF-231 --assignee mirko    # un nome parziale basta se non è ambiguo
+notion-track set --ticket BDF-231 --assignee me        # NOTION_TRACK_ME, o il `me:` del profilo — vedi sotto
+notion-track set --ticket BDF-231 --unassign            # svuota la colonna
+```
+
+Disponibile su `upsert` e `set`. `--assignee` risolve ciò che digiti contro le opzioni della colonna mappata, provando un match esatto, poi un match esatto case-insensitive, poi un match per sottostringa case-insensitive, e si ferma al primo passaggio che trova esattamente un candidato — così `mirko` arriva a Notion come `Mirko Spinato`. Zero corrispondenze e più di una sono entrambi errori d'uso (exit code 2): il primo indica i valori che la colonna offre davvero, il secondo indica quali sono le corrispondenze trovate e chiede più caratteri del nome.
+
+`me` è un valore riservato: prima che la risoluzione avvenga, viene sostituito da `NOTION_TRACK_ME` (o, in mancanza, dal campo `me:` del profilo — vedi [Variabili d'ambiente](#variabili-dambiente) per capire perché la variabile d'ambiente è quella da usare davvero), così `NOTION_TRACK_ME=marco` funziona esattamente come digitare il nome per intero. Usare `me` senza che nessuno dei due sia configurato è un errore d'uso che indica il fix.
+
+Non passare `--assignee` lascia la colonna intatta — la stessa regola "vuoto significa lascia stare" che segue ogni altro campo. `--assignee ""` è quindi un errore d'uso, non un modo per svuotare la colonna; usa `--unassign` per quello. `--assignee` e `--unassign` sono mutuamente esclusivi, e una colonna select tiene un valore solo, quindi `--assignee` non è ripetibile.
+
+Se il ruolo non è mappato, passare `--assignee` o `--unassign` fallisce come fallisce qualsiasi altro ruolo non mappato — exit code 1, non 2, vedi [Exit code](#exit-code) — con un messaggio che indica `init --assignee-prop`.
 
 ### `--body-file` — scrive il corpo della pagina da Markdown
 
@@ -200,10 +230,12 @@ Stampa ticket, titolo, stato e URL della riga. `--ticket` e `--page-id` sono mut
 ### `list` — legge più righe
 
 ```
-notion-track list [--status <stato>] [--json]
+notion-track list [--status <stato>] [--assignee <valore>] [--unassigned] [--json]
 ```
 
-Elenca tutte le righe, oppure solo quelle che corrispondono a `--status`. Un valore di stato sconosciuto fallisce subito con exit code 2, indicando i valori realmente ammessi da Notion per quella proprietà.
+Elenca tutte le righe, oppure le restringe per `--status`, per `--assignee`, o alle righe `--unassigned` — `--assignee` e `--unassigned` sono mutuamente esclusivi. Un valore di stato o di referente sconosciuto fallisce subito con exit code 2, indicando i valori realmente ammessi da Notion per quella proprietà; `--assignee` risolve nomi parziali e `me` esattamente come su `upsert`/`set` (vedi `--assignee` / `--unassign` sotto [Uso](#uso) sopra). Filtrare per referente su un profilo che non mappa il ruolo fallisce come qualsiasi altro ruolo non mappato (exit code 1).
+
+La forma leggibile aggiunge `  @<nome>` a una riga che ne ha uno; le righe senza referente, e ogni riga su un profilo che non mappa affatto il ruolo, sono stampate esattamente come prima di questa funzionalità.
 
 Quando non corrisponde nulla, la forma leggibile stampa `no matching tasks` **su stderr** ed esce con 0 — stdout resta vuoto, così `list | wc -l` conta righe e nient'altro. `list --json` stampa `[]` e non dice nulla su stderr.
 
@@ -217,18 +249,20 @@ Applica un elenco di scritture da un file JSON o CSV, un'entry alla volta, in or
 
 ```json
 [
-  {"op": "upsert", "ticket": "BDF-1", "title": "Hardening", "status": "In corso"},
-  {"op": "set", "ticket": "BDF-2", "status": "Fatto", "body_file": "note.md"}
+  {"op": "upsert", "ticket": "BDF-1", "title": "Hardening", "status": "In corso", "assignee": "mirko"},
+  {"op": "set", "ticket": "BDF-2", "status": "Fatto", "unassign": true}
 ]
 ```
 
 ```csv
-op,ticket,title,status,due,body_file
-upsert,BDF-1,Hardening,In corso,2026-08-01,note.md
-set,BDF-2,,Fatto,,
+op,ticket,title,status,due,body_file,assignee,unassign
+upsert,BDF-1,Hardening,In corso,2026-08-01,note.md,mirko,
+set,BDF-2,,Fatto,,,,true
 ```
 
-Campi: `op` (`upsert` o `set`, con default `upsert` — quello idempotente, così un manifest eseguito due volte per sbaglio lascia la board com'era), `ticket` (obbligatorio), `title`, `status`, `due`, `body_file`. Un campo sconosciuto è un errore, non qualcosa da ignorare in silenzio: un manifest con dentro `stuats` lascerebbe altrimenti ogni riga senza stato senza dire nulla.
+Campi: `op` (`upsert` o `set`, con default `upsert` — quello idempotente, così un manifest eseguito due volte per sbaglio lascia la board com'era), `ticket` (obbligatorio), `title`, `status`, `due`, `body_file`, `assignee`, `unassign`. Un campo sconosciuto è un errore, non qualcosa da ignorare in silenzio: un manifest con dentro `stuats` lascerebbe altrimenti ogni riga senza stato senza dire nulla.
+
+`assignee` accetta gli stessi nomi parziali e il valore riservato `me` che accetta `--assignee`; `unassign` accetta `true`/`false`/vuoto (case-insensitive) ed è registrato in entrambi i formati, quindi è legale nel CSV quanto nel JSON. Passare sia `assignee` sia `unassign: true` nella stessa entry viene rifiutato allo stesso modo in cui lo sono `--assignee` e `--unassign` sui flag.
 
 I percorsi in `body_file` sono risolti **relativamente al manifest**, non alla directory di lavoro, così il manifest e i file che nomina viaggiano insieme.
 
@@ -257,6 +291,15 @@ would update 1f2e3d4c-...
 
 Disponibile su `upsert` e `set`. Riporta se la riga verrebbe creata o aggiornata, quale riga, e quali colonne verrebbero scritte — e non scrive nulla. Con `--json` l'output è `{"dry_run": true, "plan": {...}}`, così uno script lo distingue da una scrittura realmente avvenuta.
 
+`--unassign --dry-run` stampa una riga `clear` che indica la colonna invece di un valore — senza, svuotare il referente sarebbe l'unica scrittura su cui un dry run non direbbe nulla, la più distruttiva di questa funzionalità e invisibile proprio nel comando che esiste per mostrarla:
+
+```
+$ notion-track set --ticket BDF-231 --unassign --dry-run
+would update 1f2e3d4c-...
+  clear                Referente
+  https://notion.so/...
+```
+
 "Senza toccare l'API" può solo significare senza *scrivere*: se una chiave ticket si risolve in una creazione o in un aggiornamento, e se un valore di stato esiste davvero, sono domande a cui può rispondere solo la data source live. Un dry run fa quindi le stesse letture di un'esecuzione vera e si ferma prima della prima scrittura — inclusa la stessa validazione, così uno stato che la tua board rifiuterebbe fallisce adesso e non nell'esecuzione vera che stavi per lanciare.
 
 ### `doctor` — verifica la configurazione
@@ -265,7 +308,9 @@ Disponibile su `upsert` e `set`. Riporta se la riga verrebbe creata o aggiornata
 notion-track doctor [--json]
 ```
 
-Esegue cinque controlli — `token`, `data_source`, `properties`, `duplicates`, `secrets` — e stampa ciascuno come `ok`, `warn` o `fail` con un messaggio di dettaglio azionabile. Un `warn` (ad es. il tipo della proprietà stato è cambiato da quando `init` è stato eseguito) non fa fallire il comando; qualsiasi `fail` lo fa uscire con codice diverso da zero. `properties` e `duplicates` vengono eseguiti anche quando `data_source` fallisce, così una configurazione rotta viene diagnosticata in un solo passaggio invece che un sintomo alla volta.
+Esegue cinque controlli — `token`, `data_source`, `properties`, `duplicates`, `secrets` — più un sesto, `assignee`, fra `properties` e `duplicates`, quando il ruolo è mappato; ciascuno viene stampato come `ok`, `warn` o `fail` con un messaggio di dettaglio azionabile. Un `warn` (ad es. il tipo della proprietà stato è cambiato da quando `init` è stato eseguito) non fa fallire il comando; qualsiasi `fail` lo fa uscire con codice diverso da zero. `properties` e `duplicates` vengono eseguiti anche quando `data_source` fallisce, così una configurazione rotta viene diagnosticata in un solo passaggio invece che un sintomo alla volta.
+
+`assignee` verifica che l'identità configurata (`me:`, o `NOTION_TRACK_ME`) risolva ancora a un'opzione che la colonna mappata offre — un'opzione rinominata in Notion trasformerebbe altrimenti ogni `--assignee me` in un fallimento a runtime scoperto solo al momento di una scrittura. Riporta solo `ok` o `warn`, mai `fail`, e avvisa anche quando l'identità proviene dal `me:` nel file di configurazione invece che da `NOTION_TRACK_ME` — vedi [Variabili d'ambiente](#variabili-dambiente) per capire perché questa distinzione conta.
 
 `secrets` è l'unico controllo che guarda la tua macchina invece che Notion: scansiona i file **tracciati** dal repository git corrente cercando qualcosa che abbia la forma di un token di integrazione, e avvisa indicando file e numero di riga — mai il testo trovato, che equivarrebbe a far trapelare il segreto una seconda volta, in scrollback e log di CI. I file non tracciati vengono lasciati stare: un token in un `.env` ignorato non è l'errore che questo controllo cerca. Fuori da un repository, o senza git installato, riporta `ok` con la motivazione invece di un avviso su cui nessuno può agire.
 
@@ -298,10 +343,12 @@ profiles:
     data_source_id: "5e6f7a8b..."  # obbligatorio — ogni query, creazione e aggiornamento usa questo id
     status_type: status            # "status" o "select", registrato da `init`; vedi il check "properties" di doctor
     properties:
-      ticket: Ticket   # proprietà rich_text o title che contiene la chiave del ticket
-      status: Stato    # proprietà status o select
-      title: Name      # proprietà titolo
-      due: Scadenza    # opzionale: proprietà data
+      ticket: Ticket        # proprietà rich_text o title che contiene la chiave del ticket
+      status: Stato         # proprietà status o select
+      title: Name           # proprietà titolo
+      due: Scadenza         # opzionale: proprietà data
+      assignee: Referente   # opzionale: proprietà select che indica chi possiede la riga
+    me: Marco Arnulfo       # opzionale: il valore a cui risolve `--assignee me`; NOTION_TRACK_ME lo sovrascrive
 ```
 
 ```yaml
@@ -322,11 +369,13 @@ Entrambi i file sono sostituiti in modo atomico (un file temporaneo nella stessa
 | `NOTION_TRACK_PROFILE` | quale profilo risolvere, a meno che `--profile` non sia anch'esso specificato |
 | `NOTION_TRACK_DB` | sovrascrive il `database_id` del profilo risolto |
 | `NOTION_TRACK_DATA_SOURCE` | sovrascrive il `data_source_id` del profilo risolto |
+| `NOTION_TRACK_ME` | sovrascrive il `me:` del profilo risolto — il valore a cui risolve `--assignee me` |
 
 Precedenza:
 
 - **Selezione del profilo:** flag `--profile` → `NOTION_TRACK_PROFILE` → `default_profile` nel file di configurazione.
 - **`database_id` / `data_source_id`:** le variabili d'ambiente sopra sovrascrivono sempre ciò che il profilo risolto ha su file, indipendentemente da come quel profilo è stato scelto — è ciò che permette a un job CI di puntare un profilo esistente verso un'altra data source senza toccare il file committato.
+- **Identità (`--assignee me`):** `NOTION_TRACK_ME` → il campo `me:` del profilo, stesso meccanismo di override di `database_id`/`data_source_id` sopra. La variabile d'ambiente è quella da usare davvero: `config.yml` è pensato per essere committato e condiviso (vedi [Configurazione](#configurazione)), quindi un `me:` scritto lì è l'identità di *tutti* — un collega che non esporta mai `NOTION_TRACK_ME` risolve `me` in chiunque abbia committato il file, assegnando in silenzio il lavoro alla persona sbagliata. `init --me` stampa un avviso in tal senso nel momento stesso in cui ne scrive uno, e `doctor` avvisa se un profilo ha `me:` impostato ma `NOTION_TRACK_ME` non lo è.
 - **Token:** `NOTION_TOKEN` → `credentials.yml`. Un token letto dall'ambiente non viene mai riscritto in `credentials.yml` — un secret della CI non può mai trapelare su disco durante un'esecuzione normale. Esegui `notion-track doctor` se hai bisogno di vedere quale fonte ha effettivamente vinto.
 - **Percorso del file di configurazione:** flag `--config` → il percorso predefinito del sistema operativo sopra. Non esiste una variabile d'ambiente per il percorso stesso, né un flag equivalente per `credentials.yml`.
 
@@ -343,30 +392,32 @@ Una riga (`get --json`, e ogni elemento di `list --json`):
   "status": "In corso",
   "page_id": "1a2b3c4d-...",
   "url": "https://www.notion.so/...",
-  "last_edited_time": "2026-07-23T10:15:00Z"
+  "last_edited_time": "2026-07-23T10:15:00Z",
+  "assignee": "Mirko Spinato"
 }
 ```
 
-Se il mapping configurato indica una colonna che la riga non porta davvero, il campo corrispondente torna come stringa vuota invece che come errore — segnalare un mapping rotto è compito di `doctor`, non un motivo per far fallire ogni lettura.
+Se il mapping configurato indica una colonna che la riga non porta davvero, il campo corrispondente torna come stringa vuota invece che come errore — segnalare un mapping rotto è compito di `doctor`, non un motivo per far fallire ogni lettura. `assignee` segue la stessa regola ed è inoltre vuoto ogni volta che non c'è nessun referente, così uno script non deve mai ramificare sulla presenza della chiave — solo su se è vuota.
 
 `upsert --json` / `set --json`:
 
 ```json
 {
   "action": "created",
-  "page": { "ticket": "BDF-231", "title": "Hardening", "status": "In corso", "page_id": "...", "url": "...", "last_edited_time": "..." }
+  "page": { "ticket": "BDF-231", "title": "Hardening", "status": "In corso", "page_id": "...", "url": "...", "last_edited_time": "...", "assignee": "Mirko Spinato" }
 }
 ```
 
 `action` vale `"created"` o `"updated"`.
 
-`doctor --json` — un array di check, uno per `token` / `data_source` / `properties` / `duplicates` / `secrets`:
+`doctor --json` — un array di check, uno per `token` / `data_source` / `properties` / `assignee` (solo quando il ruolo è mappato) / `duplicates` / `secrets`:
 
 ```json
 [
   { "name": "token", "status": "ok", "detail": "token from environment\n  authenticated as notion-track" },
   { "name": "data_source", "status": "ok", "detail": "reachable: Tasks" },
   { "name": "properties", "status": "ok", "detail": "all mapped properties exist with the expected types" },
+  { "name": "assignee", "status": "ok", "detail": "--assignee me resolves to Mirko Spinato" },
   { "name": "duplicates", "status": "ok", "detail": "42 rows, no repeated ticket keys" },
   { "name": "secrets", "status": "ok", "detail": "37 tracked files scanned, no token-looking strings" }
 ]
@@ -381,8 +432,8 @@ Le pipeline possono ramificare su questi valori senza fare parsing di alcun mess
 | Codice | Nome | Significato |
 |---|---|---|
 | `0` | OK | successo |
-| `1` | Error | un errore generico — un errore di rete/API, oppure `doctor` che segnala un check fallito diverso da `token` |
-| `2` | Usage | l'invocazione non può funzionare così com'è: un flag mancante o non valido, `--ticket` e `--page-id` passati insieme o nessuno dei due, un comando sconosciuto, nessuna configurazione ancora presente (`notion-track init` non è mai stato eseguito), un valore di stato che la data source non ammette, un `--page-id` malformato, o un `--page-id` che risolve fuori dalla data source del profilo attivo |
+| `1` | Error | un errore generico — un errore di rete/API, `doctor` che segnala un check fallito diverso da `token`, oppure un valore passato per un ruolo (`--assignee`, `--due`, …) che non è mappato nel profilo attivo |
+| `2` | Usage | l'invocazione non può funzionare così com'è: un flag mancante o non valido, `--ticket` e `--page-id` passati insieme o nessuno dei due, un comando sconosciuto, nessuna configurazione ancora presente (`notion-track init` non è mai stato eseguito), un valore di stato che la data source non ammette, un `--page-id` malformato, un `--page-id` che risolve fuori dalla data source del profilo attivo, un valore di `--assignee` che risolve a zero o a più di un'opzione, un `--assignee` vuoto, `--assignee me` senza identità configurata, oppure `--assignee` combinato con `--unassign` (o con `--unassigned` su `list`) |
 | `3` | Not found | il ticket richiesto non ha una riga corrispondente, oppure il page id non corrisponde a nessuna pagina (o a una non condivisa con questa integrazione) (`get`, `set`) |
 | `4` | Duplicate | la chiave del ticket corrisponde a più di una riga (`upsert`, `set`, `get`) |
 | `5` | Auth | nessun token trovato (incluso il caso in cui `credentials.yml` esiste ma non è leggibile), oppure Notion lo ha rifiutato (401/403) — incluso `doctor`, quando il suo check `token` è l'unico fallito |
@@ -427,7 +478,7 @@ Poiché il tool è muto in caso di successo, parla `--json` con uno schema stabi
 }
 ```
 
-Espone `upsert_task`, `set_task`, `get_task` e `list_tasks`, restituendo la stessa forma JSON documentata sopra. È un adapter, non una seconda implementazione: ogni tool passa dallo stesso codice dei comandi CLI, quindi il controllo dei duplicati, la validazione dello stato e il mapping delle proprietà si comportano in modo identico per un agente. `stdout` trasporta il protocollo JSON-RPC e nient'altro.
+Espone `upsert_task`, `set_task`, `get_task` e `list_tasks`, restituendo la stessa forma JSON documentata sopra. `upsert_task` e `set_task` accettano `assignee` e `unassign` esattamente come i flag della CLI — un nome parziale, o il valore riservato `me`; `list_tasks` accetta `assignee` e `unassigned`, mutuamente esclusivi tra loro. È un adapter, non una seconda implementazione: ogni tool passa dallo stesso codice dei comandi CLI, quindi il controllo dei duplicati, la validazione dello stato e il mapping delle proprietà si comportano in modo identico per un agente. `stdout` trasporta il protocollo JSON-RPC e nient'altro.
 
 Questo non contraddice la ragione per cui questo strumento esiste. È l'endpoint MCP *ospitato* di Notion a essere bloccato dai firewall aziendali; un server *locale*, che gira sulla tua macchina con il tuo token di integrazione, raggiunge gli agenti proprio dove quello ospitato non arriva.
 
