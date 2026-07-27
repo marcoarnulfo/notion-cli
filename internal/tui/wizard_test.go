@@ -328,3 +328,48 @@ func TestQuittingOnAFailedSchemaReadReportsTheError(t *testing.T) {
 		t.Fatalf("result = %+v, want the schema error", res)
 	}
 }
+
+func TestWizardAssigneeRole(t *testing.T) {
+	t.Run("the role is offered and optional", func(t *testing.T) {
+		var spec roleSpec
+		var found bool
+		for _, r := range roles {
+			if r.name == "assignee" {
+				spec, found = r, true
+			}
+		}
+		if !found {
+			t.Fatal("no assignee role in the wizard")
+		}
+		if !spec.optional {
+			t.Error("the assignee role must be optional: a board may track nobody")
+		}
+		if len(spec.types) != 1 || spec.types[0] != "select" {
+			t.Errorf("types = %v, want [select]", spec.types)
+		}
+		if spec.key == "" {
+			t.Error("the role has no shortcut key")
+		}
+	})
+
+	t.Run("roleValue and setRole round-trip", func(t *testing.T) {
+		var p config.Properties
+		setRole(&p, "assignee", "Referente")
+		if p.Assignee != "Referente" {
+			t.Errorf("setRole left Assignee = %q", p.Assignee)
+		}
+		if got := roleValue(p, "assignee"); got != "Referente" {
+			t.Errorf("roleValue = %q, want %q", got, "Referente")
+		}
+	})
+
+	t.Run("no two roles share a shortcut key", func(t *testing.T) {
+		seen := map[string]string{}
+		for _, r := range roles {
+			if other, dup := seen[r.key]; dup {
+				t.Errorf("key %q is used by both %q and %q", r.key, other, r.name)
+			}
+			seen[r.key] = r.name
+		}
+	})
+}
