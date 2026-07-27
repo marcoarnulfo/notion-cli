@@ -3,10 +3,13 @@ package service
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
+	"github.com/marcoarnulfo/notion-cli/internal/config"
 	"github.com/marcoarnulfo/notion-cli/internal/notion"
+	"github.com/marcoarnulfo/notion-cli/internal/tracker"
 )
 
 // Check is one diagnostic result. Status is "ok", "warn" or "fail".
@@ -43,6 +46,9 @@ func (s *Service) Doctor(ctx context.Context) []Check {
 	} else {
 		checks = append(checks, Check{"data_source", "ok", "reachable: " + schema.Title})
 		checks = append(checks, s.checkProperties(schema))
+		if s.profile.Properties.Assignee != "" {
+			checks = append(checks, s.checkAssignee(schema))
+		}
 	}
 
 	checks = append(checks, s.checkDuplicates(ctx))
@@ -53,16 +59,18 @@ func (s *Service) Doctor(ctx context.Context) []Check {
 // when a property is gone, names the most likely replacement.
 func (s *Service) checkProperties(schema *notion.Schema) Check {
 	mapped := map[string]string{
-		"ticket": s.profile.Properties.Ticket,
-		"status": s.profile.Properties.Status,
-		"title":  s.profile.Properties.Title,
-		"due":    s.profile.Properties.Due,
+		"ticket":   s.profile.Properties.Ticket,
+		"status":   s.profile.Properties.Status,
+		"title":    s.profile.Properties.Title,
+		"due":      s.profile.Properties.Due,
+		"assignee": s.profile.Properties.Assignee,
 	}
 	wantType := map[string][]string{
-		"ticket": {"rich_text", "title"},
-		"status": {"status", "select"},
-		"title":  {"title"},
-		"due":    {"date"},
+		"ticket":   {"rich_text", "title"},
+		"status":   {"status", "select"},
+		"title":    {"title"},
+		"due":      {"date"},
+		"assignee": {"select"},
 	}
 
 	// optionalRoles may legitimately be unmapped; every other role is required
@@ -70,11 +78,14 @@ func (s *Service) checkProperties(schema *notion.Schema) Check {
 	// silent skip — an empty mapped name otherwise makes every downstream
 	// lookup key into "", which findByTicket and checkDuplicates would then
 	// read as "nothing to report" instead of "not configured".
-	optionalRoles := map[string]bool{"due": true}
+	//
+	// A board may legitimately track nobody, so an unmapped assignee is a
+	// skip, not a failure — the same judgement already made for due.
+	optionalRoles := map[string]bool{"due": true, "assignee": true}
 
 	var problems []string
 	var warnings []string
-	roles := []string{"ticket", "status", "title", "due"}
+	roles := []string{"ticket", "status", "title", "due", "assignee"}
 	for _, role := range roles {
 		name := mapped[role]
 		if name == "" {
@@ -124,6 +135,37 @@ func (s *Service) checkProperties(schema *notion.Schema) Check {
 	default:
 		return Check{"properties", "ok", "all mapped properties exist with the expected types"}
 	}
+}
+
+// checkAssignee verifies that the configured identity still names an option the
+// column offers. An option renamed in Notion turns every "--assignee me" into a
+// runtime failure, and this is the place to find that out first.
+func (s *Service) checkAssignee(schema *notion.Schema) Check {
+	if s.profile.Me == "" {
+		return Check{"assignee", "ok", "mapped; no identity configured (--assignee me is unavailable)"}
+	}
+	prop := schema.Properties[s.profile.Properties.Assignee]
+	resolved, err := tracker.ResolveOption("me", s.profile.Me, prop.Options)
+	if err != nil {
+		return Check{"assignee", "warn", fmt.Sprintf(
+			"the configured identity %q no longer resolves: %v\n"+
+				"  fix: export %s=<name>, or rerun 'notion-track init --me <name>'",
+			s.profile.Me, err, config.MeEnv)}
+	}
+
+	// The identity resolves — but where did it come from? config.yml is meant
+	// to be committed and shared, so an identity that lives only in the file is
+	// every teammate's identity: theirs resolves to whoever ran init, and their
+	// "--assignee me" quietly assigns work to that person. os.Getenv rather
+	// than the profile field, because Resolve has already folded the override
+	// in and the two are indistinguishable by then.
+	if os.Getenv(config.MeEnv) == "" {
+		return Check{"assignee", "warn", fmt.Sprintf(
+			"--assignee me resolves to %s, from the config file rather than the environment\n"+
+				"  fix: export %s=<name>; a shared config gives everyone the same identity",
+			resolved, config.MeEnv)}
+	}
+	return Check{"assignee", "ok", "--assignee me resolves to " + resolved}
 }
 
 // suggest names the columns that could stand in for a missing property.

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/marcoarnulfo/notion-cli/internal/config"
 	"github.com/marcoarnulfo/notion-cli/internal/notion"
 )
 
@@ -245,5 +246,103 @@ func TestDoctorRunsDuplicatesCheckAfterADataSourceFailure(t *testing.T) {
 	// properties needs the schema, which is unavailable here: it must not run.
 	if _, ok := findCheck(checks, "properties"); ok {
 		t.Error("properties check ran without a schema")
+	}
+}
+
+// doctorRoutes answers the three endpoints Doctor touches.
+func doctorRoutes(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/users/me":
+			w.Write([]byte(`{"name":"notion-track","type":"bot"}`))
+		case "/v1/data_sources/ds1":
+			w.Write([]byte(schemaJSON))
+		default:
+			w.Write([]byte(`{"results":[],"has_more":false}`))
+		}
+	}))
+}
+
+func TestDoctorTreatsTheAssigneeAsOptional(t *testing.T) {
+	srv := doctorRoutes(t)
+	defer srv.Close()
+
+	// testProfile leaves the role unmapped, the way every profile written
+	// before this feature does.
+	checks := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile()).
+		Doctor(context.Background())
+
+	props, ok := findCheck(checks, "properties")
+	if !ok {
+		t.Fatal("no properties check")
+	}
+	if props.Status == "fail" {
+		t.Errorf("properties = fail (%s), want the optional role to be skipped", props.Detail)
+	}
+	if _, ok := findCheck(checks, "assignee"); ok {
+		t.Error("an assignee check ran for a profile that does not map the role")
+	}
+}
+
+func TestDoctorWarnsWhenTheIdentityNoLongerResolves(t *testing.T) {
+	// The developer running the suite may well have exported NOTION_TRACK_ME
+	// themselves; clear it so the outcome depends only on the fixture below.
+	t.Setenv(config.MeEnv, "")
+
+	srv := doctorRoutes(t)
+	defer srv.Close()
+
+	checks := New(notion.New("t", notion.WithBaseURL(srv.URL)), assigneeProfile("Someone Who Left")).
+		Doctor(context.Background())
+
+	check, ok := findCheck(checks, "assignee")
+	if !ok {
+		t.Fatal("no assignee check")
+	}
+	if check.Status != "warn" {
+		t.Errorf("assignee = %s (%s), want warn", check.Status, check.Detail)
+	}
+}
+
+func TestDoctorAcceptsAnIdentityFromTheEnvironment(t *testing.T) {
+	srv := doctorRoutes(t)
+	defer srv.Close()
+	t.Setenv(config.MeEnv, "mirko")
+
+	checks := New(notion.New("t", notion.WithBaseURL(srv.URL)), assigneeProfile("mirko")).
+		Doctor(context.Background())
+
+	check, ok := findCheck(checks, "assignee")
+	if !ok {
+		t.Fatal("no assignee check")
+	}
+	if check.Status != "ok" {
+		t.Errorf("assignee = %s (%s), want ok", check.Status, check.Detail)
+	}
+	if !strings.Contains(check.Detail, "Mirko Spinato") {
+		t.Errorf("detail = %q, want it to name who me resolves to", check.Detail)
+	}
+}
+
+func TestDoctorWarnsWhenTheIdentityLivesOnlyInTheSharedConfig(t *testing.T) {
+	// The failure this catches is silent by nature: everything resolves, and
+	// every teammate assigns work to whoever ran init.
+	srv := doctorRoutes(t)
+	defer srv.Close()
+	t.Setenv(config.MeEnv, "")
+
+	checks := New(notion.New("t", notion.WithBaseURL(srv.URL)), assigneeProfile("mirko")).
+		Doctor(context.Background())
+
+	check, ok := findCheck(checks, "assignee")
+	if !ok {
+		t.Fatal("no assignee check")
+	}
+	if check.Status != "warn" {
+		t.Errorf("assignee = %s (%s), want warn", check.Status, check.Detail)
+	}
+	if !strings.Contains(check.Detail, config.MeEnv) {
+		t.Errorf("detail = %q, want it to point at the environment variable", check.Detail)
 	}
 }
