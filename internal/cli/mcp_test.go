@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/marcoarnulfo/notion-cli/internal/mcp"
+	"github.com/marcoarnulfo/notion-cli/internal/service"
+	"github.com/marcoarnulfo/notion-cli/internal/tracker"
 )
 
 // withFakeMCPServer swaps the blocking stdio server for a recorder: the real
@@ -59,7 +61,7 @@ func TestTheMCPAdapterReturnsTheDocumentedShape(t *testing.T) {
 	}, browseTestProfile())
 	adapter := trackerAdapter{svc: b.svc}
 
-	rows, err := adapter.List(context.Background(), "")
+	rows, err := adapter.List(context.Background(), mcp.ListFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,4 +75,19 @@ func TestTheMCPAdapterReturnsTheDocumentedShape(t *testing.T) {
 		got.LastEditedTime == "" {
 		t.Errorf("row = %+v", got)
 	}
+}
+
+func TestTheMCPConversionsStayDirect(t *testing.T) {
+	// A compile-time guarantee turned into a test: these conversions only
+	// compile while the structs stay identical, which is what keeps the
+	// documented --json contract and what an agent sees from drifting apart.
+	// If this file stops compiling, that is the feature working.
+	var p pageJSON
+	_ = mcp.Row(p)
+
+	var f mcp.Fields
+	_ = tracker.Fields(f)
+
+	var lf mcp.ListFilter
+	_ = service.ListFilter(lf)
 }

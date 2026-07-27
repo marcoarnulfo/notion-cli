@@ -21,7 +21,7 @@ type fakeTracker struct {
 	upserted []Fields
 	set      []Fields
 	got      []string
-	listed   []string
+	listed   []ListFilter
 }
 
 func (f *fakeTracker) Upsert(_ context.Context, fields Fields) (Row, string, error) {
@@ -48,8 +48,8 @@ func (f *fakeTracker) Get(_ context.Context, ticket string) (Row, error) {
 	return f.row, nil
 }
 
-func (f *fakeTracker) List(_ context.Context, status string) ([]Row, error) {
-	f.listed = append(f.listed, status)
+func (f *fakeTracker) List(_ context.Context, filter ListFilter) ([]Row, error) {
+	f.listed = append(f.listed, filter)
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -61,6 +61,7 @@ func testRow() Row {
 		Ticket: "BDF-231", Title: "Hardening", Status: "Fatto",
 		PageID: "page1", URL: "https://notion.so/page1",
 		LastEditedTime: "2026-07-20T10:00:00Z",
+		Assignee:       "Mirko Spinato",
 	}
 }
 
@@ -216,7 +217,7 @@ func TestListToolPassesTheStatusFilter(t *testing.T) {
 	var out listResult
 	call(t, session, "list_tasks", map[string]any{"status": "Fatto"}, &out)
 
-	if len(tracker.listed) != 1 || tracker.listed[0] != "Fatto" {
+	if len(tracker.listed) != 1 || tracker.listed[0].Status != "Fatto" {
 		t.Fatalf("list calls = %v", tracker.listed)
 	}
 	if len(out.Rows) != 2 {
@@ -230,8 +231,8 @@ func TestListToolWithNoFilterAsksForEverything(t *testing.T) {
 
 	call(t, session, "list_tasks", map[string]any{}, nil)
 
-	if len(tracker.listed) != 1 || tracker.listed[0] != "" {
-		t.Fatalf("list calls = %q, want one for every row", tracker.listed)
+	if len(tracker.listed) != 1 || tracker.listed[0] != (ListFilter{}) {
+		t.Fatalf("list calls = %v, want one for every row", tracker.listed)
 	}
 }
 
@@ -260,5 +261,71 @@ func TestAServiceFailureIsReportedToTheAgent(t *testing.T) {
 	}
 	if !strings.Contains(text, "more than one row") {
 		t.Errorf("content = %q, want the reason", text)
+	}
+}
+
+func TestUpsertToolCarriesTheAssignee(t *testing.T) {
+	tracker := &fakeTracker{row: testRow()}
+	session := connect(t, tracker)
+
+	call(t, session, "upsert_task", map[string]any{
+		"ticket": "BDF-231", "assignee": "mirko",
+	}, nil)
+
+	if len(tracker.upserted) != 1 {
+		t.Fatalf("upsert calls = %d, want 1", len(tracker.upserted))
+	}
+	if got := tracker.upserted[0].Assignee; got != "mirko" {
+		t.Errorf("Assignee = %q, want %q", got, "mirko")
+	}
+}
+
+func TestSetToolCarriesUnassign(t *testing.T) {
+	tracker := &fakeTracker{row: testRow()}
+	session := connect(t, tracker)
+
+	call(t, session, "set_task", map[string]any{
+		"ticket": "BDF-231", "unassign": true,
+	}, nil)
+
+	if len(tracker.set) != 1 {
+		t.Fatalf("set calls = %d, want 1", len(tracker.set))
+	}
+	if !tracker.set[0].Unassign {
+		t.Error("Unassign = false, want true")
+	}
+}
+
+func TestListToolFiltersByAssignee(t *testing.T) {
+	tracker := &fakeTracker{rows: []Row{testRow()}}
+	session := connect(t, tracker)
+
+	call(t, session, "list_tasks", map[string]any{"assignee": "me"}, nil)
+
+	if len(tracker.listed) != 1 || tracker.listed[0].Assignee != "me" {
+		t.Fatalf("list calls = %v, want one filtered by me", tracker.listed)
+	}
+}
+
+func TestListToolFiltersByUnassigned(t *testing.T) {
+	tracker := &fakeTracker{rows: []Row{testRow()}}
+	session := connect(t, tracker)
+
+	call(t, session, "list_tasks", map[string]any{"unassigned": true}, nil)
+
+	if len(tracker.listed) != 1 || !tracker.listed[0].Unassigned {
+		t.Fatalf("list calls = %v, want one filtered by unassigned", tracker.listed)
+	}
+}
+
+func TestGetToolExposesTheAssignee(t *testing.T) {
+	tracker := &fakeTracker{row: testRow()}
+	session := connect(t, tracker)
+
+	var row Row
+	call(t, session, "get_task", map[string]any{"ticket": "BDF-231"}, &row)
+
+	if row.Assignee != "Mirko Spinato" {
+		t.Errorf("Assignee = %q, want %q", row.Assignee, "Mirko Spinato")
 	}
 }

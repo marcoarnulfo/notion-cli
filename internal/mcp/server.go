@@ -36,11 +36,29 @@ type Row struct {
 
 // Fields are the writable values of a row. An empty field means "leave this
 // alone", which is the same rule the CLI's flags follow.
+//
+// The field order mirrors tracker.Fields exactly: internal/cli converts one
+// into the other directly, which only compiles while they stay identical.
 type Fields struct {
-	Ticket string
-	Title  string
-	Status string
-	Due    string
+	Ticket   string
+	Title    string
+	Status   string
+	Due      string
+	Assignee string
+	Unassign bool
+}
+
+// ListFilter mirrors service.ListFilter field for field, so internal/cli can
+// convert one into the other directly.
+//
+// A local type rather than an import of internal/service: this package declares
+// the slice of the service layer it consumes (see Tracker) and depends on none
+// of it, which is what lets a test drive the whole protocol with a fake and no
+// network.
+type ListFilter struct {
+	Status     string
+	Assignee   string
+	Unassigned bool
 }
 
 // Tracker is the slice of the service layer these tools need, declared here
@@ -53,17 +71,19 @@ type Tracker interface {
 	// Set updates an existing row and fails if it does not exist.
 	Set(ctx context.Context, f Fields) (Row, string, error)
 	Get(ctx context.Context, ticket string) (Row, error)
-	List(ctx context.Context, status string) ([]Row, error)
+	List(ctx context.Context, f ListFilter) ([]Row, error)
 }
 
 // Tool argument types. The jsonschema tags are what the agent reads to decide
 // how to call each tool, so they are documentation, not decoration.
 
 type upsertArgs struct {
-	Ticket string `json:"ticket" jsonschema:"the ticket key identifying the row"`
-	Title  string `json:"title,omitempty" jsonschema:"the row's title; omit to leave it unchanged"`
-	Status string `json:"status,omitempty" jsonschema:"the status to set; must be one the board already offers"`
-	Due    string `json:"due,omitempty" jsonschema:"the due date as YYYY-MM-DD; omit to leave it unchanged"`
+	Ticket   string `json:"ticket" jsonschema:"the ticket key identifying the row"`
+	Title    string `json:"title,omitempty" jsonschema:"the row's title; omit to leave it unchanged"`
+	Status   string `json:"status,omitempty" jsonschema:"the status to set; must be one the board already offers"`
+	Due      string `json:"due,omitempty" jsonschema:"the due date as YYYY-MM-DD; omit to leave it unchanged"`
+	Assignee string `json:"assignee,omitempty" jsonschema:"who the row belongs to; a partial name is enough when unambiguous, and 'me' means the configured identity; omit to leave it unchanged"`
+	Unassign bool   `json:"unassign,omitempty" jsonschema:"clear the assignee; cannot be combined with assignee"`
 }
 
 type getArgs struct {
@@ -71,7 +91,9 @@ type getArgs struct {
 }
 
 type listArgs struct {
-	Status string `json:"status,omitempty" jsonschema:"only return rows with this status; omit for all rows"`
+	Status     string `json:"status,omitempty" jsonschema:"only return rows with this status; omit for all rows"`
+	Assignee   string `json:"assignee,omitempty" jsonschema:"only return rows assigned to this person; a partial name is enough, and 'me' means the configured identity"`
+	Unassigned bool   `json:"unassigned,omitempty" jsonschema:"only return rows with no assignee; cannot be combined with assignee"`
 }
 
 // writeResult is what a write tool returns.
@@ -132,10 +154,11 @@ func NewServer(t Tracker, version string) *sdk.Server {
 	})
 
 	sdk.AddTool(server, &sdk.Tool{
-		Name:        "list_tasks",
-		Description: "List the tracked rows, optionally only those with one status.",
+		Name: "list_tasks",
+		Description: "List the tracked rows, optionally narrowed by status, by assignee, " +
+			"or to only those with no assignee.",
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, args listArgs) (*sdk.CallToolResult, listResult, error) {
-		rows, err := t.List(ctx, args.Status)
+		rows, err := t.List(ctx, ListFilter(args))
 		if err != nil {
 			return nil, listResult{}, err
 		}

@@ -76,8 +76,8 @@ func (a trackerAdapter) Get(ctx context.Context, ticket string) (mcp.Row, error)
 	return mcp.Row(toPageJSON(page, a.svc.Profile().Properties)), nil
 }
 
-func (a trackerAdapter) List(ctx context.Context, status string) ([]mcp.Row, error) {
-	pages, err := a.svc.List(ctx, service.ListFilter{Status: status})
+func (a trackerAdapter) List(ctx context.Context, f mcp.ListFilter) ([]mcp.Row, error) {
+	pages, err := a.svc.List(ctx, service.ListFilter(f))
 	if err != nil {
 		return nil, err
 	}
@@ -89,6 +89,7 @@ func (a trackerAdapter) List(ctx context.Context, status string) ([]mcp.Row, err
 	return rows, nil
 }
 
-func fieldsFromMCP(f mcp.Fields) tracker.Fields {
-	return tracker.Fields{Ticket: f.Ticket, Title: f.Title, Status: f.Status, Due: f.Due}
-}
+// fieldsFromMCP is a direct conversion for the same reason mcp.Row is: copying
+// field by field compiles happily while silently dropping whatever was added
+// on one side and forgotten on the other.
+func fieldsFromMCP(f mcp.Fields) tracker.Fields { return tracker.Fields(f) }
