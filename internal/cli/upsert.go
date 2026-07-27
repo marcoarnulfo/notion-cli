@@ -13,6 +13,8 @@ type writeFlags struct {
 	title    string
 	status   string
 	due      string
+	assignee string
+	unassign bool
 	asJSON   bool
 	bodyFile string
 	expand   bool
@@ -25,6 +27,11 @@ func (wf *writeFlags) bindShared(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&wf.title, "title", "", "title to set")
 	cmd.Flags().StringVar(&wf.status, "status", "", "status to set")
 	cmd.Flags().StringVar(&wf.due, "due", "", "due date, YYYY-MM-DD")
+	cmd.Flags().StringVar(&wf.assignee, "assignee", "",
+		"who the row belongs to; a partial name is enough when it is unambiguous, "+
+			"and 'me' stands for NOTION_TRACK_ME")
+	cmd.Flags().BoolVar(&wf.unassign, "unassign", false, "clear the assignee")
+	cmd.MarkFlagsMutuallyExclusive("assignee", "unassign")
 	cmd.Flags().BoolVar(&wf.asJSON, "json", false, "print machine-readable JSON")
 	cmd.Flags().StringVar(&wf.bodyFile, "body-file", "",
 		"Markdown file whose content replaces the page body ('-' for stdin); replace semantics, owns the body")
@@ -32,6 +39,16 @@ func (wf *writeFlags) bindShared(cmd *cobra.Command) {
 		"expand {{ticket}} and {{date}} placeholders in --body-file before sending it")
 	cmd.Flags().BoolVar(&wf.dryRun, "dry-run", false,
 		"report what would be written, and write nothing")
+
+	// A PreRunE rather than a check inside each RunE: bindShared is the one
+	// place both write commands pass through, and duplicating the guard is how
+	// one of the two eventually loses it.
+	cmd.PreRunE = func(cmd *cobra.Command, _ []string) error {
+		if cmd.Flags().Changed("assignee") && wf.assignee == "" {
+			return service.ErrEmptyAssignee
+		}
+		return nil
+	}
 }
 
 // bodyVars are the placeholder values for --expand, or nil when the flag is
@@ -74,7 +91,10 @@ func (wf *writeFlags) bindWithPageID(cmd *cobra.Command) {
 }
 
 func (wf *writeFlags) fields() tracker.Fields {
-	return tracker.Fields{Ticket: wf.ticket, Title: wf.title, Status: wf.status, Due: wf.due}
+	return tracker.Fields{
+		Ticket: wf.ticket, Title: wf.title, Status: wf.status, Due: wf.due,
+		Assignee: wf.assignee, Unassign: wf.unassign,
+	}
 }
 
 func newUpsertCmd() *cobra.Command {

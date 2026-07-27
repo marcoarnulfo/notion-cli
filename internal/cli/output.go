@@ -56,14 +56,24 @@ func exitCodeFor(err error) int {
 		return ExitError
 	}
 	var (
-		dup     *tracker.DuplicateError
-		invalid *tracker.ValidationError
-		apiErr  *notion.APIError
+		dup       *tracker.DuplicateError
+		invalid   *tracker.ValidationError
+		ambiguous *tracker.AmbiguousOptionError
+		apiErr    *notion.APIError
 	)
 	switch {
 	case errors.As(err, &dup):
 		return ExitDuplicate
 	case errors.As(err, &invalid):
+		return ExitUsage
+	case errors.As(err, &ambiguous):
+		return ExitUsage
+	// Every way of getting the assignee wrong is a mistake the user can fix by
+	// rewriting the command, which is exactly what exit code 2 means.
+	case errors.Is(err, service.ErrEmptyAssignee),
+		errors.Is(err, service.ErrNoIdentity),
+		errors.Is(err, service.ErrConflictingListFilter),
+		errors.Is(err, tracker.ErrConflictingAssignee):
 		return ExitUsage
 	// A 400 from Notion is, by construction, a value the API rejected (e.g.
 	// an unparseable date passed to --due) — invalid usage, same as

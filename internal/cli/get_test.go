@@ -71,13 +71,48 @@ profiles:
 const cliSchemaJSON = `{"id":"ds1","title":[{"plain_text":"Tasks"}],"properties":{
 	"Name":{"name":"Name","type":"title","title":{}},
 	"Ticket":{"name":"Ticket","type":"rich_text","rich_text":{}},
-	"Stato":{"name":"Stato","type":"status","status":{"options":[{"name":"Fatto"}]}}}}`
+	"Stato":{"name":"Stato","type":"status","status":{"options":[{"name":"Fatto"}]}},
+	"Referente":{"name":"Referente","type":"select","select":{"options":[{"name":"Andrea Ghidara"},{"name":"Marco Arnulfo"},{"name":"Mirko Spinato"}]}}}}`
 
 const cliRowJSON = `{"id":"page1","url":"https://notion.so/page1",
 	"last_edited_time":"2026-07-20T10:00:00.000Z","properties":{
 	"Name":{"type":"title","title":[{"plain_text":"Hardening"}]},
 	"Ticket":{"type":"rich_text","rich_text":[{"plain_text":"BDF-231"}]},
-	"Stato":{"type":"status","status":{"name":"Fatto"}}}}`
+	"Stato":{"type":"status","status":{"name":"Fatto"}},
+	"Referente":{"type":"select","select":{"name":"Mirko Spinato"}}}}`
+
+// assigneeProfile maps the role and configures an identity, for the tests that
+// exercise --assignee, --unassign and "me".
+const assigneeProfile = `schema_version: 1
+default_profile: work
+profiles:
+  work:
+    database_id: db1
+    data_source_id: ds1
+    status_type: status
+    me: Marco Arnulfo
+    properties:
+      ticket: Ticket
+      status: Stato
+      title: Name
+      assignee: Referente
+`
+
+// assigneeProfileNoIdentity maps the role but says nothing about who "me" is:
+// what a teammate who never exported NOTION_TRACK_ME has.
+const assigneeProfileNoIdentity = `schema_version: 1
+default_profile: work
+profiles:
+  work:
+    database_id: db1
+    data_source_id: ds1
+    status_type: status
+    properties:
+      ticket: Ticket
+      status: Stato
+      title: Name
+      assignee: Referente
+`
 
 func TestGetJSONPrintsAStableSchema(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
