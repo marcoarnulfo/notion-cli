@@ -217,12 +217,16 @@ dev'essere tipizzato per questo motivo.
   "ticket": "BDF-1",
   "title": "Hardening",
   "status": "In corso",
-  "assignee": "Mirko Spinato",
   "page_id": "…",
   "url": "…",
-  "last_edited_time": "2026-07-27T…"
+  "last_edited_time": "2026-07-27T…",
+  "assignee": "Mirko Spinato"
 }
 ```
+
+La chiave nuova va **in coda** allo struct, non in mezzo: l'ordine delle chiavi non fa
+parte del contratto, ma spostare quelle esistenti cambierebbe l'output indentato di ogni
+comando per nessun motivo.
 
 Una **stringa**, sempre presente, vuota quando la riga non ha referente o il ruolo non è
 mappato — esattamente la regola già documentata per gli altri campi
@@ -305,9 +309,12 @@ generico per qualunque futuro svuotamento.
 
 ```
 $ notion-track set --ticket BDF-1 --unassign --dry-run
-would update BDF-1
-  clear Referente
+would update page1
+  clear                Referente
 ```
+
+Il padding è quello che `emitPlan` usa già per le altre righe (`%-20s %s`): le colonne di
+un piano devono incolonnarsi, che si stia scrivendo o svuotando.
 
 ---
 
@@ -415,13 +422,23 @@ parziale e che `me` è riservato.
 | `--assignee ""` | `ErrEmptyAssignee` | 2 `ExitUsage` |
 | `me` senza `me:` né env | `ErrNoIdentity` | 2 `ExitUsage` |
 | `--assignee` + `--unassign` | `ErrConflictingAssignee` | 2 `ExitUsage` |
-| ruolo non mappato, valore passato | messaggio esistente di `add()` | 2 `ExitUsage` |
-| colonna mappata ma sparita da Notion | messaggio esistente di `BuildProperties` | 2 `ExitUsage` |
+| `--assignee` + `--unassigned` su `list` | `ErrConflictingListFilter` | 2 `ExitUsage` |
+| ruolo non mappato, valore passato | messaggio esistente di `add()`, non tipizzato | 1 `ExitError` |
+| colonna mappata ma sparita da Notion | messaggio esistente di `BuildProperties`, non tipizzato | 1 `ExitError` |
 
-Tutti tipizzati, mai identificati per prefisso di messaggio, e ognuno con una riga in
-`exitCodeFor` (`internal/cli/output.go:47`) o coperto da un tipo che ne ha già una. Nessuna
-nuova classe di exit code: questa feature non introduce fallimenti che l'utente non possa
-correggere riscrivendo il comando.
+Le prime sei sono tipizzate, mai identificate per prefisso di messaggio, e ognuna ha una
+riga in `exitCodeFor` (`internal/cli/output.go:47`) o è coperta da un tipo che ne ha già
+una. Questo non è un dettaglio di eleganza: `apply` e il server MCP non passano da cobra,
+e un errore non tipizzato è indistinguibile da un guasto qualsiasi quando esce da lì.
+
+Le ultime due escono **1**, non 2, e la scelta è deliberata. Quei due messaggi esistono già
+oggi per i ruoli `ticket`, `status`, `title` e `due`, non sono tipizzati, e cadono nel
+generico `ExitError`. Tipizzarli per `assignee` significherebbe o cambiare l'exit code
+anche per `--due` su un profilo che non lo mappa — una regressione silenziosa per chi ha
+script che distinguono 1 da 2, e il primo non-goal di questo documento dice il contrario —
+oppure trattare `assignee` diversamente dagli altri quattro ruoli per la stessa identica
+condizione. Nessuna delle due vale il guadagno. Restano 1, e i test lo asseriscono
+esplicitamente perché sia una scelta e non una svista.
 
 I messaggi seguono la forma già in uso nel repo: cosa è successo, poi `fix:` con il comando
 esatto da eseguire.
@@ -510,7 +527,8 @@ Se un domani i tre diventassero membri veri del workspace e la board passasse a 
 | ~~`internal/cli/set.go`~~ | **invariato**: usa `writeFlags.bindWithPageID` e `wf.fields()`, che ereditano i nuovi flag da `bindShared` |
 | `internal/cli/list.go` | `--assignee`, `--unassigned`, colonna in coda |
 | `internal/cli/get.go` | `pageJSON.Assignee`, riga umana |
-| `internal/cli/output.go` | `exitCodeFor` per i nuovi tipi, `emitPlan` per `Cleared` |
+| `internal/cli/output.go` | `exitCodeFor` per i nuovi tipi |
+| `internal/cli/body.go` | `emitPlan` stampa le colonne di `Cleared` |
 | `internal/cli/init.go` | `--assignee-prop`, `--me`, `configFlags`, `validateMapping` |
 | `internal/cli/apply.go` | `Fields` dall'entry |
 | `internal/cli/mcp.go` | conversioni dirette invece di copie campo per campo |

@@ -49,6 +49,9 @@ func TestResolveMeFromEnv(t *testing.T) {
 	}
 
 	t.Run("the file value is used when the env is unset", func(t *testing.T) {
+		// Explicitly unset, not merely "not set here": whoever runs the suite
+		// may well have exported it — the README tells them to.
+		t.Setenv(MeEnv, "")
 		p, err := cfg.Resolve("")
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
@@ -220,7 +223,7 @@ func TestResolveOptionAmbiguous(t *testing.T) {
 	// The message must name every candidate: telling the user it is ambiguous
 	// without saying between what leaves them guessing.
 	for _, want := range []string{"Andrea Ghidara", "Marco Arnulfo"} {
-		if !contains(ambiguous.Error(), want) {
+		if !strings.Contains(ambiguous.Error(), want) {
 			t.Errorf("Error() = %q, want it to name %q", ambiguous.Error(), want)
 		}
 	}
@@ -254,21 +257,9 @@ func TestResolveOptionEdgeCases(t *testing.T) {
 		}
 	})
 }
-
-func contains(haystack, needle string) bool {
-	return len(haystack) >= len(needle) && (haystack == needle ||
-		len(needle) == 0 || indexOf(haystack, needle) >= 0)
-}
-
-func indexOf(haystack, needle string) int {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return i
-		}
-	}
-	return -1
-}
 ```
+
+Import del file di test: `errors`, `strings`, `testing`.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -552,7 +543,7 @@ func TestBuildPropertiesAssignee(t *testing.T) {
 }
 ```
 
-Verificare che `errors`, `reflect`, `config` e `notion` siano importati nel file di test (lo sono già per i test esistenti, tranne eventualmente `errors`).
+Import da verificare nel file di test: `errors` e `reflect` mancano entrambi oggi; `config` e `notion` ci sono già.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -842,9 +833,11 @@ func TestAndFilter(t *testing.T) {
 }
 ```
 
+Import da aggiungere al file di test: `reflect`.
+
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./internal/notion/ -run "TestIsEmptyFilter|TestAndFilter" -v`
+Run: `go test ./internal/notion/ -run 'TestIsEmptyFilter|TestAndFilter' -v`
 Expected: FAIL, non compila — `undefined: IsEmptyFilter`, `undefined: AndFilter`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1069,7 +1062,7 @@ Nota su `--assignee ""`: la stringa vuota non arriva mai qui come "svuota" (§4 
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./internal/service/ -run "TestUpsertResolvesAssignee|TestResolveAssignee" -v`
+Run: `go test ./internal/service/ -run 'Assignee' -v`
 Expected: FAIL, non compila — `svc.resolveAssignee undefined`, `undefined: ErrNoIdentity`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1150,9 +1143,9 @@ In `Upsert`, dopo `if f.Ticket == "" { … }`:
 	}
 ```
 
-(attenzione: `Upsert` dichiara più avanti `matches, err := …`; con `err` già dichiarato qui, quella riga diventa `matches, err = …`. Stessa cura in `Set`.)
+Le righe che seguono restano invariate: `matches, err := s.findByTicket(...)` è ancora legale con `err` già dichiarato, perché `matches` è una variabile nuova e Go richiede solo che ce ne sia almeno una. Non convertirla in `=`, o `matches` risulta non dichiarata.
 
-In `Set`, nello stesso punto. In `SetByID`, come prima istruzione del corpo.
+In `Set`, nello stesso punto. In `SetByID`, come prima istruzione del corpo (è il terzo percorso di scrittura, e l'unico che non passa mai da una ricerca per ticket: è quello che una modifica frettolosa dimentica).
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1171,8 +1164,10 @@ git commit -m "feat(service): resolve the assignee before every write, including
 ### Task 8: Il dry-run dice anche cosa svuota
 
 **Files:**
-- Modify: `internal/service/plan.go:16-57`, `internal/service/service.go` (le tre chiamate a `planFor`), `internal/cli/body.go:86-110` (`emitPlan`)
-- Test: `internal/service/plan_test.go`, `internal/cli/upsert_test.go`
+- Modify: `internal/service/plan.go:16-57`, `internal/cli/body.go:86-110` (`emitPlan`)
+- Test: `internal/service/plan_test.go`
+
+Le tre chiamate a `planFor` in `service.go` non cambiano: la firma resta la stessa, e `props`/`f` che già riceve bastano per entrambe le aggiunte.
 
 **Interfaces:**
 - Produces: `Plan.Cleared []string` con tag `json:"cleared,omitempty"`; `planFor` guadagna il parametro `props config.Properties` già presente e usa `f.Unassign`.
@@ -1221,29 +1216,9 @@ func TestPlanForAssignee(t *testing.T) {
 }
 ```
 
-E in `internal/cli/upsert_test.go`, il caso end-to-end (usa `stubForAssignee` e `assigneeProfile`, introdotti nel Task 10 — se questo task viene eseguito prima, portarsi avanti solo le fixture, non i flag):
+Nessun test CLI in questo task: il flag `--unassign` non esiste ancora (nasce nel Task 10), quindi un test che lo invoca qui fallirebbe con `unknown flag` qualunque cosa faccia l'implementazione. Il caso end-to-end del dry-run vive nel Task 10, dove il flag esiste.
 
-```go
-func TestUnassignDryRunSaysWhatItWouldClear(t *testing.T) {
-	var written map[string]any
-	cfg := stubForAssignee(t, assigneeProfile, &written)
-
-	out := captureStdout(t, func() {
-		if code := executeArgs([]string{
-			"set", "--ticket", "BDF-231", "--unassign", "--dry-run", "--config", cfg,
-		}); code != ExitOK {
-			t.Fatalf("exit code = %d", code)
-		}
-	})
-
-	if !strings.Contains(out, "Referente") {
-		t.Errorf("output = %q, want it to name the column it would clear", out)
-	}
-	if written != nil {
-		t.Errorf("a dry run wrote %v", written)
-	}
-}
-```
+Import da aggiungere a `plan_test.go`: `config` (e `tracker`, se non c'è già).
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1262,7 +1237,19 @@ In `internal/service/plan.go`, aggiungere il campo a `Plan`:
 	Cleared []string `json:"cleared,omitempty"`
 ```
 
-E in `planFor`, prima del `return`:
+In `planFor`, aggiungere l'assignee alla slice dei valori che verrebbero scritti (`plan.go:44-49`) — senza questa riga `set --assignee X --dry-run` stampa un piano vuoto, che è lo stesso difetto di `--unassign` visto dall'altro lato:
+
+```go
+	for _, p := range []PlannedProperty{
+		{Column: props.Ticket, Value: f.Ticket},
+		{Column: props.Title, Value: f.Title},
+		{Column: props.Status, Value: f.Status},
+		{Column: props.Due, Value: f.Due},
+		{Column: props.Assignee, Value: f.Assignee},
+	} {
+```
+
+e, prima del `return`:
 
 ```go
 	if f.Unassign && props.Assignee != "" {
@@ -1280,13 +1267,13 @@ In `internal/cli/body.go`, dentro `emitPlan`, dopo il ciclo su `plan.Properties`
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `go test ./internal/service/ ./internal/cli/ -v`
-Expected: PASS.
+Run: `go test ./internal/service/ -run TestPlanForAssignee -v && go test ./... `
+Expected: PASS. `emitPlan` non ha test propri che cambino: la riga nuova stampa solo quando `Cleared` non è vuoto, e nessun test esistente produce un piano con quel campo.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/service/plan.go internal/service/plan_test.go internal/cli/body.go internal/cli/upsert_test.go
+git add internal/service/plan.go internal/service/plan_test.go internal/cli/body.go
 git commit -m "feat(service): report cleared columns in the dry-run plan"
 ```
 
@@ -1498,7 +1485,14 @@ func (s *Service) List(ctx context.Context, f ListFilter) ([]notion.Page, error)
 }
 ```
 
-Aggiornare i chiamanti perché il pacchetto compili: `internal/cli/list.go` (`svc.List(cmd.Context(), ListFilter{Status: status})` in via provvisoria, il Task 12 aggiunge i flag), `internal/cli/mcp.go:80`, e l'adapter usato da `internal/cli/browse.go`. Cercarli con `grep -rn "\.List(" internal/`.
+Aggiornare **tutti e quattro** i chiamanti, o il pacchetto non compila (elenco verificato con `grep -rn "\.List(" internal/`):
+
+| Chiamante | Come diventa |
+|---|---|
+| `internal/cli/list.go:28` | `svc.List(cmd.Context(), service.ListFilter{Status: status})` — provvisorio, il Task 12 aggiunge i flag |
+| `internal/cli/mcp.go:80` | `a.svc.List(ctx, service.ListFilter{Status: status})` — provvisorio, il Task 17 cambia la firma dell'adapter |
+| `internal/cli/browse.go:48` | idem; la firma di `boardAdapter.List` resta `(status string)`, quindi `browse_test.go` non si tocca |
+| `internal/service/service_test.go:358` | `s.List(ctx, ListFilter{Status: "In corso"})` — **test esistente**, si romperebbe in silenzio |
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1518,7 +1512,8 @@ git commit -m "feat(service): filter listings by assignee, or by having none"
 
 **Files:**
 - Modify: `internal/cli/upsert.go:9-78` (`writeFlags`, `bindShared`, `fields`), `internal/cli/output.go:47-123` (`exitCodeFor`)
-- Test: `internal/cli/upsert_test.go`
+- Test: `internal/cli/get_test.go:71-80` (le fixture condivise dello Step 1), `internal/cli/upsert_test.go`
+- **Non** modificare `internal/cli/set.go`: eredita tutto da `bindShared`.
 
 **Interfaces:**
 - Produces: `--assignee`, `--unassign` su `upsert` e `set` (quest'ultimo li eredita da `bindShared` senza modifiche a `set.go`).
@@ -1576,8 +1571,15 @@ Il test, in `internal/cli/upsert_test.go`:
 ```go
 // stubForAssignee answers schema, query and write, keeping the properties
 // payload of the write so a test can assert on what reached Notion.
+//
+// NOTION_TRACK_ME is cleared deliberately: config.Resolve lets it override the
+// profile, so a developer who followed the README and exported it would
+// otherwise have their own identity leak into every test here — and the one
+// test that asserts "me" is *not* configured would silently pass for the wrong
+// reason.
 func stubForAssignee(t *testing.T, profile string, written *map[string]any) string {
 	t.Helper()
+	t.Setenv(config.MeEnv, "")
 	return withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/v1/data_sources/ds1":
@@ -1673,11 +1675,60 @@ func TestAssigneeUsageErrorsAllExitTwo(t *testing.T) {
 }
 ```
 
-`json` va aggiunto agli import del file di test se non c'è già. Il test `me with no identity` non deve esportare `NOTION_TRACK_ME`: `withStubbedAPIProfile` usa `t.Setenv` solo per il token, quindi l'ambiente resta pulito fra i sottotest.
+Poi il caso che esce **1** e non 2, asserito perché sia una scelta e non una svista (spec §11, ultime due righe):
+
+```go
+func TestAssigneeOnAnUnmappedRoleExitsOne(t *testing.T) {
+	// Not ExitUsage: the "role not mapped" message is the same untyped one the
+	// other four roles have always produced, and typing it for assignee alone
+	// would either change --due's exit code too or treat one role differently
+	// from the rest for the identical condition. Both are worse than a 1.
+	t.Setenv(config.MeEnv, "")
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(cliSchemaJSON))
+			return
+		}
+		w.Write([]byte(`{"results":[` + cliRowJSON + `],"has_more":false}`))
+	})
+
+	if code := executeArgs([]string{
+		"set", "--ticket", "BDF-231", "--assignee", "mirko", "--config", cfg,
+	}); code != ExitError {
+		t.Fatalf("exit code = %d, want %d (ExitError)", code, ExitError)
+	}
+}
+```
+
+E il caso end-to-end del dry-run, che vive qui perché è qui che nasce `--unassign`:
+
+```go
+func TestUnassignDryRunSaysWhatItWouldClear(t *testing.T) {
+	var written map[string]any
+	cfg := stubForAssignee(t, assigneeProfile, &written)
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{
+			"set", "--ticket", "BDF-231", "--unassign", "--dry-run", "--config", cfg,
+		}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+
+	if !strings.Contains(out, "Referente") {
+		t.Errorf("output = %q, want it to name the column it would clear", out)
+	}
+	if written != nil {
+		t.Errorf("a dry run wrote %v", written)
+	}
+}
+```
+
+Import da aggiungere al file di test: `encoding/json`, `strings`, e `config` per `config.MeEnv`.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./internal/cli/ -run TestSetAssigneeFlags -v`
+Run: `go test ./internal/cli/ -run 'Assignee|Unassign' -v`
 Expected: FAIL — `unknown flag: --assignee`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1710,13 +1761,21 @@ func (wf *writeFlags) fields() tracker.Fields {
 }
 ```
 
-Il rifiuto di `--assignee ""` va dove cobra sa che il flag è stato passato. In `bindShared` non c'è accesso al `cmd` in fase di run, quindi si aggiunge un `PreRunE` condiviso — oppure, più semplice e coerente con `--page-id`, un controllo in cima al `RunE` di `upsert` e `set`:
+Il rifiuto di `--assignee ""` va dove cobra sa che il flag è stato **passato** — `MarkFlagRequired` e le regole dei gruppi verificano che ci sia, mai che porti un valore. Va registrato in `bindShared`, che riceve `cmd` ed è l'unico punto attraversato sia da `upsert` sia da `set`: così `set.go` resta invariato, come lo spec §15 dichiara.
 
 ```go
-			if cmd.Flags().Changed("assignee") && wf.assignee == "" {
-				return service.ErrEmptyAssignee
-			}
+	// A PreRunE rather than a check inside each RunE: bindShared is the one
+	// place both write commands pass through, and duplicating the guard is how
+	// one of the two eventually loses it.
+	cmd.PreRunE = func(cmd *cobra.Command, _ []string) error {
+		if cmd.Flags().Changed("assignee") && wf.assignee == "" {
+			return service.ErrEmptyAssignee
+		}
+		return nil
+	}
 ```
+
+Verificare, prima di scrivere: nessuno dei due comandi definisce già un `PreRunE` (oggi non lo fa nessuno) — se in futuro ne comparisse uno, questo lo sovrascriverebbe in silenzio.
 
 In `internal/cli/output.go`, dentro `exitCodeFor`: aggiungere `ambiguous` al blocco `var (…)` che dichiara `dup`, `invalid` e `apiErr` (`:58-62`),
 
@@ -1859,7 +1918,7 @@ func TestGetHumanOutputIsUnchangedWithoutTheRole(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./internal/cli/ -run TestGetAssignee -v`
+Run: `go test ./internal/cli/ -run 'TestGetJSON|TestGetHumanOutput' -v`
 Expected: FAIL — la chiave `assignee` non esiste nel JSON.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -2032,7 +2091,7 @@ Il valore atteso dell'ultimo test va copiato da ciò che il comando stampa oggi,
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./internal/cli/ -run TestListAssignee -v`
+Run: `go test ./internal/cli/ -run 'TestList' -v`
 Expected: FAIL — `unknown flag: --assignee`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -2105,6 +2164,8 @@ E i flag:
 	cmd.MarkFlagsMutuallyExclusive("assignee", "unassigned")
 ```
 
+`internal/cli/list.go` importa oggi solo `cobra`: aggiungere `internal/service` per il tipo `ListFilter`.
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `go test ./internal/cli/ -v`
@@ -2133,9 +2194,15 @@ git commit -m "feat(cli): filter and display the assignee in list"
 ```go
 // initArgs is the flag form of init for the shared fixture board, with
 // whatever the test adds on top.
+//
+// --profile work is not decoration: withStubbedAPI writes a config whose
+// default_profile is already "work", and saveInitProfile writes to "default"
+// when no profile is named, leaving default_profile untouched because it is not
+// empty. Without this, the test reads back the OLD profile and fails against a
+// perfectly correct implementation.
 func initArgs(cfg string, extra ...string) []string {
 	args := []string{
-		"init", "--data-source-id", "ds1",
+		"init", "--data-source-id", "ds1", "--profile", "work",
 		"--ticket-prop", "Ticket", "--status-prop", "Stato", "--title-prop", "Name",
 	}
 	args = append(args, extra...)
@@ -2143,8 +2210,13 @@ func initArgs(cfg string, extra ...string) []string {
 }
 
 // writtenProfile reads back the profile init just wrote.
+//
+// The env is cleared first: Resolve applies NOTION_TRACK_ME over whatever the
+// file says, so without this the assertion on Me would read the developer's
+// shell instead of the file under test.
 func writtenProfile(t *testing.T, path string) config.Profile {
 	t.Helper()
+	t.Setenv(config.MeEnv, "")
 	cfg, err := config.LoadFrom(path)
 	if err != nil {
 		t.Fatalf("reading back the config: %v", err)
@@ -2249,7 +2321,7 @@ Nota: `--me` va risolto contro le opzioni **del profilo che si sta scrivendo**, 
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./internal/cli/ -run "TestInitAssigneeProp|TestInitMe" -v`
+Run: `go test ./internal/cli/ -run 'TestInit|TestAssigneeFlagsAreConfigFlags' -v`
 Expected: FAIL — `unknown flag: --assignee-prop`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -2263,12 +2335,26 @@ var configFlags = []string{
 }
 ```
 
-I due flag:
+Le due variabili, nel blocco `var (…)` del comando (`init.go:256-264`), e i due flag:
 
 ```go
+	var (
+		databaseID   string
+		dataSourceID string
+		ticketProp   string
+		statusProp   string
+		titleProp    string
+		dueProp      string
+		assigneeProp string
+		me           string
+		list         bool
+	)
+
 	cmd.Flags().StringVar(&assigneeProp, "assignee-prop", "", "select property holding the assignee (optional)")
 	cmd.Flags().StringVar(&me, "me", "", "the assignee value '--assignee me' stands for (optional)")
 ```
+
+`internal/cli/init.go` va importato `internal/tracker` per `ResolveOption`.
 
 `validateMapping` guadagna il parametro e il controllo:
 
@@ -2382,9 +2468,10 @@ func TestDoctorWarnsWhenTheIdentityNoLongerResolves(t *testing.T) {
 	}
 }
 
-func TestDoctorAcceptsAResolvableIdentity(t *testing.T) {
+func TestDoctorAcceptsAnIdentityFromTheEnvironment(t *testing.T) {
 	srv := doctorRoutes(t)
 	defer srv.Close()
+	t.Setenv(config.MeEnv, "mirko")
 
 	checks := New(notion.New("t", notion.WithBaseURL(srv.URL)), assigneeProfile("mirko")).
 		Doctor(context.Background())
@@ -2400,11 +2487,35 @@ func TestDoctorAcceptsAResolvableIdentity(t *testing.T) {
 		t.Errorf("detail = %q, want it to name who me resolves to", check.Detail)
 	}
 }
+
+func TestDoctorWarnsWhenTheIdentityLivesOnlyInTheSharedConfig(t *testing.T) {
+	// The failure this catches is silent by nature: everything resolves, and
+	// every teammate assigns work to whoever ran init.
+	srv := doctorRoutes(t)
+	defer srv.Close()
+	t.Setenv(config.MeEnv, "")
+
+	checks := New(notion.New("t", notion.WithBaseURL(srv.URL)), assigneeProfile("mirko")).
+		Doctor(context.Background())
+
+	check, ok := findCheck(checks, "assignee")
+	if !ok {
+		t.Fatal("no assignee check")
+	}
+	if check.Status != "warn" {
+		t.Errorf("assignee = %s (%s), want warn", check.Status, check.Detail)
+	}
+	if !strings.Contains(check.Detail, config.MeEnv) {
+		t.Errorf("detail = %q, want it to point at the environment variable", check.Detail)
+	}
+}
 ```
+
+Nota: `TestDoctorWarnsWhenTheIdentityNoLongerResolves` va anch'esso preceduto da `t.Setenv(config.MeEnv, "")`, così l'ambiente di chi lancia i test non ne cambia l'esito. Import da aggiungere a `doctor.go`: `os`, `config`, `tracker`.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./internal/service/ -run TestDoctorAssignee -v`
+Run: `go test ./internal/service/ -run TestDoctor -v`
 Expected: FAIL — nessun check chiamato `assignee`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -2446,9 +2557,9 @@ E, in `Doctor`, dopo `checkProperties` (dentro il ramo in cui lo schema è stato
 con:
 
 ```go
-// checkAssignee verifies that the configured identity still names an option
-// the column offers. An option renamed in Notion turns every "--assignee me"
-// into a runtime failure, and this is the place to find that out first.
+// checkAssignee verifies that the configured identity still names an option the
+// column offers. An option renamed in Notion turns every "--assignee me" into a
+// runtime failure, and this is the place to find that out first.
 func (s *Service) checkAssignee(schema *notion.Schema) Check {
 	if s.profile.Me == "" {
 		return Check{"assignee", "ok", "mapped; no identity configured (--assignee me is unavailable)"}
@@ -2460,6 +2571,19 @@ func (s *Service) checkAssignee(schema *notion.Schema) Check {
 			"the configured identity %q no longer resolves: %v\n"+
 				"  fix: export %s=<name>, or rerun 'notion-track init --me <name>'",
 			s.profile.Me, err, config.MeEnv)}
+	}
+
+	// The identity resolves — but where did it come from? config.yml is meant
+	// to be committed and shared, so an identity that lives only in the file is
+	// every teammate's identity: theirs resolves to whoever ran init, and their
+	// "--assignee me" quietly assigns work to that person. os.Getenv rather
+	// than the profile field, because Resolve has already folded the override
+	// in and the two are indistinguishable by then.
+	if os.Getenv(config.MeEnv) == "" {
+		return Check{"assignee", "warn", fmt.Sprintf(
+			"--assignee me resolves to %s, from the config file rather than the environment\n"+
+				"  fix: export %s=<name>; a shared config gives everyone the same identity",
+			resolved, config.MeEnv)}
 	}
 	return Check{"assignee", "ok", "--assignee me resolves to " + resolved}
 }
@@ -2687,6 +2811,48 @@ In `assign`:
 
 (aggiungere `"strconv"` agli import).
 
+E in `parseJSON` (`manifest.go:74-78`), che oggi rifiuta ogni valore non-stringa: un `unassign` in JSON si scrive `true`, non `"true"`, e rifiutare la forma naturale del formato sarebbe una trappola gratuita. Il resto dei campi resta come prima — un `title` booleano è ancora un errore.
+
+```go
+			for key, value := range obj {
+				text, ok := value.(string)
+				if !ok {
+					// JSON has a boolean; unassign is the one field where using
+					// it is the obvious thing to write.
+					if b, isBool := value.(bool); isBool && key == "unassign" {
+						text = strconv.FormatBool(b)
+					} else {
+						return nil, fmt.Errorf("entry %d: %q must be a string", i+1, key)
+					}
+				}
+				if err := assign(&entry, key, text); err != nil {
+					return nil, fmt.Errorf("entry %d: %w", i+1, err)
+				}
+			}
+```
+
+Il test JSON dello Step 1 va allora esteso con la forma booleana:
+
+```go
+	t.Run("json accepts a real boolean for unassign", func(t *testing.T) {
+		data := []byte(`[{"op":"set","ticket":"BDF-2","unassign":true}]`)
+		entries, err := Parse("tasks.json", data)
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if !entries[0].Unassign {
+			t.Error("Unassign = false, want true")
+		}
+	})
+
+	t.Run("a boolean anywhere else is still an error", func(t *testing.T) {
+		data := []byte(`[{"op":"set","ticket":"BDF-2","title":true}]`)
+		if _, err := Parse("tasks.json", data); err == nil {
+			t.Fatal("Parse = nil error, want the non-string check to still bite")
+		}
+	})
+```
+
 In `internal/cli/apply.go`, estendere la costruzione dei campi:
 
 ```go
@@ -2697,6 +2863,54 @@ In `internal/cli/apply.go`, estendere la costruzione dei campi:
 ```
 
 E aggiornare `applyExample` (`internal/cli/apply.go:39-48`) perché mostri le nuove colonne.
+
+Infine i due test end-to-end, in `internal/cli/apply_test.go`, sul percorso che non passa da cobra — che è la ragione per cui `ErrConflictingAssignee` è un tipo e non un messaggio:
+
+```go
+func TestApplyWritesTheAssignee(t *testing.T) {
+	var written map[string]any
+	cfg := stubForAssignee(t, assigneeProfile, &written)
+
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "tasks.csv")
+	os.WriteFile(manifestPath, []byte("op,ticket,unassign\nset,BDF-231,true\n"), 0o600)
+
+	captureStdout(t, func() {
+		if code := executeArgs([]string{
+			"apply", "--file", manifestPath, "--config", cfg,
+		}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+
+	got, _ := json.Marshal(written["Referente"])
+	if want := `{"select":null}`; string(got) != want {
+		t.Errorf("Referente = %s, want %s", got, want)
+	}
+}
+
+func TestApplyRejectsSettingAndClearingTheSameEntry(t *testing.T) {
+	var written map[string]any
+	cfg := stubForAssignee(t, assigneeProfile, &written)
+
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "tasks.csv")
+	os.WriteFile(manifestPath, []byte("op,ticket,assignee,unassign\nset,BDF-231,mirko,true\n"), 0o600)
+
+	captureStdout(t, func() {
+		// Exit 2, not 1: apply never touches cobra, so the typed error is the
+		// only thing carrying the usage verdict out of the domain layer.
+		if code := executeArgs([]string{
+			"apply", "--file", manifestPath, "--config", cfg,
+		}); code != ExitUsage {
+			t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+		}
+	})
+	if written != nil {
+		t.Errorf("a rejected entry still wrote %v", written)
+	}
+}
+```
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -2723,7 +2937,15 @@ git commit -m "feat(manifest): carry the assignee and unassign through apply"
 
 - [ ] **Step 1: Write the failing test**
 
-Prima adeguare il fake: in `internal/mcp/server_test.go`, `fakeTracker.listed` passa da `[]string` a `[]ListFilter`, e la firma di `List` cambia di conseguenza (`:24`, `:51-57`). Il test esistente `TestListToolPassesTheStatusFilter` (`:212`) va aggiornato a `tracker.listed[0].Status != "Fatto"`, e `testRow()` guadagna `Assignee: "Mirko Spinato"`.
+Prima adeguare il fake e i test che si rompono. In `internal/mcp/server_test.go`: `fakeTracker.listed` passa da `[]string` a `[]ListFilter` (`:24`) e la firma di `List` cambia di conseguenza (`:51-57`); `testRow()` guadagna `Assignee: "Mirko Spinato"` (`:59-65`).
+
+Tre test esistenti vanno aggiornati insieme, altrimenti il pacchetto non compila:
+
+| Test | Come diventa |
+|---|---|
+| `internal/mcp/server_test.go:212` `TestListToolPassesTheStatusFilter` | `tracker.listed[0].Status != "Fatto"` |
+| `internal/mcp/server_test.go:233` `TestListToolWithNoFilterAsksForEverything` | `tracker.listed[0] != (ListFilter{})` |
+| `internal/cli/mcp_test.go:62` | `adapter.List(context.Background(), mcp.ListFilter{})` |
 
 Poi:
 
@@ -2816,7 +3038,7 @@ func TestTheMCPConversionsStayDirect(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./internal/mcp/ ./internal/cli/ -run "TestMCPAssignee|TestRowConverts" -v`
+Run: `go test ./internal/mcp/ ./internal/cli/ -run 'Assignee|Unassign|TestTheMCPConversions' -v`
 Expected: FAIL — i campi non esistono; `tracker.Fields(f)` non compila.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -2993,12 +3215,21 @@ git commit -m "docs: document the assignee role across the READMEs and the skill
 ```
 1 config
 ├── 2 ResolveOption ──┐
-├── 3 ValidateOption ─┼── 4 payload ── 7 service.resolveAssignee ── 8 dry-run
-├── 5 GuessMapping    │                └── 9 ListFilter ── 12 list
-└── 6 filtri ─────────┘                                    10 flag scrittura
-                                                           11 get/json
-                                        13 init ── 14 doctor ── 15 wizard
-                                        16 manifest ── 17 mcp ── 18 docs
+├── 3 ValidateOption ─┼── 4 payload ── 7 resolveAssignee ── 8 dry-run
+├── 5 GuessMapping    │                └── 9 ListFilter
+└── 6 filtri ─────────┘
+
+10 flag di scrittura  (introduce le fixture CLI condivise)
+├── 11 get/json
+├── 12 list
+├── 13 init ── 14 doctor
+└── 16 manifest
+
+15 wizard      (indipendente da tutto tranne il Task 1)
+17 mcp         (dipende da 9 e 11)
+18 docs        (ultimo, sempre)
 ```
 
-I task 1-9 vanno in ordine. Dal 10 in poi, 10/11/12 dipendono da 7 e 9 ma non fra loro; 13/14/15 e 16/17 sono indipendenti fra loro. Il 18 è l'ultimo, sempre.
+**I task 1-10 vanno in ordine stretto.** Dal 10 in poi la struttura si apre, con un vincolo che non è negoziabile: **10 viene prima di 11, 12, 13 e 16**, perché il suo Step 1 introduce le fixture CLI condivise (`cliSchemaJSON`/`cliRowJSON` estese, `assigneeProfile`, `assigneeProfileNoIdentity`, `stubForAssignee`) che i test di quei task usano. Eseguirli in parallelo con il 10 significa non compilare.
+
+Fra loro, 11/12/13/16 sono indipendenti; 14 segue il 13 solo per comodità di lettura (usa `assigneeProfile` del pacchetto `service`, introdotta nel Task 7, non le fixture CLI). Il 15 dipende solo dal Task 1. Il 17 ha bisogno di `ListFilter` (9) e del campo in `pageJSON` (11).
