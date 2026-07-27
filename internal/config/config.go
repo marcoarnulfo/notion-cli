@@ -28,6 +28,12 @@ const (
 	ProfileEnv    = "NOTION_TRACK_PROFILE"
 	DatabaseEnv   = "NOTION_TRACK_DB"
 	DataSourceEnv = "NOTION_TRACK_DATA_SOURCE"
+	// MeEnv names the person "--assignee me" stands for. It is an environment
+	// variable first and a profile field second on purpose: config.yml is meant
+	// to be committed and shared (see Credentials), so an identity stored there
+	// would be everyone's identity — and would silently assign tasks to whoever
+	// committed the file.
+	MeEnv = "NOTION_TRACK_ME"
 )
 
 // Properties maps notion-track's concepts onto real property names.
@@ -37,6 +43,9 @@ type Properties struct {
 	Status string `yaml:"status"`
 	Title  string `yaml:"title"`
 	Due    string `yaml:"due,omitempty"`
+	// Assignee is the column naming who a row belongs to. Optional: a board
+	// that tracks nobody in particular simply leaves it unmapped.
+	Assignee string `yaml:"assignee,omitempty"`
 }
 
 // Profile is one configured data source.
@@ -48,6 +57,9 @@ type Profile struct {
 	// more importantly, how strict validation has to be: a select silently
 	// creates unknown options, a status rejects them.
 	StatusType string `yaml:"status_type"`
+	// Me is the assignee value "--assignee me" resolves to, overridden by
+	// MeEnv. Optional.
+	Me string `yaml:"me,omitempty"`
 }
 
 // Config is the whole file.
@@ -154,6 +166,9 @@ func (c *Config) Resolve(name string) (Profile, error) {
 	}
 	if v := os.Getenv(DataSourceEnv); v != "" {
 		p.DataSourceID = v
+	}
+	if v := os.Getenv(MeEnv); v != "" {
+		p.Me = v
 	}
 	return p, nil
 }

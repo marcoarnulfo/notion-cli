@@ -437,3 +437,54 @@ func TestResolvePrecedence(t *testing.T) {
 		}
 	})
 }
+
+func TestResolveMeFromEnv(t *testing.T) {
+	cfg := &Config{
+		DefaultProfile: "default",
+		Profiles: map[string]Profile{
+			"default": {
+				DataSourceID: "ds1",
+				Me:           "Marco Arnulfo",
+				Properties:   Properties{Ticket: "Nome task", Status: "Stato", Title: "Nome task", Assignee: "Referente"},
+			},
+		},
+	}
+
+	t.Run("the file value is used when the env is unset", func(t *testing.T) {
+		// Explicitly unset, not merely "not set here": whoever runs the suite
+		// may well have exported it — the README tells them to.
+		t.Setenv(MeEnv, "")
+		p, err := cfg.Resolve("")
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		if p.Me != "Marco Arnulfo" {
+			t.Errorf("Me = %q, want %q", p.Me, "Marco Arnulfo")
+		}
+		if p.Properties.Assignee != "Referente" {
+			t.Errorf("Assignee = %q, want %q", p.Properties.Assignee, "Referente")
+		}
+	})
+
+	t.Run("the env wins over the file", func(t *testing.T) {
+		t.Setenv(MeEnv, "Mirko Spinato")
+		p, err := cfg.Resolve("")
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		if p.Me != "Mirko Spinato" {
+			t.Errorf("Me = %q, want the env value", p.Me)
+		}
+	})
+
+	t.Run("an empty env does not blank the file value", func(t *testing.T) {
+		t.Setenv(MeEnv, "")
+		p, err := cfg.Resolve("")
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		if p.Me != "Marco Arnulfo" {
+			t.Errorf("Me = %q, want the file value to survive an empty env", p.Me)
+		}
+	})
+}
