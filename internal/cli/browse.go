@@ -45,7 +45,7 @@ type boardAdapter struct {
 }
 
 func (b boardAdapter) List(status string) ([]tui.Row, error) {
-	pages, err := b.svc.List(b.ctx, status)
+	pages, err := b.svc.List(b.ctx, service.ListFilter{Status: status})
 	if err != nil {
 		return nil, err
 	}

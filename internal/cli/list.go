@@ -2,6 +2,8 @@ package cli
 
 import (
 	"github.com/spf13/cobra"
+
+	"github.com/marcoarnulfo/notion-cli/internal/service"
 )
 
 // The merged column is exactly as wide as the two it replaces (20 + the
@@ -25,7 +27,7 @@ func newListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			pages, err := svc.List(cmd.Context(), status)
+			pages, err := svc.List(cmd.Context(), service.ListFilter{Status: status})
 			if err != nil {
 				return err
 			}

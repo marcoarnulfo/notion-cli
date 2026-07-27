@@ -77,7 +77,7 @@ func (a trackerAdapter) Get(ctx context.Context, ticket string) (mcp.Row, error)
 }
 
 func (a trackerAdapter) List(ctx context.Context, status string) ([]mcp.Row, error) {
-	pages, err := a.svc.List(ctx, status)
+	pages, err := a.svc.List(ctx, service.ListFilter{Status: status})
 	if err != nil {
 		return nil, err
 	}

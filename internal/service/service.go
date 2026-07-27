@@ -499,24 +499,71 @@ func (s *Service) SetByID(ctx context.Context, pageID string, f tracker.Fields, 
 	return s.withBody(ctx, updated, "updated", body)
 }
 
-// List returns rows, optionally filtered by status.
-func (s *Service) List(ctx context.Context, status string) ([]notion.Page, error) {
+// ListFilter is what List narrows on. Every field is optional; the zero value
+// returns every row.
+//
+// A struct rather than a growing parameter list: the CLI, the MCP server and
+// the browsing TUI all call List, and each new way to narrow a listing would
+// otherwise change three signatures.
+type ListFilter struct {
+	Status     string
+	Assignee   string
+	Unassigned bool
+}
+
+// ErrConflictingListFilter marks a listing narrowed both to somebody and to
+// nobody.
+var ErrConflictingListFilter = errors.New("cannot filter by assignee and by unassigned at the same time")
+
+// List returns rows matching f.
+func (s *Service) List(ctx context.Context, f ListFilter) ([]notion.Page, error) {
+	if f.Assignee != "" && f.Unassigned {
+		return nil, ErrConflictingListFilter
+	}
 	schema, err := s.Schema(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var filter notion.Filter
-	if status != "" {
+
+	var clauses []notion.Filter
+
+	if f.Status != "" {
 		name := s.profile.Properties.Status
 		prop, ok := schema.Properties[name]
 		if !ok {
 			return nil, fmt.Errorf(
 				"status property %q does not exist in the data source; run 'notion-track doctor'", name)
 		}
-		if err := tracker.ValidateStatus(status, prop.Options); err != nil {
+		if err := tracker.ValidateStatus(f.Status, prop.Options); err != nil {
 			return nil, err
 		}
-		filter = notion.EqualsFilter(name, prop.Type, status)
+		clauses = append(clauses, notion.EqualsFilter(name, prop.Type, f.Status))
 	}
-	return s.client.QueryPages(ctx, s.profile.DataSourceID, filter)
+
+	if f.Assignee != "" || f.Unassigned {
+		name := s.profile.Properties.Assignee
+		if name == "" {
+			return nil, fmt.Errorf(
+				"cannot filter by assignee: no assignee property is mapped; " +
+					"run 'notion-track init --assignee-prop <name>' to map it")
+		}
+		prop, ok := schema.Properties[name]
+		if !ok {
+			return nil, fmt.Errorf(
+				"assignee property %q does not exist in the data source; run 'notion-track doctor'", name)
+		}
+		if f.Unassigned {
+			clauses = append(clauses, notion.IsEmptyFilter(name, prop.Type))
+		} else {
+			// Reuse resolveAssignee so that "me" and partial names mean exactly
+			// the same thing when reading as when writing.
+			resolved, err := s.resolveAssignee(ctx, tracker.Fields{Assignee: f.Assignee})
+			if err != nil {
+				return nil, err
+			}
+			clauses = append(clauses, notion.EqualsFilter(name, prop.Type, resolved.Assignee))
+		}
+	}
+
+	return s.client.QueryPages(ctx, s.profile.DataSourceID, notion.AndFilter(clauses...))
 }

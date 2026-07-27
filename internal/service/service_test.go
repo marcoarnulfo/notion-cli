@@ -392,7 +392,7 @@ func TestListFiltersByStatus(t *testing.T) {
 	defer srv.Close()
 
 	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile())
-	got, err := s.List(context.Background(), "In corso")
+	got, err := s.List(context.Background(), ListFilter{Status: "In corso"})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -402,6 +402,112 @@ func TestListFiltersByStatus(t *testing.T) {
 	if gotFilter["property"] != "Stato" {
 		t.Fatalf("filter = %v", gotFilter)
 	}
+}
+
+// filterRoutes answers schema and query, keeping the raw filter of the last
+// query so a test can assert on the request rather than on canned rows.
+func filterRoutes(t *testing.T, sent *map[string]any) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/data_sources/ds1/query" {
+			var body struct {
+				Filter map[string]any `json:"filter"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decoding the query: %v", err)
+			}
+			*sent = body.Filter
+			w.Write([]byte(`{"results":[],"has_more":false}`))
+			return
+		}
+		w.Write([]byte(schemaJSON))
+	}))
+}
+
+func TestListFilters(t *testing.T) {
+	var sent map[string]any
+	srv := filterRoutes(t, &sent)
+	defer srv.Close()
+	client := notion.New("t", notion.WithBaseURL(srv.URL))
+	s := New(client, assigneeProfile("Marco Arnulfo"))
+	ctx := context.Background()
+
+	t.Run("no filter at all", func(t *testing.T) {
+		sent = nil
+		if _, err := s.List(ctx, ListFilter{}); err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if sent != nil {
+			t.Errorf("filter = %#v, want none so every row comes back", sent)
+		}
+	})
+
+	t.Run("status only is unchanged", func(t *testing.T) {
+		sent = nil
+		if _, err := s.List(ctx, ListFilter{Status: "Fatto"}); err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if sent["property"] != "Stato" {
+			t.Errorf("filter = %#v, want the plain status filter", sent)
+		}
+	})
+
+	t.Run("assignee compounds with status", func(t *testing.T) {
+		sent = nil
+		if _, err := s.List(ctx, ListFilter{Status: "Fatto", Assignee: "mirko"}); err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		clauses, ok := sent["and"].([]any)
+		if !ok || len(clauses) != 2 {
+			t.Fatalf("filter = %#v, want a compound of two", sent)
+		}
+	})
+
+	t.Run("a partial name is resolved before it is sent", func(t *testing.T) {
+		sent = nil
+		if _, err := s.List(ctx, ListFilter{Assignee: "mirko"}); err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		got := sent["select"].(map[string]any)["equals"]
+		if got != "Mirko Spinato" {
+			t.Errorf("filter value = %v, want the canonical option", got)
+		}
+	})
+
+	t.Run("me resolves in a filter too", func(t *testing.T) {
+		sent = nil
+		if _, err := s.List(ctx, ListFilter{Assignee: "me"}); err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		got := sent["select"].(map[string]any)["equals"]
+		if got != "Marco Arnulfo" {
+			t.Errorf("filter value = %v, want the configured identity", got)
+		}
+	})
+
+	t.Run("unassigned", func(t *testing.T) {
+		sent = nil
+		if _, err := s.List(ctx, ListFilter{Unassigned: true}); err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if got := sent["select"].(map[string]any)["is_empty"]; got != true {
+			t.Errorf("filter = %#v, want is_empty", sent)
+		}
+	})
+
+	t.Run("assignee and unassigned together is a conflict", func(t *testing.T) {
+		_, err := s.List(ctx, ListFilter{Assignee: "mirko", Unassigned: true})
+		if !errors.Is(err, ErrConflictingListFilter) {
+			t.Fatalf("error = %v, want ErrConflictingListFilter", err)
+		}
+	})
+
+	t.Run("filtering on an unmapped role fails clearly", func(t *testing.T) {
+		unmapped := New(client, testProfile())
+		if _, err := unmapped.List(ctx, ListFilter{Assignee: "mirko"}); err == nil {
+			t.Fatal("List = nil error, want a failure naming --assignee-prop")
+		}
+	})
 }
 
 // The schema is read once per Service, not once per call.
