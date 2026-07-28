@@ -296,6 +296,28 @@ func TestApplyWritesTheAssignee(t *testing.T) {
 	}
 }
 
+func TestApplyWritesThePriority(t *testing.T) {
+	var written map[string]any
+	cfg := stubForAssignee(t, assigneeProfile, &written)
+
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "tasks.csv")
+	os.WriteFile(manifestPath, []byte("op,ticket,priority\nset,BDF-231,alta\n"), 0o600)
+
+	captureStdout(t, func() {
+		if code := executeArgs([]string{
+			"apply", "--file", manifestPath, "--config", cfg,
+		}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+
+	got, _ := json.Marshal(written["Urgenza"])
+	if want := `{"select":{"name":"ALTA"}}`; string(got) != want {
+		t.Errorf("Urgenza = %s, want %s", got, want)
+	}
+}
+
 func TestApplyRejectsSettingAndClearingTheSameEntry(t *testing.T) {
 	var written map[string]any
 	cfg := stubForAssignee(t, assigneeProfile, &written)

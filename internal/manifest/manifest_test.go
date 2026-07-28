@@ -223,6 +223,37 @@ func TestManifestAssignee(t *testing.T) {
 	})
 }
 
+func TestManifestPriority(t *testing.T) {
+	t.Run("csv", func(t *testing.T) {
+		data := []byte("op,ticket,priority\nset,BDF-1,ALTA\n")
+		entries, err := Parse("tasks.csv", data)
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if entries[0].Priority != "ALTA" {
+			t.Errorf("Priority = %q", entries[0].Priority)
+		}
+	})
+
+	t.Run("json", func(t *testing.T) {
+		data := []byte(`[{"op":"set","ticket":"BDF-1","priority":"alta"}]`)
+		entries, err := Parse("tasks.json", data)
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if entries[0].Priority != "alta" {
+			t.Errorf("Priority = %q", entries[0].Priority)
+		}
+	})
+
+	t.Run("a typo in the column name is still an error", func(t *testing.T) {
+		data := []byte("op,ticket,prioriti\nset,BDF-1,ALTA\n")
+		if _, err := Parse("tasks.csv", data); err == nil {
+			t.Fatal("a typo must not be silently ignored")
+		}
+	})
+}
+
 func TestParseAcceptsAnEmptyManifest(t *testing.T) {
 	entries, err := Parse("m.json", []byte(`[]`))
 	if err != nil {

@@ -40,7 +40,8 @@ type Entry struct {
 	// Unassign clears the assignee. It is a string in the file and a bool here
 	// because CSV has no way to say "an explicitly empty list": "true"/"false"
 	// is the only form both formats can express identically.
-	Unassign bool `json:"unassign,omitempty"`
+	Unassign bool   `json:"unassign,omitempty"`
+	Priority string `json:"priority,omitempty"`
 
 	// Index is the entry's 1-based position, for error messages. It is not
 	// part of the file format.
@@ -50,7 +51,7 @@ type Entry struct {
 // fieldNames are the CSV columns and JSON keys an entry may carry. Anything
 // else is a typo: silently ignoring an unknown column is how "stuats" ends up
 // leaving every row's status unset with no warning.
-var fieldNames = []string{"op", "ticket", "title", "status", "due", "body_file", "assignee", "unassign"}
+var fieldNames = []string{"op", "ticket", "title", "status", "due", "body_file", "assignee", "unassign", "priority"}
 
 // Parse reads a manifest, choosing the format from path's extension.
 func Parse(path string, data []byte) ([]Entry, error) {
@@ -158,6 +159,8 @@ func assign(e *Entry, field, value string) error {
 			return fmt.Errorf("unassign must be true or false, got %q", value)
 		}
 		e.Unassign = parsed
+	case "priority":
+		e.Priority = value
 	default:
 		return fmt.Errorf("unknown field %q; known fields: %s", field, strings.Join(sorted(), ", "))
 	}

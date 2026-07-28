@@ -62,6 +62,7 @@ func testRow() Row {
 		PageID: "page1", URL: "https://notion.so/page1",
 		LastEditedTime: "2026-07-20T10:00:00Z",
 		Assignee:       "Mirko Spinato",
+		Priority:       "ALTA",
 	}
 }
 
@@ -327,5 +328,41 @@ func TestGetToolExposesTheAssignee(t *testing.T) {
 
 	if row.Assignee != "Mirko Spinato" {
 		t.Errorf("Assignee = %q, want %q", row.Assignee, "Mirko Spinato")
+	}
+}
+
+func TestUpsertToolCarriesThePriority(t *testing.T) {
+	tracker := &fakeTracker{row: testRow()}
+	session := connect(t, tracker)
+
+	call(t, session, "upsert_task", map[string]any{
+		"ticket": "BDF-231", "priority": "alta",
+	}, nil)
+
+	if len(tracker.upserted) != 1 || tracker.upserted[0].Priority != "alta" {
+		t.Fatalf("upsert calls = %v, want one carrying the priority", tracker.upserted)
+	}
+}
+
+func TestListToolFiltersByPriority(t *testing.T) {
+	tracker := &fakeTracker{rows: []Row{testRow()}}
+	session := connect(t, tracker)
+
+	call(t, session, "list_tasks", map[string]any{"priority": "ALTA"}, nil)
+
+	if len(tracker.listed) != 1 || tracker.listed[0].Priority != "ALTA" {
+		t.Fatalf("list calls = %v, want one filtered by priority", tracker.listed)
+	}
+}
+
+func TestGetToolExposesThePriority(t *testing.T) {
+	tracker := &fakeTracker{row: testRow()}
+	session := connect(t, tracker)
+
+	var row Row
+	call(t, session, "get_task", map[string]any{"ticket": "BDF-231"}, &row)
+
+	if row.Priority != "ALTA" {
+		t.Errorf("Priority = %q, want %q", row.Priority, "ALTA")
 	}
 }
