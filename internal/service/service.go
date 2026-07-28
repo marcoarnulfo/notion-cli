@@ -222,13 +222,35 @@ func (s *Service) findByTicket(ctx context.Context, key string) ([]notion.Page, 
 	return s.client.QueryPages(ctx, s.profile.DataSourceID, filter)
 }
 
-// resolveAssignee turns what the user typed into the exact option the column
-// carries, and turns "me" into the configured identity.
+// resolveOption turns what the user typed into the exact option a mapped
+// column carries. Shared by the roles that live on a select, so the schema
+// lookup and its two failure messages exist once rather than once per role.
 //
 // It runs in the service rather than inside BuildProperties because --dry-run
 // builds its plan from the same Fields (see planFor): resolving deeper would
 // make the plan print "mirko" while the write performs "Mirko Spinato" — a dry
 // run that does not describe the write it is describing.
+func (s *Service) resolveOption(ctx context.Context, role, query, column string) (string, error) {
+	if column == "" {
+		return "", fmt.Errorf(
+			"%s was set to %q but no %s property is mapped; "+
+				"run 'notion-track init --%s-prop <name>' to map it", role, query, role, role)
+	}
+	schema, err := s.Schema(ctx)
+	if err != nil {
+		return "", err
+	}
+	prop, ok := schema.Properties[column]
+	if !ok {
+		return "", fmt.Errorf(
+			"property %q is configured but does not exist in the data source; "+
+				"run 'notion-track doctor' to see the current schema", column)
+	}
+	return tracker.ResolveOption(role, query, prop.Options)
+}
+
+// resolveAssignee turns what the user typed into the exact option the column
+// carries, and turns "me" into the configured identity.
 func (s *Service) resolveAssignee(ctx context.Context, f tracker.Fields) (tracker.Fields, error) {
 	if f.Assignee == "" {
 		return f, nil
@@ -242,28 +264,26 @@ func (s *Service) resolveAssignee(ctx context.Context, f tracker.Fields) (tracke
 		query = s.profile.Me
 	}
 
-	name := s.profile.Properties.Assignee
-	if name == "" {
-		return f, fmt.Errorf(
-			"assignee was set to %q but no assignee property is mapped; "+
-				"run 'notion-track init --assignee-prop <name>' to map it", f.Assignee)
-	}
-	schema, err := s.Schema(ctx)
-	if err != nil {
-		return f, err
-	}
-	prop, ok := schema.Properties[name]
-	if !ok {
-		return f, fmt.Errorf(
-			"property %q is configured but does not exist in the data source; "+
-				"run 'notion-track doctor' to see the current schema", name)
-	}
-
-	resolved, err := tracker.ResolveOption("assignee", query, prop.Options)
+	resolved, err := s.resolveOption(ctx, "assignee", query, s.profile.Properties.Assignee)
 	if err != nil {
 		return f, err
 	}
 	f.Assignee = resolved
+	return f, nil
+}
+
+// resolvePriority turns what the user typed into the exact option the priority
+// column carries. Unlike the assignee there is no identity to translate first:
+// a priority is nobody's.
+func (s *Service) resolvePriority(ctx context.Context, f tracker.Fields) (tracker.Fields, error) {
+	if f.Priority == "" {
+		return f, nil
+	}
+	resolved, err := s.resolveOption(ctx, "priority", f.Priority, s.profile.Properties.Priority)
+	if err != nil {
+		return f, err
+	}
+	f.Priority = resolved
 	return f, nil
 }
 
@@ -275,6 +295,10 @@ func (s *Service) Upsert(ctx context.Context, f tracker.Fields, body *BodyReques
 		return Result{}, ErrEmptyTicket
 	}
 	f, err := s.resolveAssignee(ctx, f)
+	if err != nil {
+		return Result{}, err
+	}
+	f, err = s.resolvePriority(ctx, f)
 	if err != nil {
 		return Result{}, err
 	}
@@ -336,6 +360,10 @@ func (s *Service) Set(ctx context.Context, f tracker.Fields, body *BodyRequest) 
 		return Result{}, ErrEmptyTicket
 	}
 	f, err := s.resolveAssignee(ctx, f)
+	if err != nil {
+		return Result{}, err
+	}
+	f, err = s.resolvePriority(ctx, f)
 	if err != nil {
 		return Result{}, err
 	}
@@ -469,6 +497,10 @@ func (s *Service) GetByID(ctx context.Context, pageID string) (notion.Page, erro
 // body untouched.
 func (s *Service) SetByID(ctx context.Context, pageID string, f tracker.Fields, body *BodyRequest) (Result, error) {
 	f, err := s.resolveAssignee(ctx, f)
+	if err != nil {
+		return Result{}, err
+	}
+	f, err = s.resolvePriority(ctx, f)
 	if err != nil {
 		return Result{}, err
 	}

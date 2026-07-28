@@ -22,7 +22,8 @@ const schemaJSON = `{
     "Name":{"name":"Name","type":"title","title":{}},
     "Ticket":{"name":"Ticket","type":"rich_text","rich_text":{}},
     "Stato":{"name":"Stato","type":"status","status":{"options":[{"name":"In corso"},{"name":"Fatto"}]}},
-    "Referente":{"name":"Referente","type":"select","select":{"options":[{"name":"Andrea Ghidara"},{"name":"Marco Arnulfo"},{"name":"Mirko Spinato"}]}}
+    "Referente":{"name":"Referente","type":"select","select":{"options":[{"name":"Andrea Ghidara"},{"name":"Marco Arnulfo"},{"name":"Mirko Spinato"}]}},
+    "Urgenza":{"name":"Urgenza","type":"select","select":{"options":[{"name":"ALTA"},{"name":"MEDIA"},{"name":"NORMALE"}]}}
   }}`
 
 const rowJSON = `{
@@ -32,7 +33,8 @@ const rowJSON = `{
     "Name":{"type":"title","title":[{"plain_text":"Hardening"}]},
     "Ticket":{"type":"rich_text","rich_text":[{"plain_text":"BDF-231"}]},
     "Stato":{"type":"status","status":{"name":"In corso"}},
-    "Referente":{"type":"select","select":{"name":"Mirko Spinato"}}
+    "Referente":{"type":"select","select":{"name":"Mirko Spinato"}},
+    "Urgenza":{"type":"select","select":{"name":"ALTA"}}
   }}`
 
 func testProfile() config.Profile {
@@ -49,6 +51,14 @@ func assigneeProfile(me string) config.Profile {
 	p := testProfile()
 	p.Properties.Assignee = "Referente"
 	p.Me = me
+	return p
+}
+
+// priorityProfile is assigneeProfile with the priority role mapped too, which
+// is what the real board looks like.
+func priorityProfile() config.Profile {
+	p := assigneeProfile("")
+	p.Properties.Priority = "Urgenza"
 	return p
 }
 
@@ -693,6 +703,71 @@ func TestResolveAssigneeEdges(t *testing.T) {
 		_, err := s.resolveAssignee(ctx, tracker.Fields{Assignee: "mirko"})
 		if err == nil {
 			t.Fatal("resolveAssignee = nil error, want a failure naming --assignee-prop")
+		}
+	})
+}
+
+func TestUpsertResolvesPriority(t *testing.T) {
+	var written map[string]any
+	srv := capturingRoutes(t, "", &written)
+	defer srv.Close()
+
+	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), priorityProfile())
+	_, err := s.Upsert(context.Background(), tracker.Fields{Ticket: "BDF-231", Priority: "alta"}, nil)
+	if err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	got, _ := json.Marshal(written["Urgenza"])
+	if want := `{"select":{"name":"ALTA"}}`; string(got) != want {
+		t.Errorf("Urgenza = %s, want %s", got, want)
+	}
+}
+
+func TestSetByIDResolvesPriority(t *testing.T) {
+	// The third write path, the one that shares no code with Set.
+	var written map[string]any
+	srv := capturingRoutes(t, rowJSON, &written)
+	defer srv.Close()
+
+	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), priorityProfile())
+	_, err := s.SetByID(context.Background(), testPageID, tracker.Fields{Priority: "media"}, nil)
+	if err != nil {
+		t.Fatalf("SetByID: %v", err)
+	}
+
+	got, _ := json.Marshal(written["Urgenza"])
+	if want := `{"select":{"name":"MEDIA"}}`; string(got) != want {
+		t.Errorf("Urgenza = %s, want %s", got, want)
+	}
+}
+
+func TestResolvePriorityEdges(t *testing.T) {
+	var seen []string
+	srv := routes(t, "", &seen)
+	defer srv.Close()
+	ctx := context.Background()
+
+	t.Run("an absent priority is left alone", func(t *testing.T) {
+		s := New(notion.New("t", notion.WithBaseURL(srv.URL)), priorityProfile())
+		if _, err := s.resolvePriority(ctx, tracker.Fields{Status: "Fatto"}); err != nil {
+			t.Fatalf("an absent priority must not fail: %v", err)
+		}
+	})
+
+	t.Run("an unknown value fails with the allowed ones", func(t *testing.T) {
+		s := New(notion.New("t", notion.WithBaseURL(srv.URL)), priorityProfile())
+		_, err := s.resolvePriority(ctx, tracker.Fields{Priority: "URGENTISSIMA"})
+		var invalid *tracker.ValidationError
+		if !errors.As(err, &invalid) {
+			t.Fatalf("error = %v, want *tracker.ValidationError", err)
+		}
+	})
+
+	t.Run("unmapped role with a value", func(t *testing.T) {
+		s := New(notion.New("t", notion.WithBaseURL(srv.URL)), assigneeProfile("")) // no Priority
+		if _, err := s.resolvePriority(ctx, tracker.Fields{Priority: "ALTA"}); err == nil {
+			t.Fatal("resolvePriority = nil error, want a failure naming --priority-prop")
 		}
 	})
 }
