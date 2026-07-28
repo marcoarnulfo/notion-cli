@@ -17,6 +17,7 @@ var (
 		"assignee", "owner", "referente", "persona", "responsabile",
 		"assegnatario", "incaricato",
 	}
+	priorityNames = []string{"priority", "urgenza", "priorità", "priorita", "importanza", "severity"}
 )
 
 // GuessMapping proposes a property mapping for init to confirm.
@@ -88,6 +89,32 @@ func GuessMapping(schema *notion.Schema) config.Properties {
 			}
 		}
 		if out.Assignee != "" {
+			break
+		}
+	}
+
+	// Same rule as assignee — name only, no "the only candidate wins"
+	// fallback — with one more column to skip.
+	//
+	// Only the out.Status half can fire today: status has the "only candidate
+	// wins" fallback, so it can claim a select that priority would recognise by
+	// name. The out.Assignee half cannot: both roles are guessed by name alone
+	// and their name lists are disjoint, so no column can match both. It is
+	// deliberate anyway — the day the two lists overlap, or either role gains a
+	// fallback, the guard is already where it needs to be — but it is defensive
+	// and no test can observe it, which is why the test below exercises the
+	// status half.
+	for _, name := range byType["select"] {
+		if name == out.Status || name == out.Assignee {
+			continue
+		}
+		for _, known := range priorityNames {
+			if strings.EqualFold(name, known) {
+				out.Priority = name
+				break
+			}
+		}
+		if out.Priority != "" {
 			break
 		}
 	}

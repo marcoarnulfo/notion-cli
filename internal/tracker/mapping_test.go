@@ -144,3 +144,52 @@ func TestGuessMappingAssignee(t *testing.T) {
 		}
 	})
 }
+
+func TestGuessMappingPriority(t *testing.T) {
+	t.Run("recognises the real board", func(t *testing.T) {
+		// Referente and Urgenza are both selects: the shape that makes the
+		// exclusion guard load-bearing.
+		schema := &notion.Schema{Properties: map[string]notion.Property{
+			"Nome task": {Name: "Nome task", Type: "title"},
+			"Stato":     {Name: "Stato", Type: "status"},
+			"Referente": {Name: "Referente", Type: "select"},
+			"Urgenza":   {Name: "Urgenza", Type: "select"},
+		}}
+		got := GuessMapping(schema)
+		if got.Assignee != "Referente" {
+			t.Errorf("Assignee = %q, want %q", got.Assignee, "Referente")
+		}
+		if got.Priority != "Urgenza" {
+			t.Errorf("Priority = %q, want %q", got.Priority, "Urgenza")
+		}
+	})
+
+	t.Run("never reuses the column status claimed by fallback", func(t *testing.T) {
+		// This is the case the guard exists for. There is no status-typed
+		// column, so status falls back to "the only candidate wins" and claims
+		// the lone select — which happens to be one priority would recognise
+		// by name. Without the guard, both roles end up on Urgenza.
+		schema := &notion.Schema{Properties: map[string]notion.Property{
+			"Nome task": {Name: "Nome task", Type: "title"},
+			"Urgenza":   {Name: "Urgenza", Type: "select"},
+		}}
+		got := GuessMapping(schema)
+		if got.Status != "Urgenza" {
+			t.Fatalf("Status = %q, want the fallback to claim it", got.Status)
+		}
+		if got.Priority != "" {
+			t.Errorf("Priority = %q, want no guess: the column is already the status", got.Priority)
+		}
+	})
+
+	t.Run("does not guess an unrecognisable lone select", func(t *testing.T) {
+		schema := &notion.Schema{Properties: map[string]notion.Property{
+			"Nome task": {Name: "Nome task", Type: "title"},
+			"Stato":     {Name: "Stato", Type: "status"},
+			"Colore":    {Name: "Colore", Type: "select"},
+		}}
+		if got := GuessMapping(schema); got.Priority != "" {
+			t.Errorf("Priority = %q, want no guess", got.Priority)
+		}
+	})
+}
