@@ -60,6 +60,7 @@ type ListFilter struct {
 	Status     string
 	Assignee   string
 	Unassigned bool
+	Priority   string
 }
 
 // Tracker is the slice of the service layer these tools need, declared here
@@ -96,6 +97,7 @@ type listArgs struct {
 	Status     string `json:"status,omitempty" jsonschema:"only return rows with this status; omit for all rows"`
 	Assignee   string `json:"assignee,omitempty" jsonschema:"only return rows assigned to this person; a partial name is enough, and 'me' means the configured identity"`
 	Unassigned bool   `json:"unassigned,omitempty" jsonschema:"only return rows with no assignee; cannot be combined with assignee"`
+	Priority   string `json:"priority,omitempty" jsonschema:"only return rows with this priority; a partial value is enough when unambiguous"`
 }
 
 // writeResult is what a write tool returns.

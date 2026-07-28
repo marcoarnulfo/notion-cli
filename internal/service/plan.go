@@ -52,6 +52,7 @@ func planFor(action, pageID, url string, f tracker.Fields, props config.Properti
 		{Column: props.Status, Value: f.Status},
 		{Column: props.Due, Value: f.Due},
 		{Column: props.Assignee, Value: f.Assignee},
+		{Column: props.Priority, Value: f.Priority},
 	} {
 		// An unmapped role has no column to name, and a field left off the
 		// command line has no value to write.

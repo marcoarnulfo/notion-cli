@@ -541,6 +541,7 @@ type ListFilter struct {
 	Status     string
 	Assignee   string
 	Unassigned bool
+	Priority   string
 }
 
 // ErrConflictingListFilter marks a listing narrowed both to somebody and to
@@ -595,6 +596,19 @@ func (s *Service) List(ctx context.Context, f ListFilter) ([]notion.Page, error)
 			}
 			clauses = append(clauses, notion.EqualsFilter(name, prop.Type, resolved.Assignee))
 		}
+	}
+
+	if f.Priority != "" {
+		name := s.profile.Properties.Priority
+		resolved, err := s.resolveOption(ctx, "priority", f.Priority, name)
+		if err != nil {
+			return nil, err
+		}
+		// No ok check: resolveOption returned without error, so it found this
+		// same column in this same memoised schema. Schema() caches under a
+		// mutex, so the map read here and the one it read are the same object.
+		prop := schema.Properties[name]
+		clauses = append(clauses, notion.EqualsFilter(name, prop.Type, resolved))
 	}
 
 	return s.client.QueryPages(ctx, s.profile.DataSourceID, notion.AndFilter(clauses...))

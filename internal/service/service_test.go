@@ -541,6 +541,56 @@ func TestListFilters(t *testing.T) {
 	})
 }
 
+func TestListFiltersByPriority(t *testing.T) {
+	var sent map[string]any
+	srv := filterRoutes(t, &sent)
+	defer srv.Close()
+	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), priorityProfile())
+	ctx := context.Background()
+
+	t.Run("alone", func(t *testing.T) {
+		sent = nil
+		if _, err := s.List(ctx, ListFilter{Priority: "alta"}); err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if sent["property"] != "Urgenza" {
+			t.Fatalf("filter = %#v, want it on Urgenza", sent)
+		}
+		if got := sent["select"].(map[string]any)["equals"]; got != "ALTA" {
+			t.Errorf("filter value = %v, want the canonical option", got)
+		}
+	})
+
+	t.Run("three clauses compound", func(t *testing.T) {
+		sent = nil
+		_, err := s.List(ctx, ListFilter{Status: "Fatto", Assignee: "mirko", Priority: "ALTA"})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		clauses, ok := sent["and"].([]any)
+		if !ok || len(clauses) != 3 {
+			t.Fatalf("filter = %#v, want a compound of three", sent)
+		}
+		// Which three, not just how many.
+		byProperty := map[string]bool{}
+		for _, c := range clauses {
+			byProperty[c.(map[string]any)["property"].(string)] = true
+		}
+		for _, want := range []string{"Stato", "Referente", "Urgenza"} {
+			if !byProperty[want] {
+				t.Errorf("no clause on %s in %#v", want, clauses)
+			}
+		}
+	})
+
+	t.Run("filtering on an unmapped role fails clearly", func(t *testing.T) {
+		unmapped := New(notion.New("t", notion.WithBaseURL(srv.URL)), assigneeProfile(""))
+		if _, err := unmapped.List(ctx, ListFilter{Priority: "ALTA"}); err == nil {
+			t.Fatal("List = nil error, want a failure naming --priority-prop")
+		}
+	})
+}
+
 // The schema is read once per Service, not once per call.
 func TestSchemaIsCached(t *testing.T) {
 	var seen []string

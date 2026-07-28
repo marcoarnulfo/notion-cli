@@ -232,3 +232,23 @@ func TestPlanForAssignee(t *testing.T) {
 		}
 	})
 }
+
+func TestPlanForPriority(t *testing.T) {
+	// Without this the plan for `set --priority ALTA --dry-run` is empty: it
+	// would report a write that changes nothing, which is worse than silence.
+	props := config.Properties{
+		Ticket: "Nome task", Title: "Nome task", Status: "Stato",
+		Assignee: "Referente", Priority: "Urgenza",
+	}
+	plan := planFor("updated", "page-1", "", tracker.Fields{Priority: "ALTA"}, props, 0)
+
+	var found bool
+	for _, p := range plan.Properties {
+		if p.Column == "Urgenza" && p.Value == "ALTA" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Properties = %#v, want Urgenza -> ALTA", plan.Properties)
+	}
+}
