@@ -488,3 +488,54 @@ func TestResolveMeFromEnv(t *testing.T) {
 		}
 	})
 }
+
+func TestPriorityRoundTripsThroughTheConfigFile(t *testing.T) {
+	// The role must survive a save/load cycle, and its absence must keep an
+	// older config valid: both new roles are additive by design.
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := &Config{
+		DefaultProfile: "default",
+		Profiles: map[string]Profile{
+			"default": {
+				DataSourceID: "ds1",
+				Properties: Properties{
+					Ticket: "Nome task", Status: "Stato", Title: "Nome task",
+					Assignee: "Referente", Priority: "Urgenza",
+				},
+			},
+		},
+	}
+	if err := cfg.SaveTo(path); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	read, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if got := read.Profiles["default"].Properties.Priority; got != "Urgenza" {
+		t.Errorf("Priority = %q, want %q", got, "Urgenza")
+	}
+
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), "priority: Urgenza") {
+		t.Errorf("config file does not carry the priority key:\n%s", raw)
+	}
+}
+
+func TestAnUnmappedPriorityIsOmittedFromTheFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := &Config{
+		DefaultProfile: "default",
+		Profiles: map[string]Profile{
+			"default": {DataSourceID: "ds1", Properties: Properties{Ticket: "T", Status: "S", Title: "N"}},
+		},
+	}
+	if err := cfg.SaveTo(path); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	raw, _ := os.ReadFile(path)
+	if strings.Contains(string(raw), "priority") {
+		t.Errorf("an unmapped role must not appear in the file:\n%s", raw)
+	}
+}

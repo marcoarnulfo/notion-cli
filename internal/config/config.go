@@ -46,6 +46,9 @@ type Properties struct {
 	// Assignee is the column naming who a row belongs to. Optional: a board
 	// that tracks nobody in particular simply leaves it unmapped.
 	Assignee string `yaml:"assignee,omitempty"`
+	// Priority is the column ranking how urgent a row is. Optional, and
+	// usually sparse: a board marks what is burning, not everything.
+	Priority string `yaml:"priority,omitempty"`
 }
 
 // Profile is one configured data source.
