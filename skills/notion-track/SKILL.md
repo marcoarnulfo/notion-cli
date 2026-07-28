@@ -207,9 +207,11 @@ notion-track get --page-id <id-or-url> [--json]
 
 Use it to confirm a task exists and to see its current state before changing it.
 With `--json` the fields are `ticket`, `title`, `status`, `page_id`, `url`,
-`last_edited_time`, `assignee` — a stable schema, safe to parse. `assignee` is
-always present and empty both when nobody is assigned and when the board
-doesn't map the role, so check for an empty string rather than a missing key.
+`last_edited_time`, `assignee`, `priority` — a stable schema, safe to parse.
+`assignee` is always present and empty both when nobody is assigned and when
+the board doesn't map the role, so check for an empty string rather than a
+missing key. `priority` follows the same rule: always present, empty both
+when the row carries no value and when the board doesn't map the role.
 
 ### List tasks — `list`
 
