@@ -160,6 +160,15 @@ Non ora, per tre ragioni:
 
 La rivalutazione è dichiarata, non rimandata a caso: **al terzo ruolo `select`**.
 
+Una precisazione, perché la distinzione è sottile: non generalizzare i *ruoli* non vuol dire
+copiare tutto ciò che li serve. Il lookup della colonna nello schema e le sue due condizioni
+d'errore — colonna non mappata, colonna sparita — non hanno nulla di specifico di un ruolo, e
+oggi vivono già in due punti quasi identici (`resolveAssignee` e il ramo assignee di `List`).
+Il ruolo nuovo li porterebbe a quattro. Quel nucleo diventa un helper condiviso
+(`resolveOption(ctx, role, query, column)`), mentre i ruoli restano campi espliciti negli
+struct: è il contrario di un'astrazione dei ruoli, ed è ciò che permette a questi di restare
+leggibili uno per uno.
+
 ---
 
 ## 7. Test
