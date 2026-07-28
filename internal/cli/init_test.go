@@ -517,6 +517,48 @@ func TestInitRejectsAnAssigneeColumnOfTheWrongType(t *testing.T) {
 	}
 }
 
+func TestInitMapsThePriorityColumn(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaJSON))
+	})
+	withIsolatedUserConfigDir(t)
+	withInteractivePrompt(t, false, nil, nil)
+
+	if code := executeArgs(initArgs(cfg, "--priority-prop", "Urgenza")); code != ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+	if got := writtenProfile(t, cfg).Properties.Priority; got != "Urgenza" {
+		t.Errorf("priority = %q, want %q", got, "Urgenza")
+	}
+}
+
+func TestInitRejectsAPriorityColumnOfTheWrongType(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaJSON))
+	})
+	withIsolatedUserConfigDir(t)
+	withInteractivePrompt(t, false, nil, nil)
+
+	// Name is the title column: never usable as a priority.
+	if code := executeArgs(initArgs(cfg, "--priority-prop", "Name")); code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+	}
+}
+
+func TestPriorityPropIsAConfigFlag(t *testing.T) {
+	// Missing from configFlags, `init --priority-prop X` at a terminal opens
+	// the wizard instead of configuring — silently, and only interactively.
+	var found bool
+	for _, f := range configFlags {
+		if f == "priority-prop" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("priority-prop is missing from configFlags")
+	}
+}
+
 func TestAssigneeFlagsAreConfigFlags(t *testing.T) {
 	// A config flag means "the caller knows their answers", which is what keeps
 	// init out of the wizard. Forgetting to register one makes

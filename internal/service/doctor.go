@@ -64,6 +64,7 @@ func (s *Service) checkProperties(schema *notion.Schema) Check {
 		"title":    s.profile.Properties.Title,
 		"due":      s.profile.Properties.Due,
 		"assignee": s.profile.Properties.Assignee,
+		"priority": s.profile.Properties.Priority,
 	}
 	wantType := map[string][]string{
 		"ticket":   {"rich_text", "title"},
@@ -71,6 +72,7 @@ func (s *Service) checkProperties(schema *notion.Schema) Check {
 		"title":    {"title"},
 		"due":      {"date"},
 		"assignee": {"select"},
+		"priority": {"select"},
 	}
 
 	// optionalRoles may legitimately be unmapped; every other role is required
@@ -80,12 +82,15 @@ func (s *Service) checkProperties(schema *notion.Schema) Check {
 	// read as "nothing to report" instead of "not configured".
 	//
 	// A board may legitimately track nobody, so an unmapped assignee is a
-	// skip, not a failure — the same judgement already made for due.
-	optionalRoles := map[string]bool{"due": true, "assignee": true}
+	// skip, not a failure — the same judgement already made for due. A
+	// priority is the same story again: not every board ranks urgency, and
+	// there is no identity to resolve for it, so checkProperties existing
+	// (column present, right type) is the whole check it needs.
+	optionalRoles := map[string]bool{"due": true, "assignee": true, "priority": true}
 
 	var problems []string
 	var warnings []string
-	roles := []string{"ticket", "status", "title", "due", "assignee"}
+	roles := []string{"ticket", "status", "title", "due", "assignee", "priority"}
 	for _, role := range roles {
 		name := mapped[role]
 		if name == "" {

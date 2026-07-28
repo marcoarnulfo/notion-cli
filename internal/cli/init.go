@@ -138,7 +138,7 @@ func promptForToken(cmd *cobra.Command) (string, error) {
 // them.
 var configFlags = []string{
 	"data-source-id", "database-id", "ticket-prop", "status-prop",
-	"title-prop", "due-prop", "assignee-prop", "me", "list",
+	"title-prop", "due-prop", "assignee-prop", "priority-prop", "me", "list",
 }
 
 func anyConfigFlagSet(cmd *cobra.Command) bool {
@@ -213,7 +213,7 @@ func runInitWizard(cmd *cobra.Command) error {
 	// one thing standing between a future wizard bug and a profile that is
 	// broken on first use — and it is where status_type comes from.
 	statusType, err := validateMapping(res.Schema,
-		res.Props.Ticket, res.Props.Status, res.Props.Title, res.Props.Due, res.Props.Assignee)
+		res.Props.Ticket, res.Props.Status, res.Props.Title, res.Props.Due, res.Props.Assignee, res.Props.Priority)
 	if err != nil {
 		return Errorf(ExitUsage, "%v", err)
 	}
@@ -265,6 +265,7 @@ func newInitCmd() *cobra.Command {
 		titleProp    string
 		dueProp      string
 		assigneeProp string
+		priorityProp string
 		me           string
 		list         bool
 	)
@@ -323,7 +324,7 @@ func newInitCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			statusType, err := validateMapping(schema, ticketProp, statusProp, titleProp, dueProp, assigneeProp)
+			statusType, err := validateMapping(schema, ticketProp, statusProp, titleProp, dueProp, assigneeProp, priorityProp)
 			if err != nil {
 				return Errorf(ExitUsage, "%v", err)
 			}
@@ -354,7 +355,7 @@ func newInitCmd() *cobra.Command {
 				StatusType:   statusType,
 				Properties: config.Properties{
 					Ticket: ticketProp, Status: statusProp, Title: titleProp, Due: dueProp,
-					Assignee: assigneeProp,
+					Assignee: assigneeProp, Priority: priorityProp,
 				},
 				Me: resolvedMe,
 			}, schema.Title)
@@ -368,6 +369,7 @@ func newInitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&titleProp, "title-prop", "", "title property")
 	cmd.Flags().StringVar(&dueProp, "due-prop", "", "date property (optional)")
 	cmd.Flags().StringVar(&assigneeProp, "assignee-prop", "", "select property holding the assignee (optional)")
+	cmd.Flags().StringVar(&priorityProp, "priority-prop", "", "select property holding the priority (optional)")
 	cmd.Flags().StringVar(&me, "me", "", "the assignee value '--assignee me' stands for (optional)")
 	cmd.Flags().BoolVar(&list, "list", false, "list the data sources shared with the integration and exit")
 	return cmd
@@ -379,11 +381,12 @@ func newInitCmd() *cobra.Command {
 // ticket, status and title are required: internal/service/doctor.go reports
 // each of them as a "fail" when unmapped, and get/list/upsert key every
 // lookup off them, so writing a profile with one left blank produces a
-// config that is broken on first use. due and assignee are the roles doctor
-// treats as optional, so they are the only ones that may be left unmapped
-// here too: a board that tracks nobody in particular simply has no assignee
-// column to map.
-func validateMapping(schema *notion.Schema, ticket, status, title, due, assignee string) (string, error) {
+// config that is broken on first use. due, assignee and priority are the
+// roles doctor treats as optional, so they are the only ones that may be
+// left unmapped here too: a board that tracks nobody in particular simply
+// has no assignee column to map, and one with no notion of urgency has no
+// priority column either.
+func validateMapping(schema *notion.Schema, ticket, status, title, due, assignee, priority string) (string, error) {
 	check := func(role, flag, name string, required bool, want ...string) (string, error) {
 		if name == "" {
 			if required {
@@ -415,6 +418,9 @@ func validateMapping(schema *notion.Schema, ticket, status, title, due, assignee
 		return "", err
 	}
 	if _, err := check("assignee", "assignee-prop", assignee, false, "select"); err != nil {
+		return "", err
+	}
+	if _, err := check("priority", "priority-prop", priority, false, "select"); err != nil {
 		return "", err
 	}
 	statusType, err := check("status", "status-prop", status, true, "status", "select")

@@ -373,3 +373,39 @@ func TestWizardAssigneeRole(t *testing.T) {
 		}
 	})
 }
+
+func TestWizardPriorityRole(t *testing.T) {
+	var spec roleSpec
+	var found bool
+	for _, r := range roles {
+		if r.name == "priority" {
+			spec, found = r, true
+		}
+	}
+	if !found {
+		t.Fatal("no priority role in the wizard")
+	}
+	if !spec.optional {
+		t.Error("the priority role must be optional")
+	}
+	if len(spec.types) != 1 || spec.types[0] != "select" {
+		t.Errorf("types = %v, want [select]", spec.types)
+	}
+
+	var p config.Properties
+	setRole(&p, "priority", "Urgenza")
+	if p.Priority != "Urgenza" {
+		t.Errorf("setRole left Priority = %q", p.Priority)
+	}
+	if got := roleValue(p, "priority"); got != "Urgenza" {
+		t.Errorf("roleValue = %q, want %q", got, "Urgenza")
+	}
+
+	seen := map[string]string{}
+	for _, r := range roles {
+		if other, dup := seen[r.key]; dup {
+			t.Errorf("key %q is used by both %q and %q", r.key, other, r.name)
+		}
+		seen[r.key] = r.name
+	}
+}

@@ -395,3 +395,42 @@ func TestDoctorWarnsWhenTheIdentityLivesOnlyInTheSharedConfig(t *testing.T) {
 		t.Errorf("detail = %q, want it to point at the environment variable", check.Detail)
 	}
 }
+
+func TestDoctorTreatsThePriorityAsOptional(t *testing.T) {
+	srv := doctorRoutes(t)
+	defer srv.Close()
+	t.Setenv(config.MeEnv, "")
+
+	// assigneeProfile maps no priority, the way every profile written before
+	// this feature does.
+	checks := New(notion.New("t", notion.WithBaseURL(srv.URL)), assigneeProfile("")).
+		Doctor(context.Background())
+
+	props, ok := findCheck(checks, "properties")
+	if !ok {
+		t.Fatal("no properties check")
+	}
+	if props.Status == "fail" {
+		t.Errorf("properties = fail (%s), want the optional role to be skipped", props.Detail)
+	}
+}
+
+func TestDoctorChecksAMappedPriority(t *testing.T) {
+	srv := doctorRoutes(t)
+	defer srv.Close()
+	t.Setenv(config.MeEnv, "")
+
+	profile := assigneeProfile("")
+	profile.Properties.Priority = "Urgenza rinominata"
+
+	checks := New(notion.New("t", notion.WithBaseURL(srv.URL)), profile).
+		Doctor(context.Background())
+
+	props, ok := findCheck(checks, "properties")
+	if !ok {
+		t.Fatal("no properties check")
+	}
+	if props.Status != "fail" {
+		t.Errorf("properties = %s (%s), want fail for a column that is gone", props.Status, props.Detail)
+	}
+}
