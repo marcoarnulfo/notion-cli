@@ -24,6 +24,7 @@ type Fields struct {
 	// struct already means "leave this alone", and one exception to that rule
 	// would be one too many.
 	Unassign bool
+	Priority string
 }
 
 // ErrConflictingAssignee marks a request that both sets and clears the
@@ -112,6 +113,9 @@ func BuildProperties(f Fields, props config.Properties, schema *notion.Schema) (
 		return nil, err
 	}
 	if err := add("assignee", props.Assignee, f.Assignee); err != nil {
+		return nil, err
+	}
+	if err := add("priority", props.Priority, f.Priority); err != nil {
 		return nil, err
 	}
 	// Clearing is the one write that has to happen for an empty value, so it

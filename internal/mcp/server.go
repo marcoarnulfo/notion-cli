@@ -46,6 +46,7 @@ type Fields struct {
 	Due      string
 	Assignee string
 	Unassign bool
+	Priority string
 }
 
 // ListFilter mirrors service.ListFilter field for field, so internal/cli can
@@ -84,6 +85,7 @@ type upsertArgs struct {
 	Due      string `json:"due,omitempty" jsonschema:"the due date as YYYY-MM-DD; omit to leave it unchanged"`
 	Assignee string `json:"assignee,omitempty" jsonschema:"who the row belongs to; a partial name is enough when unambiguous, and 'me' means the configured identity; omit to leave it unchanged"`
 	Unassign bool   `json:"unassign,omitempty" jsonschema:"clear the assignee; cannot be combined with assignee"`
+	Priority string `json:"priority,omitempty" jsonschema:"how urgent the row is; must be one of the values the board offers, and a partial value is enough when unambiguous; omit to leave it unchanged"`
 }
 
 type getArgs struct {

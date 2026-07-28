@@ -253,3 +253,50 @@ func TestBuildPropertiesAssignee(t *testing.T) {
 		}
 	})
 }
+
+func TestBuildPropertiesPriority(t *testing.T) {
+	schema := &notion.Schema{Properties: map[string]notion.Property{
+		"Nome task": {Name: "Nome task", Type: "title"},
+		"Urgenza":   {Name: "Urgenza", Type: "select", Options: []string{"ALTA", "MEDIA", "NORMALE"}},
+	}}
+	props := config.Properties{Title: "Nome task", Priority: "Urgenza"}
+
+	t.Run("writes the select", func(t *testing.T) {
+		got, err := BuildProperties(Fields{Priority: "ALTA"}, props, schema)
+		if err != nil {
+			t.Fatalf("BuildProperties: %v", err)
+		}
+		want := map[string]any{"select": map[string]string{"name": "ALTA"}}
+		if !reflect.DeepEqual(got["Urgenza"], want) {
+			t.Errorf("Urgenza = %#v, want %#v", got["Urgenza"], want)
+		}
+	})
+
+	t.Run("not passed leaves the column alone", func(t *testing.T) {
+		got, err := BuildProperties(Fields{Status: ""}, props, schema)
+		if err != nil {
+			t.Fatalf("BuildProperties: %v", err)
+		}
+		if _, ok := got["Urgenza"]; ok {
+			t.Error("Urgenza is in the payload but nothing asked to write it")
+		}
+	})
+
+	t.Run("a value the column does not offer is rejected", func(t *testing.T) {
+		_, err := BuildProperties(Fields{Priority: "URGENTISSIMA"}, props, schema)
+		var invalid *ValidationError
+		if !errors.As(err, &invalid) {
+			t.Fatalf("error = %v, want *ValidationError", err)
+		}
+		if invalid.Field != "priority" {
+			t.Errorf("Field = %q, want %q", invalid.Field, "priority")
+		}
+	})
+
+	t.Run("unmapped role with a value is an error, not a silent drop", func(t *testing.T) {
+		unmapped := config.Properties{Title: "Nome task"}
+		if _, err := BuildProperties(Fields{Priority: "ALTA"}, unmapped, schema); err == nil {
+			t.Fatal("BuildProperties = nil error, want a failure naming --priority-prop")
+		}
+	})
+}
