@@ -14,7 +14,17 @@
 - **Il ruolo gemello è il modello:** ogni volta che una scelta non è specificata qui, la risposta è "come `assignee`". Una divergenza silenziosa fra i due è un difetto, non una variante.
 - **Nessuna regressione:** con `priority` non mappato ogni comando produce l'output di oggi byte per byte — umano, JSON, exit code. Ogni task che tocca l'output ha un test che lo verifica.
 - **Niente svuotamento, niente `me`, niente ordinamento:** non esistono `--unpriority`, `list --unprioritized`, `--sort`. Un `Unpriority bool` in un qualsiasi struct è fuori scope.
-- **Le conversioni dirette si estendono in coppia:** `pageJSON`↔`mcp.Row` e `tracker.Fields`↔`mcp.Fields` compilano solo finché sono identiche per nomi, tipi e ordine. I campi nuovi vanno **in coda** e **nello stesso commit** su entrambe le facce.
+- **Le conversioni dirette si estendono in coppia, tutte e cinque.** Compilano solo finché le due facce restano identiche per nomi, tipi e **ordine** (i tag non contano), ed è questo che impedisce al contratto JSON documentato e a ciò che vede un agente di divergere in silenzio. Un campo nuovo va **in coda** e **nello stesso commit** su entrambe le facce di ogni coppia che tocca:
+
+  | Conversione | Dove | Coppia |
+  |---|---|---|
+  | `mcp.Row(toPageJSON(…))` | `internal/cli/mcp.go` | `pageJSON` ↔ `mcp.Row` |
+  | `tracker.Fields(f)` | `internal/cli/mcp.go`, `fieldsFromMCP` | `mcp.Fields` ↔ `tracker.Fields` |
+  | `service.ListFilter(f)` | `internal/cli/mcp.go` | `mcp.ListFilter` ↔ `service.ListFilter` |
+  | `Fields(a)` | `internal/mcp/server.go`, `fieldsOf` | `upsertArgs` ↔ `mcp.Fields` |
+  | `ListFilter(args)` | `internal/mcp/server.go` | `listArgs` ↔ `mcp.ListFilter` |
+
+  Le ultime due sono la ragione per cui `upsertArgs` e `listArgs` vanno estesi insieme ai loro struct, e non alla fine con il resto della superficie MCP.
 - **Errori tipizzati, mai riconosciuti per prefisso di messaggio.** Valore non valido e valore ambiguo escono 2; ruolo non mappato esce 1, come per gli altri cinque ruoli.
 - **Commenti:** spiegano il PERCHÉ. Un commento che riformula la riga sotto va tolto.
 - **Lingua:** codice, commenti, messaggi ed errori in inglese; i documenti in `docs/superpowers/` e `README.it.md` in italiano.
