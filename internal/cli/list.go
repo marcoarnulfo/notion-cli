@@ -26,7 +26,7 @@ func newListCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List rows, optionally filtered by status or assignee",
+		Short: "List rows, optionally filtered by status, assignee or priority",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			svc, err := buildService(cmd)

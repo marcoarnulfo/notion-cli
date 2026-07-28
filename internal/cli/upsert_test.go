@@ -316,6 +316,25 @@ func TestPriorityUsageErrorsExitTwo(t *testing.T) {
 	}
 }
 
+// `--priority ""` used to be a silent no-op: unlike `--assignee ""` it was not
+// rejected by bindShared's PreRunE, so it reached BuildProperties, was read as
+// "leave this alone", and the write went through anyway. This is the
+// priority's equivalent of TestAssigneeUsageErrorsAllExitTwo's "an empty
+// value" case.
+func TestPriorityEmptyValueExitsTwo(t *testing.T) {
+	var written map[string]any
+	cfg := stubForAssignee(t, assigneeProfile, &written)
+
+	if code := executeArgs([]string{
+		"set", "--ticket", "BDF-231", "--priority", "", "--config", cfg,
+	}); code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+	}
+	if written != nil {
+		t.Errorf("a usage error still wrote %v", written)
+	}
+}
+
 func TestPriorityOnAnUnmappedRoleExitsOne(t *testing.T) {
 	// Exit 1, not 2, exactly like every other unmapped role: the message comes
 	// from an untyped fmt.Errorf shared with ticket/status/title/due, and
@@ -356,5 +375,32 @@ func TestPriorityAndAssigneeTogether(t *testing.T) {
 	}
 	if string(referente) != `{"select":{"name":"Mirko Spinato"}}` {
 		t.Errorf("Referente = %s", referente)
+	}
+}
+
+// On the assignee, this exact gap — a dry run tested only at planFor's level,
+// never through the CLI — was the plan review's only BLOCKER-class finding.
+// This is the priority's equivalent: it proves --dry-run's printed output
+// carries the RESOLVED value ("ALTA"), not the raw text the user typed
+// ("alta"), and that nothing reaches the API.
+func TestSetPriorityDryRunNamesTheResolvedValue(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, dryRunAPI(t, cliRowJSON), assigneeProfile)
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{
+			"set", "--ticket", "BDF-231", "--priority", "alta", "--dry-run", "--config", cfg,
+		}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+
+	if !strings.Contains(out, "Urgenza") {
+		t.Errorf("output = %q, want it to name the column", out)
+	}
+	if !strings.Contains(out, "ALTA") {
+		t.Errorf("output = %q, want the resolved value", out)
+	}
+	if strings.Contains(out, "alta") {
+		t.Errorf("output = %q, printed the raw input instead of the resolved value", out)
 	}
 }

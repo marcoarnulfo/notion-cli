@@ -61,6 +61,13 @@ var ErrNoIdentity = errors.New(
 // nothing in a command the user wrote specifically to change something.
 var ErrEmptyAssignee = errors.New("assignee must not be empty; use --unassign to clear it")
 
+// ErrEmptyPriority mirrors ErrEmptyAssignee for the same reason: cobra reports
+// that a flag was passed, never that it carries a value, so `--priority ""`
+// would otherwise reach BuildProperties and be read as "leave this alone" —
+// silently doing nothing in a command the user wrote specifically to change
+// something.
+var ErrEmptyPriority = errors.New("priority must not be empty")
+
 // Service performs notion-track's operations against one profile.
 //
 // One Service may be shared by concurrent callers — the TUI runs its commands
@@ -227,9 +234,9 @@ func (s *Service) findByTicket(ctx context.Context, key string) ([]notion.Page, 
 // lookup and its two failure messages exist once rather than once per role.
 //
 // It runs in the service rather than inside BuildProperties because --dry-run
-// builds its plan from the same Fields (see planFor): resolving deeper would
-// make the plan print "mirko" while the write performs "Mirko Spinato" — a dry
-// run that does not describe the write it is describing.
+// builds its plan from the same Fields (see planFor): resolving here, before
+// the plan is built, is what lets a dry run report the exact value the real
+// write would send rather than the raw text the caller typed.
 func (s *Service) resolveOption(ctx context.Context, role, query, column string) (string, error) {
 	if column == "" {
 		return "", fmt.Errorf(

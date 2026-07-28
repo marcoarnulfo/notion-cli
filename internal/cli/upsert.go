@@ -50,6 +50,9 @@ func (wf *writeFlags) bindShared(cmd *cobra.Command) {
 		if cmd.Flags().Changed("assignee") && wf.assignee == "" {
 			return service.ErrEmptyAssignee
 		}
+		if cmd.Flags().Changed("priority") && wf.priority == "" {
+			return service.ErrEmptyPriority
+		}
 		return nil
 	}
 }

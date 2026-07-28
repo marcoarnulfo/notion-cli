@@ -415,6 +415,28 @@ func TestDoctorTreatsThePriorityAsOptional(t *testing.T) {
 	}
 }
 
+// Mutation-testing gap: changing wantType["priority"] to {"date"} left the
+// whole suite green, because every other priority test either leaves the role
+// unmapped or points it at a column that has already gone missing. Only a
+// profile that maps priority to a real, live select column exercises the
+// branch that checks the type actually matches.
+func TestDoctorAcceptsAPriorityMappedToARealColumn(t *testing.T) {
+	srv := doctorRoutes(t)
+	defer srv.Close()
+	t.Setenv(config.MeEnv, "")
+
+	checks := New(notion.New("t", notion.WithBaseURL(srv.URL)), priorityProfile()).
+		Doctor(context.Background())
+
+	props, ok := findCheck(checks, "properties")
+	if !ok {
+		t.Fatal("no properties check")
+	}
+	if props.Status == "fail" {
+		t.Errorf("properties = fail (%s), want a priority mapped to a real select column to pass", props.Detail)
+	}
+}
+
 func TestDoctorChecksAMappedPriority(t *testing.T) {
 	srv := doctorRoutes(t)
 	defer srv.Close()

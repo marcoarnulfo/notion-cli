@@ -96,6 +96,7 @@ func exitCodeFor(err error) int {
 	// Every way of getting the assignee wrong is a mistake the user can fix by
 	// rewriting the command, which is exactly what exit code 2 means.
 	case errors.Is(err, service.ErrEmptyAssignee),
+		errors.Is(err, service.ErrEmptyPriority),
 		errors.Is(err, service.ErrNoIdentity),
 		errors.Is(err, service.ErrConflictingListFilter),
 		errors.Is(err, tracker.ErrConflictingAssignee):

@@ -121,6 +121,8 @@ func TestListFiltersByPriorityFlag(t *testing.T) {
 }
 
 func TestListRowsShowThePriority(t *testing.T) {
+	// sent only satisfies stubForList's signature; this test asserts on the
+	// printed row, not on the filter that produced it.
 	var sent map[string]any
 	cfg := stubForList(t, assigneeProfile, &sent)
 
@@ -128,7 +130,11 @@ func TestListRowsShowThePriority(t *testing.T) {
 		executeArgs([]string{"list", "--config", cfg})
 	})
 
-	if !strings.Contains(out, "!ALTA") {
-		t.Errorf("output = %q, want the priority in the row", out)
+	// Asserts the adjacent pair, not just "!ALTA" in isolation: that weaker
+	// assertion stayed green even after swapping the priority and assignee
+	// arguments in list.go's two Printf calls, which prints the row as
+	// "@Mirko Spinato  !ALTA" instead of spec §5's required order.
+	if !strings.Contains(out, "[Fatto]  !ALTA  @Mirko Spinato") {
+		t.Errorf("output = %q, want the priority before the assignee", out)
 	}
 }
