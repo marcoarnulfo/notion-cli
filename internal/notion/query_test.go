@@ -152,8 +152,10 @@ func TestAndFilter(t *testing.T) {
 		if !ok {
 			t.Fatalf("AndFilter(two)[\"and\"] = %#v, want []Filter", got["and"])
 		}
-		if len(clauses) != 2 {
-			t.Fatalf("clauses = %d, want 2", len(clauses))
+		// The clauses themselves, in order: a count alone would pass against an
+		// implementation that appended the same filter twice.
+		if want := []Filter{status, assignee}; !reflect.DeepEqual(clauses, want) {
+			t.Errorf("clauses = %#v, want %#v", clauses, want)
 		}
 	})
 

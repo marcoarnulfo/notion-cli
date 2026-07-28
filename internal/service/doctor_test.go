@@ -325,6 +325,55 @@ func TestDoctorAcceptsAnIdentityFromTheEnvironment(t *testing.T) {
 	}
 }
 
+func TestDoctorAcceptsAMappedRoleWithNoIdentity(t *testing.T) {
+	// Mapping the column without configuring an identity is a legitimate
+	// setup — it only means "--assignee me" is unavailable — so it must read
+	// as ok, not as something to fix.
+	srv := doctorRoutes(t)
+	defer srv.Close()
+	t.Setenv(config.MeEnv, "")
+
+	checks := New(notion.New("t", notion.WithBaseURL(srv.URL)), assigneeProfile("")).
+		Doctor(context.Background())
+
+	check, ok := findCheck(checks, "assignee")
+	if !ok {
+		t.Fatal("no assignee check")
+	}
+	if check.Status != "ok" {
+		t.Errorf("assignee = %s (%s), want ok", check.Status, check.Detail)
+	}
+}
+
+func TestDoctorWarnsWhenTheMappedColumnIsGone(t *testing.T) {
+	// Without the missing-column guard, ResolveOption would be handed a
+	// zero-value Property and the warning would trail off into "allowed values
+	// are:" with nothing after it — naming neither the cause nor a fix.
+	srv := doctorRoutes(t)
+	defer srv.Close()
+	t.Setenv(config.MeEnv, "")
+
+	profile := assigneeProfile("Mirko Spinato")
+	profile.Properties.Assignee = "Referente rinominato"
+
+	checks := New(notion.New("t", notion.WithBaseURL(srv.URL)), profile).
+		Doctor(context.Background())
+
+	check, ok := findCheck(checks, "assignee")
+	if !ok {
+		t.Fatal("no assignee check")
+	}
+	if check.Status != "warn" {
+		t.Errorf("assignee = %s (%s), want warn", check.Status, check.Detail)
+	}
+	if !strings.Contains(check.Detail, "Referente rinominato") {
+		t.Errorf("detail = %q, want it to name the column that disappeared", check.Detail)
+	}
+	if strings.Contains(check.Detail, "allowed values are:") {
+		t.Errorf("detail = %q, still shows the empty allowed-values list", check.Detail)
+	}
+}
+
 func TestDoctorWarnsWhenTheIdentityLivesOnlyInTheSharedConfig(t *testing.T) {
 	// The failure this catches is silent by nature: everything resolves, and
 	// every teammate assigns work to whoever ran init.

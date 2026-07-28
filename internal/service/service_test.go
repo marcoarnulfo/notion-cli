@@ -461,6 +461,27 @@ func TestListFilters(t *testing.T) {
 		if !ok || len(clauses) != 2 {
 			t.Fatalf("filter = %#v, want a compound of two", sent)
 		}
+		// Which two, not just how many: a compound of the status clause twice
+		// would satisfy a count and return the wrong rows.
+		byProperty := map[string]any{}
+		for _, c := range clauses {
+			clause := c.(map[string]any)
+			byProperty[clause["property"].(string)] = clause
+		}
+		status, ok := byProperty["Stato"].(map[string]any)
+		if !ok {
+			t.Fatalf("no clause on Stato in %#v", clauses)
+		}
+		if got := status["status"].(map[string]any)["equals"]; got != "Fatto" {
+			t.Errorf("status clause = %v, want Fatto", got)
+		}
+		assignee, ok := byProperty["Referente"].(map[string]any)
+		if !ok {
+			t.Fatalf("no clause on Referente in %#v", clauses)
+		}
+		if got := assignee["select"].(map[string]any)["equals"]; got != "Mirko Spinato" {
+			t.Errorf("assignee clause = %v, want the canonical option", got)
+		}
 	})
 
 	t.Run("a partial name is resolved before it is sent", func(t *testing.T) {

@@ -249,7 +249,7 @@ func TestApplyRequiresAFile(t *testing.T) {
 	}
 }
 
-func TestApplyWritesTheAssignee(t *testing.T) {
+func TestApplyClearsTheAssignee(t *testing.T) {
 	var written map[string]any
 	cfg := stubForAssignee(t, assigneeProfile, &written)
 
@@ -267,6 +267,31 @@ func TestApplyWritesTheAssignee(t *testing.T) {
 
 	got, _ := json.Marshal(written["Referente"])
 	if want := `{"select":null}`; string(got) != want {
+		t.Errorf("Referente = %s, want %s", got, want)
+	}
+}
+
+// The other half of the manifest's assignee support: a name, resolved from the
+// partial form a manifest is likely to carry, reaching the column as the
+// canonical option.
+func TestApplyWritesTheAssignee(t *testing.T) {
+	var written map[string]any
+	cfg := stubForAssignee(t, assigneeProfile, &written)
+
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "tasks.csv")
+	os.WriteFile(manifestPath, []byte("op,ticket,assignee\nset,BDF-231,mirko\n"), 0o600)
+
+	captureStdout(t, func() {
+		if code := executeArgs([]string{
+			"apply", "--file", manifestPath, "--config", cfg,
+		}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+
+	got, _ := json.Marshal(written["Referente"])
+	if want := `{"select":{"name":"Mirko Spinato"}}`; string(got) != want {
 		t.Errorf("Referente = %s, want %s", got, want)
 	}
 }

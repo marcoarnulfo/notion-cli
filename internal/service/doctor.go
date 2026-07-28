@@ -144,8 +144,20 @@ func (s *Service) checkAssignee(schema *notion.Schema) Check {
 	if s.profile.Me == "" {
 		return Check{"assignee", "ok", "mapped; no identity configured (--assignee me is unavailable)"}
 	}
-	prop := schema.Properties[s.profile.Properties.Assignee]
-	resolved, err := tracker.ResolveOption("me", s.profile.Me, prop.Options)
+	// A missing column would otherwise reach ResolveOption as a zero-value
+	// Property, and its "allowed values are:" would trail off into nothing —
+	// a message that names no cause and offers no fix. checkProperties already
+	// reports the missing column and what to do about it, so this says only
+	// what it can no longer answer.
+	prop, ok := schema.Properties[s.profile.Properties.Assignee]
+	if !ok {
+		return Check{"assignee", "warn", fmt.Sprintf(
+			"cannot check the identity %q: the mapped column %q no longer exists",
+			s.profile.Me, s.profile.Properties.Assignee)}
+	}
+	// "assignee", not "me": the role names the column being searched, and an
+	// error reading `unknown me "Marco"` describes nothing the user can act on.
+	resolved, err := tracker.ResolveOption("assignee", s.profile.Me, prop.Options)
 	if err != nil {
 		return Check{"assignee", "warn", fmt.Sprintf(
 			"the configured identity %q no longer resolves: %v\n"+
