@@ -285,3 +285,76 @@ func TestUnassignDryRunSaysWhatItWouldClear(t *testing.T) {
 		t.Errorf("a dry run wrote %v", written)
 	}
 }
+
+func TestSetWritesTheResolvedPriority(t *testing.T) {
+	var written map[string]any
+	cfg := stubForAssignee(t, assigneeProfile, &written)
+
+	if code := executeArgs([]string{
+		"set", "--ticket", "BDF-231", "--priority", "alta", "--config", cfg,
+	}); code != ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+
+	got, _ := json.Marshal(written["Urgenza"])
+	if want := `{"select":{"name":"ALTA"}}`; string(got) != want {
+		t.Errorf("Urgenza = %s, want %s", got, want)
+	}
+}
+
+func TestPriorityUsageErrorsExitTwo(t *testing.T) {
+	var written map[string]any
+	cfg := stubForAssignee(t, assigneeProfile, &written)
+
+	if code := executeArgs([]string{
+		"set", "--ticket", "BDF-231", "--priority", "URGENTISSIMA", "--config", cfg,
+	}); code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+	}
+	if written != nil {
+		t.Errorf("a usage error still wrote %v", written)
+	}
+}
+
+func TestPriorityOnAnUnmappedRoleExitsOne(t *testing.T) {
+	// Exit 1, not 2, exactly like every other unmapped role: the message comes
+	// from an untyped fmt.Errorf shared with ticket/status/title/due, and
+	// typing it for priority alone would change --due's exit code too. Asserted
+	// so it stays a choice rather than turning into a surprise.
+	// withStubbedAPI's default profile maps no priority — the same fixture the
+	// assignee's twin test uses for this case.
+	t.Setenv(config.MeEnv, "")
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(cliSchemaJSON))
+			return
+		}
+		w.Write([]byte(`{"results":[` + cliRowJSON + `],"has_more":false}`))
+	})
+
+	if code := executeArgs([]string{
+		"set", "--ticket", "BDF-231", "--priority", "ALTA", "--config", cfg,
+	}); code != ExitError {
+		t.Fatalf("exit code = %d, want %d (ExitError)", code, ExitError)
+	}
+}
+
+func TestPriorityAndAssigneeTogether(t *testing.T) {
+	// Two roles, one write: both columns must reach the payload.
+	var written map[string]any
+	cfg := stubForAssignee(t, assigneeProfile, &written)
+
+	if code := executeArgs([]string{
+		"set", "--ticket", "BDF-231", "--priority", "media", "--assignee", "mirko", "--config", cfg,
+	}); code != ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+	urgenza, _ := json.Marshal(written["Urgenza"])
+	referente, _ := json.Marshal(written["Referente"])
+	if string(urgenza) != `{"select":{"name":"MEDIA"}}` {
+		t.Errorf("Urgenza = %s", urgenza)
+	}
+	if string(referente) != `{"select":{"name":"Mirko Spinato"}}` {
+		t.Errorf("Referente = %s", referente)
+	}
+}

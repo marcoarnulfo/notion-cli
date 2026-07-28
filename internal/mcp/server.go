@@ -32,6 +32,9 @@ type Row struct {
 	// Assignee is empty both when nobody is assigned and when the role is not
 	// mapped: the key is always present so an agent never has to branch on it.
 	Assignee string `json:"assignee"`
+	// Priority is empty both when the row carries no value and when the role is
+	// not mapped, the same rule Assignee follows above.
+	Priority string `json:"priority"`
 }
 
 // Fields are the writable values of a row. An empty field means "leave this

@@ -102,3 +102,33 @@ func TestListHumanRowsAreUnchangedWithoutTheRole(t *testing.T) {
 		t.Errorf("output = %q, want %q", out, want)
 	}
 }
+
+func TestListFiltersByPriorityFlag(t *testing.T) {
+	var sent map[string]any
+	cfg := stubForList(t, assigneeProfile, &sent)
+
+	captureStdout(t, func() {
+		if code := executeArgs([]string{
+			"list", "--priority", "alta", "--config", cfg,
+		}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+
+	if sent["property"] != "Urgenza" {
+		t.Fatalf("filter = %#v, want it on Urgenza", sent)
+	}
+}
+
+func TestListRowsShowThePriority(t *testing.T) {
+	var sent map[string]any
+	cfg := stubForList(t, assigneeProfile, &sent)
+
+	out := captureStdout(t, func() {
+		executeArgs([]string{"list", "--config", cfg})
+	})
+
+	if !strings.Contains(out, "!ALTA") {
+		t.Errorf("output = %q, want the priority in the row", out)
+	}
+}

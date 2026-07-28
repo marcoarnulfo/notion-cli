@@ -72,14 +72,16 @@ const cliSchemaJSON = `{"id":"ds1","title":[{"plain_text":"Tasks"}],"properties"
 	"Name":{"name":"Name","type":"title","title":{}},
 	"Ticket":{"name":"Ticket","type":"rich_text","rich_text":{}},
 	"Stato":{"name":"Stato","type":"status","status":{"options":[{"name":"Fatto"}]}},
-	"Referente":{"name":"Referente","type":"select","select":{"options":[{"name":"Andrea Ghidara"},{"name":"Marco Arnulfo"},{"name":"Mirko Spinato"}]}}}}`
+	"Referente":{"name":"Referente","type":"select","select":{"options":[{"name":"Andrea Ghidara"},{"name":"Marco Arnulfo"},{"name":"Mirko Spinato"}]}},
+	"Urgenza":{"name":"Urgenza","type":"select","select":{"options":[{"name":"ALTA"},{"name":"MEDIA"},{"name":"NORMALE"}]}}}}`
 
 const cliRowJSON = `{"id":"page1","url":"https://notion.so/page1",
 	"last_edited_time":"2026-07-20T10:00:00.000Z","properties":{
 	"Name":{"type":"title","title":[{"plain_text":"Hardening"}]},
 	"Ticket":{"type":"rich_text","rich_text":[{"plain_text":"BDF-231"}]},
 	"Stato":{"type":"status","status":{"name":"Fatto"}},
-	"Referente":{"type":"select","select":{"name":"Mirko Spinato"}}}}`
+	"Referente":{"type":"select","select":{"name":"Mirko Spinato"}},
+	"Urgenza":{"type":"select","select":{"name":"ALTA"}}}}`
 
 // assigneeProfile maps the role and configures an identity, for the tests that
 // exercise --assignee, --unassign and "me".
@@ -96,6 +98,7 @@ profiles:
       status: Stato
       title: Name
       assignee: Referente
+      priority: Urgenza
 `
 
 // assigneeProfileNoIdentity maps the role but says nothing about who "me" is:
@@ -112,6 +115,7 @@ profiles:
       status: Stato
       title: Name
       assignee: Referente
+      priority: Urgenza
 `
 
 func TestGetJSONPrintsAStableSchema(t *testing.T) {
@@ -611,6 +615,68 @@ func TestGetHumanOutputIsUnchangedWithoutTheRole(t *testing.T) {
 	})
 
 	want := "BDF-231  Hardening  [Fatto]\n  https://notion.so/page1\n"
+	if out != want {
+		t.Errorf("output = %q, want %q", out, want)
+	}
+}
+
+func TestGetJSONCarriesThePriority(t *testing.T) {
+	cfg := stubForGet(t, assigneeProfile)
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{
+			"get", "--ticket", "BDF-231", "--json", "--config", cfg,
+		}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+
+	var row map[string]any
+	if err := json.Unmarshal([]byte(out), &row); err != nil {
+		t.Fatalf("output is not JSON: %s", out)
+	}
+	if row["priority"] != "ALTA" {
+		t.Errorf("priority = %v, want %q", row["priority"], "ALTA")
+	}
+}
+
+func TestGetHumanOutputShowsPriorityBeforeTheAssignee(t *testing.T) {
+	cfg := stubForGet(t, assigneeProfile)
+
+	out := captureStdout(t, func() {
+		executeArgs([]string{"get", "--ticket", "BDF-231", "--config", cfg})
+	})
+
+	if !strings.Contains(out, "!ALTA  @Mirko Spinato") {
+		t.Errorf("output = %q, want the priority before the assignee", out)
+	}
+}
+
+// cliRowNoPriorityJSON is the shared row with Urgenza empty: the case where one
+// of the two trailing segments is there and the other is not, which is where a
+// stray separator or an orphan sigil would hide.
+const cliRowNoPriorityJSON = `{"id":"page1","url":"https://notion.so/page1",
+	"last_edited_time":"2026-07-20T10:00:00.000Z","properties":{
+	"Name":{"type":"title","title":[{"plain_text":"Hardening"}]},
+	"Ticket":{"type":"rich_text","rich_text":[{"plain_text":"BDF-231"}]},
+	"Stato":{"type":"status","status":{"name":"Fatto"}},
+	"Referente":{"type":"select","select":{"name":"Mirko Spinato"}},
+	"Urgenza":{"type":"select","select":null}}}`
+
+func TestGetHumanOutputWithOnlyOneOfTheTwoSegments(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(cliSchemaJSON))
+			return
+		}
+		w.Write([]byte(`{"results":[` + cliRowNoPriorityJSON + `],"has_more":false}`))
+	}, assigneeProfile)
+
+	out := captureStdout(t, func() {
+		executeArgs([]string{"get", "--ticket", "BDF-231", "--config", cfg})
+	})
+
+	want := "BDF-231  Hardening  [Fatto]  @Mirko Spinato\n  https://notion.so/page1\n"
 	if out != want {
 		t.Errorf("output = %q, want %q", out, want)
 	}

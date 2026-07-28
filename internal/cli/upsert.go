@@ -15,6 +15,7 @@ type writeFlags struct {
 	due      string
 	assignee string
 	unassign bool
+	priority string
 	asJSON   bool
 	bodyFile string
 	expand   bool
@@ -32,6 +33,8 @@ func (wf *writeFlags) bindShared(cmd *cobra.Command) {
 			"and 'me' stands for NOTION_TRACK_ME")
 	cmd.Flags().BoolVar(&wf.unassign, "unassign", false, "clear the assignee")
 	cmd.MarkFlagsMutuallyExclusive("assignee", "unassign")
+	cmd.Flags().StringVar(&wf.priority, "priority", "",
+		"how urgent the row is; a partial value is enough when it is unambiguous")
 	cmd.Flags().BoolVar(&wf.asJSON, "json", false, "print machine-readable JSON")
 	cmd.Flags().StringVar(&wf.bodyFile, "body-file", "",
 		"Markdown file whose content replaces the page body ('-' for stdin); replace semantics, owns the body")
@@ -93,7 +96,7 @@ func (wf *writeFlags) bindWithPageID(cmd *cobra.Command) {
 func (wf *writeFlags) fields() tracker.Fields {
 	return tracker.Fields{
 		Ticket: wf.ticket, Title: wf.title, Status: wf.status, Due: wf.due,
-		Assignee: wf.assignee, Unassign: wf.unassign,
+		Assignee: wf.assignee, Unassign: wf.unassign, Priority: wf.priority,
 	}
 }
 

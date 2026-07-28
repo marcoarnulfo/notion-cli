@@ -49,6 +49,18 @@ func assigneeSuffix(p notion.Page, props config.Properties) string {
 	return ""
 }
 
+// prioritySuffix is assigneeSuffix's twin, and exists for the same reason: the
+// two-space separator and the sigil must not drift between get and list.
+//
+// A different sigil from the assignee's "@" on purpose — two marks for two
+// different things, readable in a row that carries both and has no header.
+func prioritySuffix(p notion.Page, props config.Properties) string {
+	if value := p.Properties[props.Priority].Text; value != "" {
+		return "  !" + value
+	}
+	return ""
+}
+
 // exitCodeFor maps an error onto the process exit code, so that pipelines can
 // tell "not found" from "token expired" without parsing messages.
 //
