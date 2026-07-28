@@ -128,8 +128,17 @@ git commit -m "feat(config): add the priority property"
 - Test: `internal/tracker/payload_test.go`
 
 **Interfaces:**
-- Produces: `tracker.Fields.Priority string`, **in coda allo struct**, dopo `Unassign`. L'ordine è vincolante: `internal/cli` converte `mcp.Fields` in `tracker.Fields` direttamente, e la conversione compila solo se le due facce restano identiche.
+- Produces: `tracker.Fields.Priority string`, `mcp.Fields.Priority string` e `upsertArgs.Priority string`, tutti e tre **in coda ai rispettivi struct** e **in questo stesso commit**.
 - Consumes: `config.Properties.Priority` (Task 1).
+
+**Perché tre struct e non uno.** Il codebase ha cinque conversioni dirette di tipo, ognuna dichiarata load-bearing perché è ciò che impedisce al contratto JSON documentato e a ciò che vede un agente di divergere in silenzio. Tre di esse formano una catena che passa da questo struct:
+
+| Conversione | Dove |
+|---|---|
+| `tracker.Fields(f)` da `mcp.Fields` | `internal/cli/mcp.go`, in `fieldsFromMCP` |
+| `Fields(a)` da `upsertArgs` | `internal/mcp/server.go`, in `fieldsOf` |
+
+Una conversione diretta compila solo se i due tipi hanno campi identici per nome, tipo e **ordine** (i tag non contano). Aggiungere `Priority` a `tracker.Fields` da solo **rompe la compilazione di `internal/cli`**, e con essa `go build ./...`, fino a che le altre due facce non seguono. Rinviarle a un task successivo lascerebbe l'albero rotto per l'intera catena di task in mezzo, e farebbe fallire i loro gate per una causa che i loro Step attribuirebbero ad altro.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -207,6 +216,22 @@ E, in `BuildProperties`, una riga accanto alle altre `add`, dopo quella dell'ass
 
 Non serve altro: il ramo `select` di `add` costruisce già il payload e valida il valore contro le opzioni dello schema, nominando il ruolo che gli viene passato.
 
+Poi, **nello stesso commit**, le altre due facce della catena di conversioni. In `internal/mcp/server.go`, in coda a `Fields`:
+
+```go
+	Priority string
+```
+
+e in coda a `upsertArgs`:
+
+```go
+	Priority string `json:"priority,omitempty" jsonschema:"how urgent the row is; must be one of the values the board offers, and a partial value is enough when unambiguous; omit to leave it unchanged"`
+```
+
+Nient'altro del pacchetto `mcp` cambia qui: i tool leggono già questi struct, e il comportamento end-to-end lo verifica il Task 8.
+
+Verificare prima di committare che `go build ./...` passi: è questo il gate che dice se la catena di conversioni è di nuovo intera.
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `go test ./internal/tracker/ -v`
@@ -215,7 +240,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/tracker/payload.go internal/tracker/payload_test.go
+git add internal/tracker/payload.go internal/tracker/payload_test.go internal/mcp/server.go
 git commit -m "feat(tracker): build the priority select"
 ```
 
@@ -254,20 +279,21 @@ func TestGuessMappingPriority(t *testing.T) {
 		}
 	})
 
-	t.Run("never reuses the column taken by assignee", func(t *testing.T) {
-		// A board with one select that both roles would recognise: assignee
-		// claims it first, and priority must not claim it too.
+	t.Run("never reuses the column status claimed by fallback", func(t *testing.T) {
+		// This is the case the guard exists for. There is no status-typed
+		// column, so status falls back to "the only candidate wins" and claims
+		// the lone select — which happens to be one priority would recognise
+		// by name. Without the guard, both roles end up on Urgenza.
 		schema := &notion.Schema{Properties: map[string]notion.Property{
 			"Nome task": {Name: "Nome task", Type: "title"},
-			"Stato":     {Name: "Stato", Type: "status"},
-			"Referente": {Name: "Referente", Type: "select"},
+			"Urgenza":   {Name: "Urgenza", Type: "select"},
 		}}
 		got := GuessMapping(schema)
-		if got.Assignee != "Referente" {
-			t.Fatalf("Assignee = %q, want %q", got.Assignee, "Referente")
+		if got.Status != "Urgenza" {
+			t.Fatalf("Status = %q, want the fallback to claim it", got.Status)
 		}
-		if got.Priority == got.Assignee {
-			t.Errorf("Priority = %q, want it not to reuse the assignee column", got.Priority)
+		if got.Priority != "" {
+			t.Errorf("Priority = %q, want no guess: the column is already the status", got.Priority)
 		}
 	})
 
@@ -301,9 +327,16 @@ Poi, dopo il blocco che calcola `out.Assignee`, il blocco gemello. La differenza
 
 ```go
 	// Same rule as assignee — name only, no "the only candidate wins"
-	// fallback — with one more column to skip: with two optional roles drawing
-	// from the same pool, a board holding a single recognisable select must not
-	// see it claimed twice.
+	// fallback — with one more column to skip.
+	//
+	// Only the out.Status half can fire today: status has the "only candidate
+	// wins" fallback, so it can claim a select that priority would recognise by
+	// name. The out.Assignee half cannot: both roles are guessed by name alone
+	// and their name lists are disjoint, so no column can match both. It is
+	// deliberate anyway — the day the two lists overlap, or either role gains a
+	// fallback, the guard is already where it needs to be — but it is defensive
+	// and no test can observe it, which is why the test below exercises the
+	// status half.
 	for _, name := range byType["select"] {
 		if name == out.Status || name == out.Assignee {
 			continue
@@ -327,7 +360,15 @@ Expected: PASS, inclusi i test dell'assignee.
 
 - [ ] **Step 5: Verify the guard actually bites**
 
-La guardia va provata, non solo scritta: sostituire temporaneamente la riga della condizione con `if name == out.Status {`, rieseguire `go test ./internal/tracker/ -run TestGuessMappingPriority -v` e verificare che il sottotest "never reuses the column taken by assignee" **fallisca**; poi ripristinarla e verificare che torni verde. Riportare entrambi gli output.
+La guardia va provata, non solo scritta, e va provata dalla metà che può fallire: sostituire temporaneamente la condizione con `if name == out.Assignee {` — cioè togliere il controllo sullo status — e rieseguire
+
+```
+go test ./internal/tracker/ -run TestGuessMappingPriority -v
+```
+
+Il sottotest "never reuses the column status claimed by fallback" deve **fallire** (`Priority = "Urgenza"`). Ripristinare la condizione completa e verificare che torni verde. Riportare entrambi gli output.
+
+Provare invece a togliere `name == out.Assignee` lascerebbe tutto verde, e sarebbe una verifica che non verifica: vedi il commento nel codice sopra.
 
 - [ ] **Step 6: Commit**
 
@@ -351,6 +392,8 @@ git commit -m "feat(tracker): guess the priority column, never reusing another r
 - Consumes: `tracker.ResolveOption`, `config.Properties.Priority`.
 
 **Perché un helper e non una copia:** `resolveAssignee` fa tre cose — traduce `me`, cerca la colonna nello schema, risolve il valore. Solo la prima è specifica dell'assignee. Copiare le altre due per il terzo caso significherebbe tre punti da correggere quando il messaggio d'errore cambia; il reviewer del ruolo gemello aveva già segnalato la duplicazione fra `resolveAssignee` e `List`. Questo NON è la generalizzazione dei ruoli che lo spec §6 scarta: i ruoli restano campi espliciti, è solo il lookup a smettere di essere copiato.
+
+**Un cambio di comportamento che il refactor porta con sé, ed è voluto:** oggi, con `--assignee me`, un'identità configurata e il ruolo NON mappato, il messaggio cita il valore grezzo — `assignee was set to "me" but no assignee property is mapped`. Passando per l'helper cita quello già tradotto — `assignee was set to "Marco Arnulfo" …`. Nessun test copre questo incrocio, quindi nulla si rompe, e il messaggio nuovo è il migliore dei due: nomina la persona che il comando avrebbe assegnato, non il pronome. Va dichiarato qui perché un refactor che si presenta come neutrale non deve avere effetti collaterali taciuti.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -441,30 +484,9 @@ func TestResolvePriorityEdges(t *testing.T) {
 	})
 }
 
-func TestAssigneeResolutionIsUnchanged(t *testing.T) {
-	// The helper extraction must not move the assignee's behaviour: same
-	// canonical value, same error type for an unknown name.
-	var seen []string
-	srv := routes(t, "", &seen)
-	defer srv.Close()
-	ctx := context.Background()
-	s := New(notion.New("t", notion.WithBaseURL(srv.URL)), assigneeProfile("Marco Arnulfo"))
-
-	f, err := s.resolveAssignee(ctx, tracker.Fields{Assignee: "me"})
-	if err != nil {
-		t.Fatalf("resolveAssignee: %v", err)
-	}
-	if f.Assignee != "Marco Arnulfo" {
-		t.Errorf("Assignee = %q, want %q", f.Assignee, "Marco Arnulfo")
-	}
-
-	_, err = s.resolveAssignee(ctx, tracker.Fields{Assignee: "Marko"})
-	var invalid *tracker.ValidationError
-	if !errors.As(err, &invalid) {
-		t.Fatalf("error = %v, want *tracker.ValidationError", err)
-	}
-}
 ```
+
+Nessun test nuovo per la non-regressione dell'assignee: `TestResolveAssigneeMe` e `TestResolveAssigneeEdges` già coprono identicamente il valore canonico e il tipo d'errore, e lo Step 4 esegue comunque l'intera suite del pacchetto. Un terzo test degli stessi due comportamenti sarebbe rumore che si spaccia per rete di sicurezza.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -569,7 +591,7 @@ git commit -m "feat(service): resolve the priority on every write, sharing the l
 - Test: `internal/service/service_test.go`, `internal/service/plan_test.go`
 
 **Interfaces:**
-- Produces: `service.ListFilter.Priority string`, **in coda** allo struct (dopo `Unassigned`), perché `mcp.ListFilter` gli si converte direttamente.
+- Produces: `service.ListFilter.Priority string`, `mcp.ListFilter.Priority string` e `listArgs.Priority string`, tutti e tre **in coda** ai rispettivi struct e **nello stesso commit**, per la stessa ragione del Task 2: `service.ListFilter(f)` in `internal/cli/mcp.go` e `ListFilter(args)` in `internal/mcp/server.go` sono conversioni dirette, e estenderne una sola rompe la compilazione di `internal/cli`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -673,10 +695,21 @@ e in `List`, dopo il blocco dell'assignee:
 		if err != nil {
 			return nil, err
 		}
-		prop := schema.Properties[name] // resolveOption has already proven it exists
+		// No ok check: resolveOption returned without error, so it found this
+		// same column in this same memoised schema. Schema() caches under a
+		// mutex, so the map read here and the one it read are the same object.
+		prop := schema.Properties[name]
 		clauses = append(clauses, notion.EqualsFilter(name, prop.Type, resolved))
 	}
 ```
+
+E, nello stesso commit, le altre due facce: `Priority string` in coda a `ListFilter` in `internal/mcp/server.go`, e in coda a `listArgs`:
+
+```go
+	Priority string `json:"priority,omitempty" jsonschema:"only return rows with this priority; a partial value is enough when unambiguous"`
+```
+
+**Una divergenza dichiarata, non un difetto:** il ramo assignee di `List` conserva il proprio lookup e i propri messaggi (`cannot filter by assignee: no assignee property is mapped`) perché `--unassigned` ha bisogno della colonna senza risolvere alcun valore; il ramo priority delega a `resolveOption` e quindi eredita i messaggi di quello (`priority was set to "ALTA" but no priority property is mapped`). I due dicono la stessa cosa con parole diverse, e in un contesto di filtro "was set to" è meno preciso. Lo si accetta qui — unificare vorrebbe dire passare a `resolveOption` un contesto d'uso, ossia parametrizzare i messaggi, che è più complicato del problema — ma va scritto, perché fra ruoli gemelli una differenza silenziosa è un difetto.
 
 In `internal/service/plan.go`, in `planFor`, una riga nella slice delle `PlannedProperty`:
 
@@ -692,7 +725,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/service/
+git add internal/service/ internal/mcp/server.go
 git commit -m "feat(service): filter listings by priority, and plan it in dry runs"
 ```
 
@@ -749,6 +782,29 @@ func TestPriorityUsageErrorsExitTwo(t *testing.T) {
 	}
 }
 
+func TestPriorityOnAnUnmappedRoleExitsOne(t *testing.T) {
+	// Exit 1, not 2, exactly like every other unmapped role: the message comes
+	// from an untyped fmt.Errorf shared with ticket/status/title/due, and
+	// typing it for priority alone would change --due's exit code too. Asserted
+	// so it stays a choice rather than turning into a surprise.
+	// withStubbedAPI's default profile maps no priority — the same fixture the
+	// assignee's twin test uses for this case.
+	t.Setenv(config.MeEnv, "")
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(cliSchemaJSON))
+			return
+		}
+		w.Write([]byte(`{"results":[` + cliRowJSON + `],"has_more":false}`))
+	})
+
+	if code := executeArgs([]string{
+		"set", "--ticket", "BDF-231", "--priority", "ALTA", "--config", cfg,
+	}); code != ExitError {
+		t.Fatalf("exit code = %d, want %d (ExitError)", code, ExitError)
+	}
+}
+
 func TestPriorityAndAssigneeTogether(t *testing.T) {
 	// Two roles, one write: both columns must reach the payload.
 	var written map[string]any
@@ -802,6 +858,36 @@ func TestGetHumanOutputShowsPriorityBeforeTheAssignee(t *testing.T) {
 
 	if !strings.Contains(out, "!ALTA  @Mirko Spinato") {
 		t.Errorf("output = %q, want the priority before the assignee", out)
+	}
+}
+
+// cliRowNoPriorityJSON is the shared row with Urgenza empty: the case where one
+// of the two trailing segments is there and the other is not, which is where a
+// stray separator or an orphan sigil would hide.
+const cliRowNoPriorityJSON = `{"id":"page1","url":"https://notion.so/page1",
+	"last_edited_time":"2026-07-20T10:00:00.000Z","properties":{
+	"Name":{"type":"title","title":[{"plain_text":"Hardening"}]},
+	"Ticket":{"type":"rich_text","rich_text":[{"plain_text":"BDF-231"}]},
+	"Stato":{"type":"status","status":{"name":"Fatto"}},
+	"Referente":{"type":"select","select":{"name":"Mirko Spinato"}},
+	"Urgenza":{"type":"select","select":null}}}`
+
+func TestGetHumanOutputWithOnlyOneOfTheTwoSegments(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(cliSchemaJSON))
+			return
+		}
+		w.Write([]byte(`{"results":[` + cliRowNoPriorityJSON + `],"has_more":false}`))
+	}, assigneeProfile)
+
+	out := captureStdout(t, func() {
+		executeArgs([]string{"get", "--ticket", "BDF-231", "--config", cfg})
+	})
+
+	want := "BDF-231  Hardening  [Fatto]  @Mirko Spinato\n  https://notion.so/page1\n"
+	if out != want {
+		t.Errorf("output = %q, want %q", out, want)
 	}
 }
 ```
@@ -1095,8 +1181,10 @@ git commit -m "feat: map the priority column in init, doctor and the wizard"
 - Test: `internal/manifest/manifest_test.go`, `internal/cli/apply_test.go`, `internal/mcp/server_test.go`
 
 **Interfaces:**
-- Produces: `manifest.Entry.Priority string`; `mcp.Fields.Priority` e `mcp.ListFilter.Priority` (entrambi **in coda**, allineati alle loro controparti); `priority` in `upsertArgs` e `listArgs`.
-- Consumes: `tracker.Fields.Priority` (Task 2), `service.ListFilter.Priority` (Task 5), `mcp.Row.Priority` (già aggiunto nel Task 6).
+- Produces: `manifest.Entry.Priority string`.
+- Consumes: `tracker.Fields.Priority` e `mcp.Fields.Priority`/`upsertArgs.Priority` (Task 2), `service.ListFilter.Priority` e `mcp.ListFilter.Priority`/`listArgs.Priority` (Task 5), `mcp.Row.Priority` (Task 6).
+
+**Gli struct MCP sono già a posto.** I campi sono stati aggiunti insieme alle loro controparti nei Task 2, 5 e 6, perché le conversioni dirette non tollerano di restare a metà nemmeno per un commit. Qui restano il manifest e i test MCP di comportamento: la prova che quei campi, oltre a compilare, arrivano davvero dove devono.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1212,11 +1300,7 @@ Expected: FAIL — `unknown field "priority"`, e i campi mancanti in `mcp`.
 
 `internal/cli/apply.go`: `Priority: entry.Priority` nel `tracker.Fields` costruito da `applyOne`, e la colonna nuova in `applyExample`.
 
-`internal/mcp/server.go`: `Priority string` in coda a `Fields` e a `ListFilter`; `priority` in `upsertArgs` e `listArgs`, con un `jsonschema` che dica cosa accetta — è la documentazione che l'agente legge per decidere come chiamare il tool:
-
-```go
-	Priority string `json:"priority,omitempty" jsonschema:"how urgent the row is; must be one of the values the board offers, and a partial value is enough when unambiguous; omit to leave it unchanged"`
-```
+`internal/mcp/server.go` non cambia: i campi e i loro tag `jsonschema` sono già stati aggiunti nei Task 2 e 5. Verificare soltanto che i tag siano quelli giusti per il contesto — quello di `upsertArgs` descrive una scrittura ("omit to leave it unchanged"), quello di `listArgs` un filtro ("only return rows with this priority") — e correggerli qui se il Task 2 o il 5 li ha invertiti.
 
 - [ ] **Step 4: Run test to verify it passes**
 
