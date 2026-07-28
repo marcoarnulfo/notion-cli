@@ -18,7 +18,7 @@ It authenticates with a Notion **internal integration token** only — no browse
 
 - **Idempotent upsert** (`upsert`) — create-or-update a ticket row by ticket key. Two runs, one row.
 - **Update-only write** (`set`) — fails with a distinct exit code if the ticket doesn't exist yet, instead of silently creating it.
-- **Read** (`get`, `list`) — one row or many, optionally filtered by status or assignee, human-readable or `--json`.
+- **Read** (`get`, `list`) — one row or many, optionally filtered by status, assignee or priority, human-readable or `--json`.
 - **Interactive browsing** (`notion-track` with no arguments, at a terminal) — a TUI over the tracked rows: filter by status, change a status inline, open a row in Notion, create one without leaving the view.
 - **Diagnostics** (`doctor`) — checks the token, data source access, the property mapping (including type drift since `init`), scans the whole data source for duplicate ticket keys, and warns if a git-tracked file looks like it carries your integration token.
 - **Guided setup** (`init`) — a bare `notion-track init` at a terminal opens a wizard that picks the data source and proposes the property mapping for you; the flag form writes the same profile non-interactively, validated against the data source's live schema before anything is saved. `init --list` discovers the data source ids your integration can see. At an interactive terminal it also offers to collect and save the integration token if none is found (see [Configuration](#configuration)).
@@ -96,6 +96,12 @@ There is no `go get`-able prebuilt binary release yet — GoReleaser and GitHub 
    notion-track list --assignee me --status "To do"
    notion-track list --unassigned
    ```
+9. **(Optional) Track how urgent each row is.** Map a `select` column with `--priority-prop` (see [Usage](#usage) below); there's no identity to export for this one, so it's ready to use as soon as it's mapped:
+   ```bash
+   notion-track list --priority ALTA --status "To do"
+   notion-track list --priority ALTA --assignee me
+   notion-track set --ticket BDF-1 --priority alta --assignee mirko
+   ```
 
 ## Usage
 
@@ -133,7 +139,7 @@ opens a wizard: it picks up your token (asking for it only if there isn't one ye
 The wizard needs a terminal *and* an otherwise-bare command line. Passing any configuring flag, or running without a TTY — CI, a pipe, an agent — takes the explicit form below, unchanged:
 
 ```
-notion-track init --data-source-id <id> --ticket-prop <name> --status-prop <name> --title-prop <name> [--due-prop <name>] [--assignee-prop <name>] [--me <value>] [--database-id <id>] [--list]
+notion-track init --data-source-id <id> --ticket-prop <name> --status-prop <name> --title-prop <name> [--due-prop <name>] [--assignee-prop <name>] [--priority-prop <name>] [--me <value>] [--database-id <id>] [--list]
 ```
 
 | Flag | Meaning |
@@ -144,13 +150,16 @@ notion-track init --data-source-id <id> --ticket-prop <name> --status-prop <name
 | `--title-prop string` | title property (required) |
 | `--due-prop string` | date property (optional) |
 | `--assignee-prop string` | `select` property naming who owns the row (optional) |
+| `--priority-prop string` | `select` property ranking how urgent the row is (optional) |
 | `--me string` | the value `--assignee me` resolves to; resolved and validated against `--assignee-prop`'s options before being saved (optional, needs `--assignee-prop`) |
 | `--database-id string` | database id, recorded for reference only — every read/write is keyed off `--data-source-id`, not this |
 | `--list` | list the data source ids shared with the integration, and exit |
 
-Each mapped property is checked against the data source's live schema; `init` refuses to write a profile that would break on first use (wrong type, or a property that doesn't exist). `--ticket-prop`, `--status-prop`, and `--title-prop` are required in practice — `init` returns a usage error naming which one is missing — even though `--due-prop` and `--assignee-prop` are optional. The profile is written under the name given by `--profile` (default `"default"`); if this is the first profile in the file it also becomes `default_profile`. Running `init` again with the same `--profile` name overwrites that profile without touching the others.
+Each mapped property is checked against the data source's live schema; `init` refuses to write a profile that would break on first use (wrong type, or a property that doesn't exist). `--ticket-prop`, `--status-prop`, and `--title-prop` are required in practice — `init` returns a usage error naming which one is missing — even though `--due-prop`, `--assignee-prop` and `--priority-prop` are optional. The profile is written under the name given by `--profile` (default `"default"`); if this is the first profile in the file it also becomes `default_profile`. Running `init` again with the same `--profile` name overwrites that profile without touching the others.
 
 `--assignee-prop` behaves like `--due-prop`: a board that tracks nobody in particular simply leaves it unmapped, and every command behaves exactly as it did before this feature. `--me` resolves its value against `--assignee-prop`'s options the same way `--assignee me` does, so a typo can't reach the file, and saves the canonical name — but because `config.yml` is meant to be committed and shared, `init --me` prints a warning recommending `NOTION_TRACK_ME` instead of relying on the value it just wrote (see [Environment variables](#environment-variables)).
+
+`--priority-prop` behaves like `--due-prop` too: a board with no notion of urgency simply leaves it unmapped, and every command behaves exactly as it did before this feature. Unlike `--assignee-prop`, there is no `--priority-me` equivalent — a priority belongs to no one, so there is no identity to resolve it against.
 
 **Token prompt.** If no token is found in `NOTION_TOKEN` or `credentials.yml`, `init` behaves differently depending on how it's run:
 
@@ -160,7 +169,7 @@ Each mapped property is checked against the data source's live schema; `init` re
 ### `upsert` — create or update a row by ticket key
 
 ```
-notion-track upsert --ticket <key> [--title <title>] [--status <status>] [--due YYYY-MM-DD] [--assignee <value>] [--unassign] [--json]
+notion-track upsert --ticket <key> [--title <title>] [--status <status>] [--due YYYY-MM-DD] [--assignee <value>] [--unassign] [--priority <value>] [--json]
 ```
 
 The flagship command. Queries the data source for the row whose ticket property equals `--ticket`: updates it if found, creates it otherwise. `0` matches → create, `1` match → update, `>1` matches → fails with exit code 4 (see [Limitations](#limitations)). Silent on success; with `--json` it prints `{"action": "created"|"updated", "page": {...}}`.
@@ -168,7 +177,7 @@ The flagship command. Queries the data source for the row whose ticket property 
 ### `set` — update an existing row only
 
 ```
-notion-track set (--ticket <key> | --page-id <id>) [--title <title>] [--status <status>] [--due YYYY-MM-DD] [--assignee <value>] [--unassign] [--json]
+notion-track set (--ticket <key> | --page-id <id>) [--title <title>] [--status <status>] [--due YYYY-MM-DD] [--assignee <value>] [--unassign] [--priority <value>] [--json]
 ```
 
 Same fields as `upsert`, but fails with exit code 3 if the row doesn't exist yet, instead of creating it. Use this where a missing row is a symptom worth surfacing rather than something to paper over.
@@ -191,6 +200,22 @@ Available on `upsert` and `set`. `--assignee` resolves what you type against the
 Not passing `--assignee` at all leaves the column untouched — the same "empty means leave it alone" rule every other field follows. `--assignee ""` is therefore a usage error, not a way to clear the column; use `--unassign` for that. `--assignee` and `--unassign` are mutually exclusive, and a select column holds one value, so `--assignee` cannot be repeated.
 
 If the role isn't mapped, passing `--assignee` or `--unassign` fails the same way any other unmapped role does — exit code 1, not 2, see [Exit codes](#exit-codes) — with a message pointing at `init --assignee-prop`.
+
+### `--priority` — how urgent a row is
+
+```bash
+notion-track set --ticket BDF-231 --priority ALTA
+notion-track set --ticket BDF-231 --priority alta    # a partial value is enough when it's unambiguous
+notion-track list --priority ALTA
+```
+
+Available on `upsert` and `set` to write it, and on `list` to filter by it. `--priority` resolves what you type against the mapped column's options the same way `--assignee` does: an exact match, then an exact case-insensitive match, then a case-insensitive substring match, stopping at whichever pass finds exactly one candidate — so `alta` reaches Notion as `ALTA`. Zero matches and more than one are both usage errors (exit code 2), naming the values the column actually offers or which ones matched, exactly like `--assignee`.
+
+Not passing `--priority` at all leaves the column untouched — the same "empty means leave it alone" rule every other field follows.
+
+If the role isn't mapped, passing `--priority` fails the same way any other unmapped role does — exit code 1, not 2, see [Exit codes](#exit-codes) — with a message pointing at `init --priority-prop`.
+
+**What it does not have, unlike `--assignee`:** there is no `--unpriority` flag — nothing in this tool can clear a priority once set; that has to be done in Notion. There is no `list --unprioritized` to find rows with none, the way `--unassigned` does for the assignee. And there is no `me`-like reserved value: a priority belongs to no one, so there is no identity to resolve.
 
 ### `--body-file` — write the page body from Markdown
 
@@ -230,12 +255,12 @@ Prints the row's ticket, title, status and URL. `--ticket` and `--page-id` are m
 ### `list` — read many rows
 
 ```
-notion-track list [--status <status>] [--assignee <value>] [--unassigned] [--json]
+notion-track list [--status <status>] [--assignee <value>] [--unassigned] [--priority <value>] [--json]
 ```
 
-Lists every row, or narrows it by `--status`, by `--assignee`, or to `--unassigned` rows — `--assignee` and `--unassigned` are mutually exclusive. An unknown status or assignee value fails fast with exit code 2, naming the values Notion actually allows for that property; `--assignee` resolves partial names and `me` exactly as it does on `upsert`/`set` (see `--assignee` / `--unassign` under [Usage](#usage) above). Filtering by assignee on a profile that doesn't map the role fails like any other unmapped role (exit code 1).
+Lists every row, or narrows it by `--status`, by `--assignee`, to `--unassigned` rows, or by `--priority` — `--assignee` and `--unassigned` are mutually exclusive. An unknown status, assignee or priority value fails fast with exit code 2, naming the values Notion actually allows for that property; `--assignee` resolves partial names and `me` exactly as it does on `upsert`/`set`, and `--priority` resolves partial values the same way (see `--assignee` / `--unassign` and `--priority` under [Usage](#usage) above). Filtering by assignee or priority on a profile that doesn't map the role fails like any other unmapped role (exit code 1). Unlike `--unassigned`, there is no `--unprioritized` to find rows with no priority.
 
-The human-readable form appends `  @<name>` to a row that has one; rows with no assignee, and every row on a profile that doesn't map the role at all, print exactly as they did before this feature.
+The human-readable form appends `  !<value>` and `  @<name>` to a row that has them; rows with neither, and every row on a profile that doesn't map either role at all, print exactly as they did before this feature.
 
 When nothing matches, the human-readable form prints `no matching tasks` **to stderr** and exits 0 — stdout stays empty, so `list | wc -l` counts rows and nothing else. `list --json` prints `[]` and says nothing on stderr.
 
@@ -249,20 +274,20 @@ Applies a list of writes from a JSON or CSV file, one entry at a time, in order.
 
 ```json
 [
-  {"op": "upsert", "ticket": "BDF-1", "title": "Hardening", "status": "In progress", "assignee": "mirko"},
+  {"op": "upsert", "ticket": "BDF-1", "title": "Hardening", "status": "In progress", "assignee": "mirko", "priority": "alta"},
   {"op": "set", "ticket": "BDF-2", "status": "Done", "unassign": true}
 ]
 ```
 
 ```csv
-op,ticket,title,status,due,body_file,assignee,unassign
-upsert,BDF-1,Hardening,In progress,2026-08-01,notes.md,mirko,
-set,BDF-2,,Done,,,,true
+op,ticket,title,status,due,body_file,assignee,unassign,priority
+upsert,BDF-1,Hardening,In progress,2026-08-01,notes.md,mirko,,alta
+set,BDF-2,,Done,,,,true,
 ```
 
-Fields: `op` (`upsert` or `set`, defaulting to `upsert` — the idempotent one, so a manifest run twice by mistake leaves the board as it was), `ticket` (required), `title`, `status`, `due`, `body_file`, `assignee`, `unassign`. An unknown field is an error rather than something quietly ignored: a manifest with `stuats` in it would otherwise leave every row's status unset and say nothing.
+Fields: `op` (`upsert` or `set`, defaulting to `upsert` — the idempotent one, so a manifest run twice by mistake leaves the board as it was), `ticket` (required), `title`, `status`, `due`, `body_file`, `assignee`, `unassign`, `priority`. An unknown field is an error rather than something quietly ignored: a manifest with `stuats` in it would otherwise leave every row's status unset and say nothing.
 
-`assignee` accepts the same partial names and the reserved `me` that `--assignee` does; `unassign` accepts `true`/`false`/empty (case-insensitive) and is registered in both formats, so it is just as legal in CSV as in JSON. Passing both `assignee` and `unassign: true` on the same entry is rejected the same way `--assignee` and `--unassign` are on the flags.
+`assignee` accepts the same partial names and the reserved `me` that `--assignee` does; `unassign` accepts `true`/`false`/empty (case-insensitive) and is registered in both formats, so it is just as legal in CSV as in JSON. Passing both `assignee` and `unassign: true` on the same entry is rejected the same way `--assignee` and `--unassign` are on the flags. `priority` accepts the same partial values that `--priority` does; there is no `unpriority` field, the same way there is no `--unpriority` flag.
 
 `body_file` paths are resolved **relative to the manifest**, not to your working directory, so a manifest and the files it names travel together.
 
@@ -348,6 +373,7 @@ profiles:
       title: Name           # title property
       due: Due              # optional: date property
       assignee: Referente   # optional: select property naming who owns the row
+      priority: Urgenza     # optional: select property ranking how urgent the row is
     me: Marco Arnulfo       # optional: the value `--assignee me` resolves to; NOTION_TRACK_ME overrides it
 ```
 
@@ -393,18 +419,19 @@ A row (`get --json`, and each entry of `list --json`):
   "page_id": "1a2b3c4d-...",
   "url": "https://www.notion.so/...",
   "last_edited_time": "2026-07-23T10:15:00Z",
-  "assignee": "Mirko Spinato"
+  "assignee": "Mirko Spinato",
+  "priority": "ALTA"
 }
 ```
 
-If the configured property mapping names a column the row doesn't actually carry, the corresponding field comes back as an empty string rather than an error — a broken mapping is `doctor`'s job to report, not a reason to fail every read. `assignee` follows the same rule and is additionally empty whenever nobody is assigned, so a script never has to branch on whether the key is present — only on whether it's empty.
+If the configured property mapping names a column the row doesn't actually carry, the corresponding field comes back as an empty string rather than an error — a broken mapping is `doctor`'s job to report, not a reason to fail every read. `assignee` follows the same rule and is additionally empty whenever nobody is assigned, so a script never has to branch on whether the key is present — only on whether it's empty. `priority` follows the same rule: always present, empty whenever the row carries no value or the role isn't mapped.
 
 `upsert --json` / `set --json`:
 
 ```json
 {
   "action": "created",
-  "page": { "ticket": "BDF-231", "title": "Hardening", "status": "In progress", "page_id": "...", "url": "...", "last_edited_time": "...", "assignee": "Mirko Spinato" }
+  "page": { "ticket": "BDF-231", "title": "Hardening", "status": "In progress", "page_id": "...", "url": "...", "last_edited_time": "...", "assignee": "Mirko Spinato", "priority": "ALTA" }
 }
 ```
 
@@ -432,8 +459,8 @@ Pipelines can branch on these without parsing any message text:
 | Code | Name | Meaning |
 |---|---|---|
 | `0` | OK | success |
-| `1` | Error | a generic failure — a network/API error, `doctor` reporting a failed check other than `token`, or a value passed for a role (`--assignee`, `--due`, …) that isn't mapped in the active profile |
-| `2` | Usage | the invocation cannot work as written: a missing/invalid flag, `--ticket` and `--page-id` both given or neither given, an unknown command, no config yet (`notion-track init` was never run), a status value the data source doesn't allow, a malformed `--page-id`, a `--page-id` that resolves outside the active profile's data source, an `--assignee` value that resolves to zero or more than one option, an empty `--assignee`, `--assignee me` with no configured identity, or `--assignee` combined with `--unassign` (or with `--unassigned` on `list`) |
+| `1` | Error | a generic failure — a network/API error, `doctor` reporting a failed check other than `token`, or a value passed for a role (`--assignee`, `--priority`, `--due`, …) that isn't mapped in the active profile |
+| `2` | Usage | the invocation cannot work as written: a missing/invalid flag, `--ticket` and `--page-id` both given or neither given, an unknown command, no config yet (`notion-track init` was never run), a status value the data source doesn't allow, a malformed `--page-id`, a `--page-id` that resolves outside the active profile's data source, an `--assignee` value that resolves to zero or more than one option, an empty `--assignee`, `--assignee me` with no configured identity, `--assignee` combined with `--unassign` (or with `--unassigned` on `list`), or a `--priority` value that resolves to zero or more than one option |
 | `3` | Not found | the requested ticket has no matching row, or the page id has no matching page (or one not shared with this integration) (`get`, `set`) |
 | `4` | Duplicate | the ticket key matches more than one row (`upsert`, `set`, `get`) |
 | `5` | Auth | no token was found (including a `credentials.yml` that exists but can't be read), or Notion rejected it (401/403) — including `doctor`, when its `token` check is the only one that failed |
@@ -478,7 +505,7 @@ Because the tool is quiet on success, speaks `--json` with a stable schema, and 
 }
 ```
 
-It exposes `upsert_task`, `set_task`, `get_task` and `list_tasks`, returning the same JSON shape documented above. `upsert_task` and `set_task` accept `assignee` and `unassign` exactly like the CLI's flags do — a partial name, or the reserved `me`; `list_tasks` accepts `assignee` and `unassigned`, mutually exclusive with each other. It is an adapter, not a second implementation: every tool reaches the same code the CLI commands do, so the duplicate check, the status validation and the property mapping behave identically for an agent. `stdout` carries the JSON-RPC protocol and nothing else.
+It exposes `upsert_task`, `set_task`, `get_task` and `list_tasks`, returning the same JSON shape documented above. `upsert_task` and `set_task` accept `assignee` and `unassign` exactly like the CLI's flags do — a partial name, or the reserved `me`; `list_tasks` accepts `assignee` and `unassigned`, mutually exclusive with each other. `upsert_task` and `set_task` also accept `priority`, resolved the same way `--priority` is — a partial value is enough when unambiguous; `list_tasks` accepts `priority` too, narrowing to rows carrying that value. There is no `unpriority` argument, the same way the CLI has no `--unpriority` flag. It is an adapter, not a second implementation: every tool reaches the same code the CLI commands do, so the duplicate check, the status validation and the property mapping behave identically for an agent. `stdout` carries the JSON-RPC protocol and nothing else.
 
 This does not contradict the reason this tool exists. Notion's *hosted* MCP endpoint is the one blocked by corporate firewalls; a *local* server, running on your machine with your own integration token, reaches agents exactly where the hosted one cannot.
 
@@ -488,7 +515,7 @@ Contributions are welcome — this is a free, open-source project. See **[CONTRI
 
 ## Roadmap
 
-Implemented today: `init` (interactive wizard and flag-driven, with `--list`), the browsing TUI, `upsert`, `set`, `get`, `list`, `doctor`; `--dry-run` on `upsert`/`set`; `apply` for bulk writes from a manifest; `--body-file` on `upsert`/`set` to write the page body from Markdown, with `--expand` for `{{ticket}}`/`{{date}}` placeholders; `--json` on every command that produces output; `mcp` to serve the same operations as MCP tools; an optional `assignee` role with `--assignee`/`--unassign`, `list --assignee`/`--unassigned` and the `me` identity; profiles; retry with backoff.
+Implemented today: `init` (interactive wizard and flag-driven, with `--list`), the browsing TUI, `upsert`, `set`, `get`, `list`, `doctor`; `--dry-run` on `upsert`/`set`; `apply` for bulk writes from a manifest; `--body-file` on `upsert`/`set` to write the page body from Markdown, with `--expand` for `{{ticket}}`/`{{date}}` placeholders; `--json` on every command that produces output; `mcp` to serve the same operations as MCP tools; an optional `assignee` role with `--assignee`/`--unassign`, `list --assignee`/`--unassigned` and the `me` identity; an optional `priority` role with `--priority` on `upsert`/`set`/`list`; profiles; retry with backoff.
 
 Not yet built:
 

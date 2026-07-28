@@ -3,17 +3,21 @@ name: notion-track
 description: >-
   Manage Notion task-tracking rows from the terminal with the notion-track CLI:
   create tasks, change their status (mark done / in progress / archived), assign
-  or clear who owns one, read a single task, and list tasks filtered by status
-  or by assignee. Use whenever the user wants to touch a task on their Notion
-  board — create one, move it to another status, assign or reassign it, look
-  one up, list what's in a given state or assigned to someone, or apply many
+  or clear who owns one, mark how urgent one is, read a single task, and list
+  tasks filtered by status, by assignee, or by priority. Use whenever the user
+  wants to touch a task on their Notion board — create one, move it to another
+  status, assign or reassign it, mark it urgent, look one up, list what's in a
+  given state, assigned to someone, or at a given priority, or apply many
   changes at once from a file. Triggers on: "task su Notion", "segna come
   fatto", "mettilo in corso", "aggiorna lo stato", "crea un task", "elenca i
   task", "che task ho da fare", "creali tutti", "aggiornali tutti", "assegna a
   Mirko", "prendi in carico", "chi ha in mano X", "cosa devo fare io", "task
-  senza referente", "mark done", "update the status", "assign this to X", "take
-  ownership of X", "who owns X", "what's on my plate", "unassigned tasks",
-  "notion-track". The user often phrases these in Italian.
+  senza referente", "è urgente", "priorità alta", "mettilo in alta", "cosa c'è
+  di urgente", "cosa faccio prima", "mark done", "update the status", "assign
+  this to X", "take ownership of X", "who owns X", "what's on my plate",
+  "unassigned tasks", "it's urgent", "high priority", "mark it high priority",
+  "what's urgent", "what should I do first", "notion-track". The user often
+  phrases these in Italian.
 ---
 
 # notion-track — managing Notion tasks from the CLI
@@ -64,7 +68,7 @@ one is required. `upsert` only takes `--ticket` (see below for why).
 ### Create or update a task by name — `upsert`
 
 ```sh
-notion-track upsert --ticket "<name>" [--status "<status>"] [--title "<title>"] [--due YYYY-MM-DD] [--assignee "<name-or-me>"] [--body-file <path>] [--dry-run] [--json]
+notion-track upsert --ticket "<name>" [--status "<status>"] [--title "<title>"] [--due YYYY-MM-DD] [--assignee "<name-or-me>"] [--priority "<value>"] [--body-file <path>] [--dry-run] [--json]
 ```
 
 Creates the row if no task has that key, updates it if one does. Running it
@@ -83,8 +87,8 @@ properties that did get applied — check `body.written` before assuming a
 ### Change an existing task — `set`
 
 ```sh
-notion-track set --ticket "<name>"     --status "<status>" [--title ...] [--due ...] [--assignee "<name-or-me>"] [--body-file <path>] [--dry-run] [--json]
-notion-track set --page-id <id-or-url> --status "<status>" [--title ...] [--due ...] [--assignee "<name-or-me>"] [--body-file <path>] [--dry-run] [--json]
+notion-track set --ticket "<name>"     --status "<status>" [--title ...] [--due ...] [--assignee "<name-or-me>"] [--priority "<value>"] [--body-file <path>] [--dry-run] [--json]
+notion-track set --page-id <id-or-url> --status "<status>" [--title ...] [--due ...] [--assignee "<name-or-me>"] [--priority "<value>"] [--body-file <path>] [--dry-run] [--json]
 ```
 
 Updates only. **Fails if the task doesn't exist** (exit 3) instead of creating
@@ -124,6 +128,40 @@ message (exit 2); don't substitute a guessed name instead, ask the user or run
 If this board doesn't map an assignee column at all, `--assignee`/`--unassign`
 fail (exit 1, not 2) telling you so — that's your cue to say the board has no
 referente column, not to retry with a different flag.
+
+### Mark how urgent a task is — `--priority`
+
+Available on `upsert` and `set` to set it, and on `list` to filter by it. This
+is what "è urgente", "priorità alta", "mettilo in alta", "cosa c'è di
+urgente", "cosa faccio prima", "it's urgent", "high priority", or "what should
+I do first" mean in practice:
+
+```sh
+notion-track set --ticket "<name>" --priority ALTA
+notion-track set --ticket "<name>" --priority alta          # a partial value is enough when unambiguous
+notion-track list --priority ALTA --status "<status>"       # what's urgent, optionally narrowed
+notion-track list --priority ALTA --assignee me              # what's urgent that's mine
+```
+
+`--priority` resolves what you type against the board's priority column the
+same way `--assignee` resolves a name — exact match, then case-insensitive,
+then a case-insensitive substring — so `alta` is enough when only one option
+contains it. **Don't invent a priority value**: pass what the user said and
+let resolution match it against the board's real options; if it's ambiguous
+or unknown the error lists the real options, which is more reliable than
+guessing. Never assume a fixed vocabulary like ALTA/MEDIA/NORMALE applies —
+read the actual values with `doctor` or `list` first.
+
+**Unlike `--assignee`, this role has no way to clear a value, and no `me`.**
+There is no `--unpriority` flag — nothing in this tool can remove a priority
+once set; if asked to "remove the priority" or "togli la priorità", say that
+has to be done in Notion directly, don't guess at a flag. There is also no
+`list --unprioritized` (the priority equivalent of `--unassigned`), and no
+reserved `me` value — a priority belongs to no one, so "prendi in carico"
+never applies here.
+
+If this board doesn't map a priority column at all, `--priority` fails (exit
+1, not 2) telling you so — same as an unmapped assignee.
 
 ### Check first — `--dry-run`
 
@@ -176,20 +214,24 @@ doesn't map the role, so check for an empty string rather than a missing key.
 ### List tasks — `list`
 
 ```sh
-notion-track list [--status "<status>"] [--assignee "<name-or-me>"] [--unassigned] [--json]
+notion-track list [--status "<status>"] [--assignee "<name-or-me>"] [--unassigned] [--priority "<value>"] [--json]
 ```
 
-All rows, or narrowed by one status, by assignee, or to only-unassigned rows
-(`--assignee` and `--unassigned` are mutually exclusive). `--json` returns an
-**array** (`[]` when empty, never `null`), each element with the same fields as
-`get`. This is the way to answer "what do I have in progress?" or to find a
-task's page id — and, with `--assignee`/`--unassigned`, to answer "chi ha in
-mano X" (`list --status "<status>"` then check `assignee` per row, or `list
---assignee "<name>"` directly), "cosa devo fare io" / "what's on my plate"
-(`list --assignee me --status "<status>"`), and "task senza referente" /
-"unassigned tasks" (`list --unassigned`). `--assignee` resolves partial names
-and `me` exactly like it does on `upsert`/`set` — don't guess a full name,
-pass what the user said.
+All rows, or narrowed by one status, by assignee, to only-unassigned rows
+(`--assignee` and `--unassigned` are mutually exclusive), or by priority.
+`--json` returns an **array** (`[]` when empty, never `null`), each element
+with the same fields as `get`. This is the way to answer "what do I have in
+progress?" or to find a task's page id — and, with `--assignee`/`--unassigned`,
+to answer "chi ha in mano X" (`list --status "<status>"` then check `assignee`
+per row, or `list --assignee "<name>"` directly), "cosa devo fare io" /
+"what's on my plate" (`list --assignee me --status "<status>"`), and "task
+senza referente" / "unassigned tasks" (`list --unassigned`). `--assignee`
+resolves partial names and `me` exactly like it does on `upsert`/`set` — don't
+guess a full name, pass what the user said. With `--priority`, it also answers
+"cosa c'è di urgente" / "what's urgent" (`list --priority ALTA`) and "cosa
+faccio prima" / "what should I do first" (narrow further with `--status` and,
+if it's specifically the user's own work, `--assignee me`). There is no
+`--unprioritized` — no shortcut for rows Notion ranks with nothing.
 
 ### Many changes at once — `apply`
 
@@ -202,7 +244,7 @@ applied in order, in a single process.
 
 ```json
 [
-  {"op": "upsert", "ticket": "BDF-1", "title": "Hardening", "status": "In corso", "assignee": "mirko"},
+  {"op": "upsert", "ticket": "BDF-1", "title": "Hardening", "status": "In corso", "assignee": "mirko", "priority": "alta"},
   {"op": "set", "ticket": "BDF-2", "status": "Fatto", "unassign": true}
 ]
 ```
@@ -210,12 +252,13 @@ applied in order, in a single process.
 The format comes from the file extension (`.json` or `.csv`; a CSV needs a
 header row with the same field names). Fields: `op` (`upsert` or `set`,
 defaulting to `upsert`), `ticket` (required), `title`, `status`, `due`,
-`body_file`, `assignee`, `unassign`. An unknown field is an error rather than
-something ignored, so spell them exactly. `body_file` paths are resolved
-relative to the manifest, not to the working directory. `assignee` accepts the
-same partial names and `me` that `--assignee` does; `unassign` is
+`body_file`, `assignee`, `unassign`, `priority`. An unknown field is an error
+rather than something ignored, so spell them exactly. `body_file` paths are
+resolved relative to the manifest, not to the working directory. `assignee`
+accepts the same partial names and `me` that `--assignee` does; `unassign` is
 `true`/`false`/empty and conflicts with `assignee` on the same entry, the same
-rule the flags enforce.
+rule the flags enforce. `priority` accepts the same partial values that
+`--priority` does; there is no `unpriority` field.
 
 **It stops at the first entry that fails** and exits with that entry's own code
 (3, 4, …), after reporting how many were applied — so a partial run is
@@ -247,11 +290,11 @@ reporting to the user but does not block anything.
 | Code | Meaning | What to do |
 |---|---|---|
 | 0 | success | proceed |
-| 2 | bad usage (missing/invalid flag, unknown status, malformed page id, an `--assignee` value that's unknown or ambiguous, an empty `--assignee`, `--assignee me` with no identity configured, or `--assignee` combined with `--unassign`/`--unassigned`) | fix the invocation; a rejected status or assignee means the value isn't one the board allows — read the error's list of valid options rather than guessing again |
+| 2 | bad usage (missing/invalid flag, unknown status, malformed page id, an `--assignee` value that's unknown or ambiguous, an empty `--assignee`, `--assignee me` with no identity configured, `--assignee` combined with `--unassign`/`--unassigned`, or a `--priority` value that's unknown or ambiguous) | fix the invocation; a rejected status, assignee or priority means the value isn't one the board allows — read the error's list of valid options rather than guessing again |
 | 3 | task not found | with `set`/`get`: the ticket or page id doesn't match a row — don't retry as `upsert` without checking with the user |
 | 4 | duplicate key | more than one row has that ticket key; the tool refuses to guess. Surface it and run `doctor` to list the duplicates |
 | 5 | auth failure | the token is missing or invalid; tell the user to run `notion-track init` |
-| 1 | other error, including a role (e.g. assignee, due) that simply isn't mapped on this board | report it; for an unmapped role, say so and point at `init` rather than retrying |
+| 1 | other error, including a role (e.g. assignee, priority, due) that simply isn't mapped on this board | report it; for an unmapped role, say so and point at `init` rather than retrying |
 
 `apply` reports the exit code of the entry that stopped it, so the same table
 applies: a run that ends with 3 means one of its entries addressed a row that
@@ -300,6 +343,14 @@ notion-track list --assignee "Mirko Spinato" --json          # chi ha in mano X?
 notion-track list --unassigned --json                        # task senza referente
 ```
 
+Mark a task urgent and hand it off in one write ("è urgente" + "assegna a Mirko"), then answer "cosa c'è di urgente":
+
+```sh
+notion-track set --ticket "Deploy staging" --priority alta --assignee mirko
+notion-track list --priority ALTA --json                     # cosa c'è di urgente, across the board
+notion-track list --priority ALTA --assignee me --json        # cosa c'è di urgente ed è mio
+```
+
 Apply several changes the user asked for in one go — check, then commit to it:
 
 ```sh
@@ -341,6 +392,11 @@ front, because they change how you address and create tasks:
   isn't. When it is mapped, `doctor`'s `assignee` check also says whether `me`
   resolves to a real identity; if it doesn't, "prendi in carico"/"assign it to
   me" needs the user to set `NOTION_TRACK_ME` first, not a guessed name.
+- **Is there a priority column?** Not every board ranks urgency — `doctor` says
+  so, and `--priority` fails with exit 1 if it isn't mapped. When it is, the
+  accepted values are whatever the column's options actually are; read them
+  with `doctor` or `list` rather than assuming a fixed set like
+  ALTA/MEDIA/NORMALE applies here.
 
 - **Attribution caveat**: every change is recorded by the integration's bot
   identity, not by the person running the command. If the user asks "who moved
@@ -365,6 +421,11 @@ front, because they change how you address and create tasks:
   workspace members. `--assignee` only ever matches names the board's column
   already offers; don't try to resolve a Notion user id or invent a name it
   hasn't offered.
+- Priority is a single `select` value too — a fixed vocabulary the board
+  defines, not a numeric scale, and nobody's personal priority. There is no
+  way to clear it through this tool (no `--unpriority`) and no
+  `list --unprioritized`; if asked to do either, say so rather than trying a
+  flag that doesn't exist.
 - If your host speaks MCP, `notion-track mcp` serves the same operations as
   tools (`upsert_task`, `set_task`, `get_task`, `list_tasks`) over stdio, with
   the same JSON shapes documented here. It is the same code underneath, so
