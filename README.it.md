@@ -38,11 +38,13 @@ L'autenticazione avviene solo con un **token di integrazione interna** di Notion
 
 ## Installazione
 
+`go install` è il modo con cui il team installa `notion-track` — ed è anche il modo in cui lo aggiorna: rilanciare esattamente lo stesso comando scarica sempre la release più recente.
+
 ```bash
 go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest
 ```
 
-Installa il binario `notion-track` in `$(go env GOPATH)/bin` (assicurati che sia nel tuo `PATH`).
+Serve una toolchain Go (vedi [Requisiti](#requisiti) sopra) e il binario finisce in `$(go env GOPATH)/bin/notion-track` — assicurati che quella directory sia nel tuo `PATH`. Fissa una release precisa al posto di `@latest` — per esempio `@v0.6.0` — quando devi riprodurre un problema contro una versione nota invece che quella più recente. In entrambi i casi, `notion-track --version` riporta la versione realmente installata, il che è ciò che rende utile chiedere "che versione hai?".
 
 <details>
 <summary>Compilare da sorgente</summary>
@@ -63,16 +65,20 @@ Ogni release taggata pubblica binari statici per macOS, Linux e Windows (amd64 e
 ```bash
 tag=v0.6.0            # scegli la release che vuoi
 os=linux arch=amd64   # oppure darwin/arm64
+archive="notion-track_${tag#v}_${os}_${arch}.tar.gz"
 
 gh release download "$tag" --repo marcoarnulfo/notion-cli \
-  --pattern "notion-track_${tag#v}_${os}_${arch}.tar.gz" --pattern checksums.txt
-sha256sum --check --ignore-missing checksums.txt   # oppure: shasum -a 256 --check --ignore-missing checksums.txt
-tar -xzf "notion-track_${tag#v}_${os}_${arch}.tar.gz" notion-track
+  --pattern "$archive" --pattern checksums.txt
+grep -E "  ${archive}\$" checksums.txt > expected.txt   # `sha256sum -c --ignore-missing` sul file grezzo può uscire 0 senza aver verificato nulla se il nome dell'archivio non combacia con nessuna riga — così una riga mancante diventa un errore esplicito
+sha256sum --check expected.txt   # oppure: shasum -a 256 --check expected.txt
+tar -xzf "$archive" notion-track
 ```
 
 Windows viaggia come `.zip` con lo stesso nome — cambia il pattern e scompattalo con unzip.
 
-I binari non usano cgo, quindi girano su qualunque immagine, con o senza libc. `notion-track --version` riporta il tag della release; una build da sorgente riporta `dev`.
+I binari non usano cgo, quindi girano su qualunque immagine, con o senza libc. `notion-track --version` riporta il tag della release su un binario precompilato o tramite `go install`, e su una build locale una pseudo-versione derivata dal commit oppure `dev`, a seconda del checkout da cui proviene.
+
+Gatekeeper su macOS: un binario scaricato dal browser porta l'attributo `com.apple.quarantine` e viene bloccato al primo avvio ("impossibile verificare lo sviluppatore"); scaricandolo con `gh` o `curl`, come sopra, quell'attributo non viene mai impostato, quindi parte senza problemi.
 
 Nota: `go install` qui sopra non richiede nessuna release — compila direttamente dal sorgente tramite il proxy dei moduli Go — quindi funziona sempre, indipendentemente dal fatto che questo repository abbia già un tag di release.
 </details>

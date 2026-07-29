@@ -14,11 +14,11 @@ import (
 // tests: it reads from stdin until the peer disconnects, which a test has no
 // peer to do.
 //
-// The handshake reports the same Version the --version flag does, so an agent
+// The handshake reports the same version the --version flag does, so an agent
 // that misbehaves against one build can be told apart from one that misbehaves
 // against another.
 var runMCPServer = func(ctx context.Context, t mcp.Tracker) error {
-	return mcp.Run(ctx, t, Version)
+	return mcp.Run(ctx, t, resolveVersion())
 }
 
 func newMCPCmd() *cobra.Command {
