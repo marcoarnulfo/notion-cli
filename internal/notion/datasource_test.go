@@ -87,3 +87,38 @@ func TestGetSchemaHandlesAResponseWithoutProperties(t *testing.T) {
 		t.Fatalf("got %d properties, want none", len(got.Properties))
 	}
 }
+
+const uniqueIDSchemaFixture = `{
+  "id": "ds1",
+  "title": [{"plain_text": "Tasks"}],
+  "properties": {
+    "Name": {"id":"title","name":"Name","type":"title","title":{}},
+    "ID":   {"id":"uid","name":"ID","type":"unique_id","unique_id":{"prefix":"BDF"}},
+    "Seq":  {"id":"seq","name":"Seq","type":"unique_id","unique_id":{"prefix":null}}
+  }
+}`
+
+func TestGetSchemaReadsTheUniqueIDPrefix(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(uniqueIDSchemaFixture))
+	}))
+	defer srv.Close()
+
+	got, err := New("t", WithBaseURL(srv.URL)).GetSchema(context.Background(), "ds1")
+	if err != nil {
+		t.Fatalf("GetSchema: %v", err)
+	}
+	if p := got.Properties["ID"]; p.Type != "unique_id" || p.Prefix != "BDF" {
+		t.Errorf("ID = %+v, want type unique_id with prefix BDF", p)
+	}
+	// A unique_id column configured without a prefix must read as "", not as
+	// the string "null" and not as a panic on the nil pointer.
+	if p := got.Properties["Seq"]; p.Type != "unique_id" || p.Prefix != "" {
+		t.Errorf("Seq = %+v, want type unique_id with an empty prefix", p)
+	}
+	// Every other type keeps an empty prefix: nothing else may start filling
+	// this field in.
+	if p := got.Properties["Name"]; p.Prefix != "" {
+		t.Errorf("Name.Prefix = %q, want empty", p.Prefix)
+	}
+}

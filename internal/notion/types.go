@@ -38,6 +38,10 @@ type Property struct {
 	Name    string
 	Type    string
 	Options []string
+	// Prefix is the string Notion prepends to a unique_id column's numbers
+	// ("BDF" in "BDF-271"). Empty for every other property type, and also for
+	// a unique_id column configured without one.
+	Prefix string
 }
 
 // Schema is the property set of a data source.
