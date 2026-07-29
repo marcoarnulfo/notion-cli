@@ -54,11 +54,12 @@ func toPageJSON(p notion.Page, props config.Properties) pageJSON {
 func newGetCmd() *cobra.Command {
 	var ticket string
 	var pageID string
+	var boardID string
 	var asJSON bool
 
 	cmd := &cobra.Command{
 		Use:   "get",
-		Short: "Read the row for a ticket, or for a Notion page id",
+		Short: "Read the row for a ticket, a board id, or a Notion page id",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			svc, err := buildService(cmd)
@@ -66,13 +67,17 @@ func newGetCmd() *cobra.Command {
 				return err
 			}
 			var page notion.Page
-			// Branch on Changed, not on the value: `--page-id ""` must still
-			// take this path so it surfaces as service.ErrEmptyPageID rather
-			// than silently falling through to a ticket lookup with an empty
-			// key it was never given.
-			if cmd.Flags().Changed("page-id") {
+			// Branch on Changed, not on the value: `--page-id ""` and `--id ""`
+			// must still take their own path so they surface as
+			// service.ErrEmptyPageID and service.ErrEmptyID rather than
+			// silently falling through to a ticket lookup with an empty key
+			// neither was ever given.
+			switch {
+			case cmd.Flags().Changed("id"):
+				page, err = svc.GetByUniqueID(cmd.Context(), boardID)
+			case cmd.Flags().Changed("page-id"):
 				page, err = svc.GetByID(cmd.Context(), pageID)
-			} else {
+			default:
 				page, err = svc.Get(cmd.Context(), ticket)
 			}
 			if err != nil {
@@ -105,7 +110,10 @@ func newGetCmd() *cobra.Command {
 		"Notion page id to address directly, bypassing the ticket lookup; "+
 			"accepts the full page URL copied from Notion, a bare 32-hex id, or a dashed UUID")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print machine-readable JSON")
-	cmd.MarkFlagsMutuallyExclusive("ticket", "page-id")
-	cmd.MarkFlagsOneRequired("ticket", "page-id")
+	cmd.Flags().StringVar(&boardID, "id", "",
+		"board id of the row, as Notion shows it (e.g. BDF-271, or just 271); "+
+			"needs an id property mapped in the profile")
+	cmd.MarkFlagsMutuallyExclusive("ticket", "page-id", "id")
+	cmd.MarkFlagsOneRequired("ticket", "page-id", "id")
 	return cmd
 }

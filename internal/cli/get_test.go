@@ -708,3 +708,89 @@ func TestGetJSONKeepsTheIDKeyWhenTheRoleIsUnmapped(t *testing.T) {
 		t.Errorf("marshalled to %s, want an empty id key", b)
 	}
 }
+
+// idProfileYAML maps the id role on top of the common profile.
+const idProfileYAML = `schema_version: 1
+default_profile: work
+profiles:
+  work:
+    database_id: db1
+    data_source_id: ds1
+    status_type: status
+    properties:
+      ticket: Ticket
+      status: Stato
+      title: Name
+      id: ID
+`
+
+// cliRowWithIDJSON is a row carrying a board id.
+const cliRowWithIDJSON = `{"id":"23fb4e5c-8a5f-4d21-b7c9-d0e1f2a3b4c5",
+	"url":"https://notion.so/23fb4e5c8a5f4d21b7c9d0e1f2a3b4c5",
+	"last_edited_time":"2026-07-20T10:00:00.000Z",
+	"parent":{"type":"data_source_id","data_source_id":"ds1"},
+	"properties":{
+	"Name":{"type":"title","title":[{"plain_text":"Hardening"}]},
+	"Ticket":{"type":"rich_text","rich_text":[{"plain_text":"BDF-231"}]},
+	"Stato":{"type":"status","status":{"name":"Fatto"}},
+	"ID":{"type":"unique_id","unique_id":{"prefix":"BDF","number":271}}}}`
+
+func TestGetByBoardIDReadsTheRow(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(cliSchemaWithIDJSON))
+			return
+		}
+		w.Write([]byte(`{"results":[` + cliRowWithIDJSON + `],"has_more":false}`))
+	}, idProfileYAML)
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"get", "--id", "BDF-271", "--json", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("output is not JSON: %s", out)
+	}
+	if got["id"] != "BDF-271" {
+		t.Errorf("id = %v, want %q", got["id"], "BDF-271")
+	}
+}
+
+func TestGetRejectsTwoWaysOfAddressingAtOnce(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaWithIDJSON))
+	}, idProfileYAML)
+
+	if code := executeArgs([]string{
+		"get", "--id", "BDF-271", "--ticket", "Hardening", "--config", cfg,
+	}); code != ExitUsage {
+		t.Errorf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+	}
+}
+
+func TestGetRejectsAnEmptyBoardID(t *testing.T) {
+	// Passed but blank: cobra sees a flag, the service sees no value. It must
+	// take the id path anyway and surface ErrEmptyID, not fall through to a
+	// ticket lookup with a key it was never given.
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaWithIDJSON))
+	}, idProfileYAML)
+
+	var code int
+	errOut := captureStderr(t, func() {
+		code = executeArgs([]string{"get", "--id", "", "--config", cfg})
+	})
+	if code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+	}
+	// The exit code alone proves nothing here: the regression this test exists
+	// for — branching on the value instead of on Changed("id") — falls through
+	// to a ticket lookup, raises ErrEmptyTicket, and exits 2 as well. The
+	// message is what tells the two apart.
+	if !strings.Contains(errOut, "id must not be empty") {
+		t.Errorf("stderr = %q, want it to report an empty id", errOut)
+	}
+}
