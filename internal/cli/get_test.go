@@ -681,3 +681,30 @@ func TestGetHumanOutputWithOnlyOneOfTheTwoSegments(t *testing.T) {
 		t.Errorf("output = %q, want %q", out, want)
 	}
 }
+
+func TestGetJSONCarriesTheBoardID(t *testing.T) {
+	page := notion.Page{
+		ID:  "page1",
+		URL: "https://notion.so/page1",
+		Properties: map[string]notion.PropertyValue{
+			"ID":   {Type: "unique_id", Text: "BDF-271"},
+			"Name": {Type: "title", Text: "Hardening"},
+		},
+	}
+	got := toPageJSON(page, config.Properties{ID: "ID", Title: "Name"})
+	if got.ID != "BDF-271" {
+		t.Errorf("ID = %q, want %q", got.ID, "BDF-271")
+	}
+}
+
+func TestGetJSONKeepsTheIDKeyWhenTheRoleIsUnmapped(t *testing.T) {
+	// The key is always present so no script has to branch on it — the same
+	// rule assignee and priority already follow.
+	b, err := json.Marshal(toPageJSON(notion.Page{ID: "page1"}, config.Properties{}))
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"id":""`) {
+		t.Errorf("marshalled to %s, want an empty id key", b)
+	}
+}

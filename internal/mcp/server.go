@@ -23,6 +23,10 @@ import (
 // --json output exactly, so an agent that has read the README's JSON contract
 // finds the same keys here.
 type Row struct {
+	// ID is the row's board id ("BDF-271"), the identifier a person uses.
+	// Empty both when the row carries no value and when the id role is not
+	// mapped, so an agent never has to branch on the key's presence.
+	ID             string `json:"id"`
 	Ticket         string `json:"ticket"`
 	Title          string `json:"title"`
 	Status         string `json:"status"`

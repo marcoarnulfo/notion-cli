@@ -16,6 +16,13 @@ import (
 // is doctor's job, and failing every read because of it would leave the user
 // with no way to look at their data while they fix the config.
 type pageJSON struct {
+	// ID is the row's board id ("BDF-271"): the identifier a person reads and
+	// says out loud, as opposed to PageID's UUID. First because it is the row's
+	// identity, so the JSON reads in the order the board displays a row.
+	//
+	// Empty both when the row carries no value and when the id role is not
+	// mapped, the same rule Assignee and Priority follow below.
+	ID             string `json:"id"`
 	Ticket         string `json:"ticket"`
 	Title          string `json:"title"`
 	Status         string `json:"status"`
@@ -32,6 +39,7 @@ type pageJSON struct {
 
 func toPageJSON(p notion.Page, props config.Properties) pageJSON {
 	return pageJSON{
+		ID:             p.Properties[props.ID].Text,
 		Ticket:         p.Properties[props.Ticket].Text,
 		Title:          p.Properties[props.Title].Text,
 		Status:         p.Properties[props.Status].Text,
