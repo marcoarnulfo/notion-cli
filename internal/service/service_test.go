@@ -917,6 +917,13 @@ func TestGetByUniqueIDReportsAMissingRowAsNotFound(t *testing.T) {
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("GetByUniqueID error = %v, want ErrNotFound", err)
 	}
+	// The exit code depends on errors.Is above; the message is a separate
+	// concern checked here — --id never took a --ticket flag, so the message
+	// must not claim it did the way ErrNotFound's own "ticket not found" text
+	// would.
+	if strings.Contains(err.Error(), "ticket") {
+		t.Errorf("GetByUniqueID error = %q, must not mention \"ticket\" on the --id path", err.Error())
+	}
 }
 
 func TestGetByUniqueIDRefusesTwoRowsRatherThanPickingOne(t *testing.T) {
