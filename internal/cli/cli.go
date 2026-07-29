@@ -45,7 +45,7 @@ func newRootCmd() *cobra.Command {
 		// template drops cobra's default "notion-track version X" wrapper: a
 		// script asking a binary its version wants the version, not a sentence
 		// to parse.
-		Version:       Version,
+		Version:       resolveVersion(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		// ArbitraryArgs is inert while the root has no subcommands, and becomes
