@@ -138,3 +138,23 @@ func TestListRowsShowThePriority(t *testing.T) {
 		t.Errorf("output = %q, want the priority before the assignee", out)
 	}
 }
+
+func TestListPrintsTheBoardIDForHumans(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(cliSchemaWithIDJSON))
+			return
+		}
+		w.Write([]byte(`{"results":[` + cliRowWithIDJSON + `],"has_more":false}`))
+	}, idProfileYAML)
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"list", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+	// The id leads the row: names read down the left edge of a list.
+	if !strings.HasPrefix(out, "BDF-271") {
+		t.Errorf("output = %q, want the row to start with the board id", out)
+	}
+}

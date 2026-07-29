@@ -618,3 +618,40 @@ func TestInitMeWarnsThatTheConfigIsShared(t *testing.T) {
 		t.Errorf("stderr = %q, want it to point at %s", errOut, config.MeEnv)
 	}
 }
+
+// cliSchemaWithIDJSON is cliSchemaJSON plus the unique_id column the id role
+// maps onto. A separate const, so the fixtures the existing tests were written
+// against keep the property set they assert on.
+const cliSchemaWithIDJSON = `{"id":"ds1","title":[{"plain_text":"Tasks"}],"properties":{
+	"Name":{"name":"Name","type":"title","title":{}},
+	"Ticket":{"name":"Ticket","type":"rich_text","rich_text":{}},
+	"Stato":{"name":"Stato","type":"status","status":{"options":[{"name":"Fatto"}]}},
+	"ID":{"name":"ID","type":"unique_id","unique_id":{"prefix":"BDF"}}}}`
+
+func TestInitMapsTheIDColumn(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaWithIDJSON))
+	})
+	withIsolatedUserConfigDir(t)
+	withInteractivePrompt(t, false, nil, nil)
+
+	if code := executeArgs(initArgs(cfg, "--id-prop", "ID")); code != ExitOK {
+		t.Fatalf("exit code = %d, want %d (ExitOK)", code, ExitOK)
+	}
+	if got := writtenProfile(t, cfg).Properties.ID; got != "ID" {
+		t.Errorf("Properties.ID = %q, want %q", got, "ID")
+	}
+}
+
+func TestInitRejectsAnIDColumnOfTheWrongType(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaWithIDJSON))
+	})
+	withIsolatedUserConfigDir(t)
+	withInteractivePrompt(t, false, nil, nil)
+
+	// A rich_text column cannot carry Notion's own row id.
+	if code := executeArgs(initArgs(cfg, "--id-prop", "Ticket")); code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+	}
+}

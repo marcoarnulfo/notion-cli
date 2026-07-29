@@ -73,3 +73,25 @@ func TestExitCodeForMapsDomainErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestExitCodeForIDErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"malformed id", &tracker.InvalidIDError{Value: "x", Reason: "expected a number"}, ExitUsage},
+		{"empty id", service.ErrEmptyID, ExitUsage},
+		{"id role not mapped", service.ErrNoIDProperty, ExitUsage},
+		// Wrapped the way the service actually returns it.
+		{"wrapped not-mapped", fmt.Errorf("%w: run init", service.ErrNoIDProperty), ExitUsage},
+		{"unknown id", fmt.Errorf("%w: BDF-999", service.ErrNotFound), ExitNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := exitCodeFor(tt.err); got != tt.want {
+				t.Errorf("exitCodeFor(%v) = %d, want %d", tt.err, got, tt.want)
+			}
+		})
+	}
+}

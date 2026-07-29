@@ -404,3 +404,86 @@ func TestSetPriorityDryRunNamesTheResolvedValue(t *testing.T) {
 		t.Errorf("output = %q, printed the raw input instead of the resolved value", out)
 	}
 }
+
+func TestSetByBoardIDUpdatesTheRow(t *testing.T) {
+	// Recording only the path, and not the method, would still pass even if
+	// the PATCH vanished entirely: SetByID's resolvePage issues a GET on this
+	// same /v1/pages/{id} path before the PATCH, so the path alone proves
+	// nothing about the write. Recording "METHOD path" and asserting on the
+	// PATCH specifically closes that gap.
+	var seen []string
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		switch {
+		case r.URL.Path == "/v1/data_sources/ds1":
+			w.Write([]byte(cliSchemaWithIDJSON))
+		case r.URL.Path == "/v1/data_sources/ds1/query":
+			w.Write([]byte(`{"results":[` + cliRowWithIDJSON + `],"has_more":false}`))
+		default: // GET (resolvePage) then PATCH /v1/pages/{id}
+			w.Write([]byte(cliRowWithIDJSON))
+		}
+	}, idProfileYAML)
+
+	if code := executeArgs([]string{
+		"set", "--id", "BDF-271", "--status", "Fatto", "--config", cfg,
+	}); code != ExitOK {
+		t.Fatalf("exit code = %d, want %d (ExitOK)", code, ExitOK)
+	}
+	// The write must land on the page the id resolved to.
+	want := "PATCH /v1/pages/23fb4e5c-8a5f-4d21-b7c9-d0e1f2a3b4c5"
+	if !containsRequest(seen, want) {
+		t.Errorf("requests = %v, want it to include %q", seen, want)
+	}
+}
+
+func TestSetRejectsTwoWaysOfAddressingAtOnce(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaWithIDJSON))
+	}, idProfileYAML)
+
+	if code := executeArgs([]string{
+		"set", "--id", "BDF-271", "--page-id", "abc", "--status", "Fatto", "--config", cfg,
+	}); code != ExitUsage {
+		t.Errorf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+	}
+}
+
+// set.go's switch on Changed("id") is its own, independent of get.go's — this
+// is set's twin of TestGetRejectsAnEmptyBoardID in get_test.go, guarding the
+// same regression (branching on the value instead of on
+// cmd.Flags().Changed("id")) on the command that actually writes. Without
+// this test, set.go could regress that branch with nothing to catch it: the
+// regression falls through to a ticket lookup, raises ErrEmptyTicket, and
+// still exits 2 — the exit code alone cannot tell the two apart, only the
+// message can.
+func TestSetRejectsAnEmptyBoardID(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaWithIDJSON))
+	}, idProfileYAML)
+
+	var code int
+	errOut := captureStderr(t, func() {
+		code = executeArgs([]string{"set", "--id", "", "--status", "Fatto", "--config", cfg})
+	})
+	if code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+	}
+	if !strings.Contains(errOut, "id must not be empty") {
+		t.Errorf("stderr = %q, want it to report an empty id", errOut)
+	}
+}
+
+func TestUpsertHasNoBoardIDFlag(t *testing.T) {
+	// upsert's key is the ticket, and a row being created has no board id yet:
+	// Notion assigns it. Offering --id there would be offering to address
+	// something that does not exist.
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaWithIDJSON))
+	}, idProfileYAML)
+
+	if code := executeArgs([]string{
+		"upsert", "--id", "BDF-271", "--config", cfg,
+	}); code != ExitUsage {
+		t.Errorf("exit code = %d, want %d for an unknown flag", code, ExitUsage)
+	}
+}

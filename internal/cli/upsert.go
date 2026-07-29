@@ -8,8 +8,12 @@ import (
 
 // writeFlags are the fields upsert and set share.
 type writeFlags struct {
-	ticket   string
-	pageID   string
+	ticket string
+	pageID string
+	// boardID is the unique_id address ("BDF-271"). Deliberately absent from
+	// fields() below: like pageID it says which row to write, never what to
+	// write into it — a unique_id column is assigned by Notion and read-only.
+	boardID  string
 	title    string
 	status   string
 	due      string
@@ -62,9 +66,9 @@ func (wf *writeFlags) bindShared(cmd *cobra.Command) {
 // a body that legitimately contains {{...}} — a document about templating, a
 // snippet of Handlebars — must keep working exactly as it did.
 //
-// ticket is offered even when the row was addressed by --page-id, where it is
-// empty: a body written for either addressing form should not fail depending
-// on which one the caller used.
+// ticket is offered even when the row was addressed by --page-id or --id,
+// where it is empty: a body written for any addressing form should not fail
+// depending on which one the caller used.
 func (wf *writeFlags) bodyVars() map[string]string {
 	if !wf.expand {
 		return nil
@@ -83,17 +87,20 @@ func (wf *writeFlags) bind(cmd *cobra.Command) {
 	cmd.MarkFlagRequired("ticket")
 }
 
-// bindWithPageID is set's binding: --ticket and --page-id are alternate,
-// mutually exclusive ways to address an existing row, and exactly one of
-// them is required.
+// bindWithPageID is set's binding: --ticket, --page-id and --id are alternate,
+// mutually exclusive ways to address an existing row, and exactly one of them
+// is required.
 func (wf *writeFlags) bindWithPageID(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&wf.ticket, "ticket", "", "ticket key")
 	cmd.Flags().StringVar(&wf.pageID, "page-id", "",
 		"Notion page id to address directly, bypassing the ticket lookup; "+
 			"accepts the full page URL copied from Notion, a bare 32-hex id, or a dashed UUID")
+	cmd.Flags().StringVar(&wf.boardID, "id", "",
+		"board id of the row, as Notion shows it (e.g. BDF-271, or just 271); "+
+			"needs an id property mapped in the profile")
 	wf.bindShared(cmd)
-	cmd.MarkFlagsMutuallyExclusive("ticket", "page-id")
-	cmd.MarkFlagsOneRequired("ticket", "page-id")
+	cmd.MarkFlagsMutuallyExclusive("ticket", "page-id", "id")
+	cmd.MarkFlagsOneRequired("ticket", "page-id", "id")
 }
 
 func (wf *writeFlags) fields() tracker.Fields {

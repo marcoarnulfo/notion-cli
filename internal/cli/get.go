@@ -16,6 +16,13 @@ import (
 // is doctor's job, and failing every read because of it would leave the user
 // with no way to look at their data while they fix the config.
 type pageJSON struct {
+	// ID is the row's board id ("BDF-271"): the identifier a person reads and
+	// says out loud, as opposed to PageID's UUID. First because it is the row's
+	// identity, so the JSON reads in the order the board displays a row.
+	//
+	// Empty both when the row carries no value and when the id role is not
+	// mapped, the same rule Assignee and Priority follow below.
+	ID             string `json:"id"`
 	Ticket         string `json:"ticket"`
 	Title          string `json:"title"`
 	Status         string `json:"status"`
@@ -32,6 +39,7 @@ type pageJSON struct {
 
 func toPageJSON(p notion.Page, props config.Properties) pageJSON {
 	return pageJSON{
+		ID:             p.Properties[props.ID].Text,
 		Ticket:         p.Properties[props.Ticket].Text,
 		Title:          p.Properties[props.Title].Text,
 		Status:         p.Properties[props.Status].Text,
@@ -46,11 +54,12 @@ func toPageJSON(p notion.Page, props config.Properties) pageJSON {
 func newGetCmd() *cobra.Command {
 	var ticket string
 	var pageID string
+	var boardID string
 	var asJSON bool
 
 	cmd := &cobra.Command{
 		Use:   "get",
-		Short: "Read the row for a ticket, or for a Notion page id",
+		Short: "Read the row for a ticket, a board id, or a Notion page id",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			svc, err := buildService(cmd)
@@ -58,13 +67,17 @@ func newGetCmd() *cobra.Command {
 				return err
 			}
 			var page notion.Page
-			// Branch on Changed, not on the value: `--page-id ""` must still
-			// take this path so it surfaces as service.ErrEmptyPageID rather
-			// than silently falling through to a ticket lookup with an empty
-			// key it was never given.
-			if cmd.Flags().Changed("page-id") {
+			// Branch on Changed, not on the value: `--page-id ""` and `--id ""`
+			// must still take their own path so they surface as
+			// service.ErrEmptyPageID and service.ErrEmptyID rather than
+			// silently falling through to a ticket lookup with an empty key
+			// neither was ever given.
+			switch {
+			case cmd.Flags().Changed("id"):
+				page, err = svc.GetByUniqueID(cmd.Context(), boardID)
+			case cmd.Flags().Changed("page-id"):
 				page, err = svc.GetByID(cmd.Context(), pageID)
-			} else {
+			default:
 				page, err = svc.Get(cmd.Context(), ticket)
 			}
 			if err != nil {
@@ -79,13 +92,15 @@ func newGetCmd() *cobra.Command {
 			status := page.Properties[profile.Properties.Status].Text
 			priority := prioritySuffix(page, profile.Properties)
 			assignee := assigneeSuffix(page, profile.Properties)
+			id := idPrefix(page, profile.Properties)
 			if ticketIsTitle(profile.Properties) {
-				cmd.Printf("%s  [%s]%s%s\n  %s\n",
-					page.Properties[profile.Properties.Title].Text, status,
+				cmd.Printf("%s%s  [%s]%s%s\n  %s\n",
+					id, page.Properties[profile.Properties.Title].Text, status,
 					priority, assignee, page.URL)
 				return nil
 			}
-			cmd.Printf("%s  %s  [%s]%s%s\n  %s\n",
+			cmd.Printf("%s%s  %s  [%s]%s%s\n  %s\n",
+				id,
 				page.Properties[profile.Properties.Ticket].Text,
 				page.Properties[profile.Properties.Title].Text,
 				status, priority, assignee, page.URL)
@@ -97,7 +112,10 @@ func newGetCmd() *cobra.Command {
 		"Notion page id to address directly, bypassing the ticket lookup; "+
 			"accepts the full page URL copied from Notion, a bare 32-hex id, or a dashed UUID")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print machine-readable JSON")
-	cmd.MarkFlagsMutuallyExclusive("ticket", "page-id")
-	cmd.MarkFlagsOneRequired("ticket", "page-id")
+	cmd.Flags().StringVar(&boardID, "id", "",
+		"board id of the row, as Notion shows it (e.g. BDF-271, or just 271); "+
+			"needs an id property mapped in the profile")
+	cmd.MarkFlagsMutuallyExclusive("ticket", "page-id", "id")
+	cmd.MarkFlagsOneRequired("ticket", "page-id", "id")
 	return cmd
 }

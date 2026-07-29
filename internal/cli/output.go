@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 
@@ -61,6 +62,23 @@ func prioritySuffix(p notion.Page, props config.Properties) string {
 	return ""
 }
 
+// idPrefix formats a row's board id for human-readable output.
+//
+// A prefix and not a suffix, unlike assigneeSuffix and prioritySuffix above: it
+// is the row's name, and names read down the left edge of a list. Padded to a
+// fixed width so list's columns stay aligned across rows whose ids differ in
+// length ("BDF-9" and "BDF-1234"); get prints one row, where the padding costs
+// nothing.
+//
+// Empty when the role is unmapped, which is what keeps every existing profile's
+// output byte-identical — the same rule the two suffixes follow.
+func idPrefix(p notion.Page, props config.Properties) string {
+	if id := p.Properties[props.ID].Text; id != "" {
+		return fmt.Sprintf("%-10s ", id)
+	}
+	return ""
+}
+
 // exitCodeFor maps an error onto the process exit code, so that pipelines can
 // tell "not found" from "token expired" without parsing messages.
 //
@@ -84,6 +102,7 @@ func exitCodeFor(err error) int {
 		dup       *tracker.DuplicateError
 		invalid   *tracker.ValidationError
 		ambiguous *tracker.AmbiguousOptionError
+		invalidID *tracker.InvalidIDError
 		apiErr    *notion.APIError
 	)
 	switch {
@@ -92,6 +111,8 @@ func exitCodeFor(err error) int {
 	case errors.As(err, &invalid):
 		return ExitUsage
 	case errors.As(err, &ambiguous):
+		return ExitUsage
+	case errors.As(err, &invalidID):
 		return ExitUsage
 	// Every way of getting the assignee wrong is a mistake the user can fix by
 	// rewriting the command, which is exactly what exit code 2 means.
@@ -122,6 +143,12 @@ func exitCodeFor(err error) int {
 	// usage error caught before any request is even made.
 	case errors.Is(err, service.ErrEmptyPageID), errors.Is(err, notion.ErrMalformedPageID):
 		return ExitUsage
+	// --id "" is a missing value wearing a passed flag, like --ticket "" and
+	// --page-id "" before it. A profile with no id column mapped is the same
+	// class of mistake as config.ErrNotConfigured: the invocation cannot work
+	// as written, and the fix is the user's to make.
+	case errors.Is(err, service.ErrEmptyID), errors.Is(err, service.ErrNoIDProperty):
+		return ExitUsage
 	// A page addressed by id that resolves but belongs to another data
 	// source is a usage mistake (the wrong id, or the wrong --profile), not
 	// a network or auth failure.
@@ -149,9 +176,10 @@ func exitCodeFor(err error) int {
 	if strings.HasPrefix(err.Error(), `required flag(s) `) {
 		return ExitUsage
 	}
-	// MarkFlagsMutuallyExclusive/MarkFlagsOneRequired (--ticket vs --page-id)
-	// fail validation with a plain fmt.Errorf, no typed error either; every
-	// message cobra's flag_groups.go produces contains this exact phrase.
+	// MarkFlagsMutuallyExclusive/MarkFlagsOneRequired (--ticket vs --page-id vs
+	// --id) fail validation with a plain fmt.Errorf, no typed error either;
+	// every message cobra's flag_groups.go produces contains this exact
+	// phrase.
 	if strings.Contains(err.Error(), "the group [") {
 		return ExitUsage
 	}

@@ -165,3 +165,67 @@ func TestAndFilter(t *testing.T) {
 		}
 	})
 }
+
+const uniqueIDPageFixture = `{
+  "id": "page1",
+  "url": "https://notion.so/page1",
+  "last_edited_time": "2026-07-20T10:00:00.000Z",
+  "properties": {
+    "ID":  {"type":"unique_id","unique_id":{"prefix":"BDF","number":271}},
+    "Seq": {"type":"unique_id","unique_id":{"prefix":null,"number":8}},
+    "Plain": {"type":"unique_id","unique_id":{"prefix":"","number":42}}
+  }
+}`
+
+func TestQueryPagesReadsUniqueIDInTheFormThePersonSees(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"results":[` + uniqueIDPageFixture + `],"has_more":false}`))
+	}))
+	defer srv.Close()
+
+	pages, err := New("t", WithBaseURL(srv.URL)).QueryPages(context.Background(), "ds1", nil)
+	if err != nil {
+		t.Fatalf("QueryPages: %v", err)
+	}
+	if len(pages) != 1 {
+		t.Fatalf("got %d pages, want 1", len(pages))
+	}
+	// The exact string matters: this is what --json prints and what a person
+	// reads off the board. A test that only checked "not empty" would pass on
+	// "271", on "BDF271", and on the raw JSON.
+	if got := pages[0].Properties["ID"].Text; got != "BDF-271" {
+		t.Errorf("ID = %q, want %q", got, "BDF-271")
+	}
+	// Without a prefix there is no separator to invent: the number alone.
+	if got := pages[0].Properties["Seq"].Text; got != "8" {
+		t.Errorf("Seq = %q, want %q", got, "8")
+	}
+	// A prefix that is present but empty ("") is a distinct case from a null
+	// one: the code guards on *v.UniqueID.Prefix != "" specifically, so an
+	// empty string must also produce the bare number, with no leading dash.
+	if got := pages[0].Properties["Plain"].Text; got != "42" {
+		t.Errorf("Plain = %q, want %q", got, "42")
+	}
+	if got := pages[0].Properties["ID"].Type; got != "unique_id" {
+		t.Errorf("ID.Type = %q, want %q", got, "unique_id")
+	}
+}
+
+func TestUniqueIDEqualsFilterCarriesANumber(t *testing.T) {
+	got := UniqueIDEqualsFilter("ID", 271)
+	want := Filter{"property": "ID", "unique_id": map[string]int64{"equals": 271}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("UniqueIDEqualsFilter = %#v, want %#v", got, want)
+	}
+	// The whole reason this is a separate constructor is the wire format:
+	// Notion rejects a quoted value here. DeepEqual above would still pass if
+	// someone switched int64 to string in both the code and the want, so the
+	// marshalled form is what actually pins the contract.
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if s := string(b); !strings.Contains(s, `"equals":271`) {
+		t.Errorf("marshalled to %s, want an unquoted 271", s)
+	}
+}

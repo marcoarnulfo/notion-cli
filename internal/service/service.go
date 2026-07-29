@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 
 	"github.com/marcoarnulfo/notion-cli/internal/config"
@@ -67,6 +68,18 @@ var ErrEmptyAssignee = errors.New("assignee must not be empty; use --unassign to
 // silently doing nothing in a command the user wrote specifically to change
 // something.
 var ErrEmptyPriority = errors.New("priority must not be empty")
+
+// ErrEmptyID mirrors ErrEmptyTicket and ErrEmptyPageID for the third way of
+// addressing a row: cobra reports that a flag was passed, never that it carries
+// a value, so `--id ""` would otherwise reach ParseUniqueID and surface as a
+// malformed id rather than a missing one.
+var ErrEmptyID = errors.New("id must not be empty")
+
+// ErrNoIDProperty means a row was addressed by board id on a profile that has
+// no id column mapped. It is "not configured yet", not "broken": the role is
+// optional, and a board without a unique_id column is addressed the other two
+// ways.
+var ErrNoIDProperty = errors.New("no id property is mapped")
 
 // Service performs notion-track's operations against one profile.
 //
@@ -227,6 +240,81 @@ func (s *Service) findByTicket(ctx context.Context, key string) ([]notion.Page, 
 	}
 	filter := notion.EqualsFilter(name, prop.Type, key)
 	return s.client.QueryPages(ctx, s.profile.DataSourceID, filter)
+}
+
+// findByUniqueID resolves a board id ("BDF-271", or a bare "271") to the single
+// row carrying it.
+//
+// Every failure it can produce is decided before the query goes out, except
+// the last two — no row matched, or more than one did, which only the query
+// itself can answer. Everything before that point (an empty input, no id
+// column mapped, a mapped column that is missing or wrongly typed, an id that
+// does not parse) is a mistake the user can fix by rewriting the command, and
+// saying so without a round trip is both faster and clearer than an empty
+// result set.
+func (s *Service) findByUniqueID(ctx context.Context, input string) (notion.Page, error) {
+	if strings.TrimSpace(input) == "" {
+		return notion.Page{}, ErrEmptyID
+	}
+	name := s.profile.Properties.ID
+	if name == "" {
+		return notion.Page{}, fmt.Errorf(
+			"id addressing was requested but %w; "+
+				"run 'notion-track init --id-prop <name>' to map it", ErrNoIDProperty)
+	}
+	schema, err := s.Schema(ctx)
+	if err != nil {
+		return notion.Page{}, err
+	}
+	prop, ok := schema.Properties[name]
+	if !ok {
+		return notion.Page{}, fmt.Errorf(
+			"property %q is configured but does not exist in the data source; "+
+				"run 'notion-track doctor' to see the current schema", name)
+	}
+	if prop.Type != "unique_id" {
+		return notion.Page{}, fmt.Errorf(
+			"id property %q has type %q, not unique_id; run 'notion-track doctor'",
+			name, prop.Type)
+	}
+	number, err := tracker.ParseUniqueID(input, prop.Prefix)
+	if err != nil {
+		return notion.Page{}, err
+	}
+	pages, err := s.client.QueryPages(ctx, s.profile.DataSourceID,
+		notion.UniqueIDEqualsFilter(name, number))
+	if err != nil {
+		return notion.Page{}, err
+	}
+	switch len(pages) {
+	case 0:
+		// Spelled out rather than wrapped the way Get does it: ErrNotFound
+		// reads "ticket not found", and "ticket not found: BDF-271" would name
+		// a flag this command never used.
+		return notion.Page{}, fmt.Errorf("%w: no row has id %s", ErrNotFound, input)
+	case 1:
+		return pages[0], nil
+	default:
+		// Impossible on a healthy board — the column's whole job is to be
+		// unique — but "impossible" and "silently wrong" are different things,
+		// and picking the first would bury the fault. Deliberately a plain
+		// fmt.Errorf, not a *tracker.DuplicateError like the --ticket path's
+		// equivalent case: a duplicate ticket key is an ambiguous but valid
+		// state (two rows can legitimately share a name), which is what makes
+		// exit 4 the right signal there. A duplicate unique_id is not an
+		// ambiguous key, it is Notion's own uniqueness guarantee failing —
+		// board corruption, not a naming collision — so it exits 1 like any
+		// other "something is wrong with the data" failure instead.
+		return notion.Page{}, fmt.Errorf(
+			"id %s matches %d rows, which a unique_id column should make impossible; "+
+				"run 'notion-track doctor'", input, len(pages))
+	}
+}
+
+// GetByUniqueID returns the row carrying a board id, bypassing the ticket
+// lookup that Get performs.
+func (s *Service) GetByUniqueID(ctx context.Context, input string) (notion.Page, error) {
+	return s.findByUniqueID(ctx, input)
 }
 
 // resolveOption turns what the user typed into the exact option a mapped
@@ -536,6 +624,35 @@ func (s *Service) SetByID(ctx context.Context, pageID string, f tracker.Fields, 
 		return Result{Action: "updated"}, err
 	}
 	return s.withBody(ctx, updated, "updated", body)
+}
+
+// SetByUniqueID updates the row carrying a board id.
+//
+// It resolves the id to a page and hands off to SetByID: the id is a way to
+// find a row, not a second way to write one, so nothing about the write itself
+// is duplicated here. Resolution happens first, which is what makes a wrong id
+// fail before anything is sent to the board.
+//
+// This ordering is the opposite of Set and SetByID, which resolve
+// --assignee/--priority before locating the row. The divergence is
+// deliberate, not an oversight: unlike a ticket key or a page id, a board id
+// only ever names a row that already exists (Notion assigns it, nothing else
+// can), so resolving it first is what makes writing to a nonexistent row
+// impossible rather than merely unlikely — the same guarantee Set and
+// SetByID get from checking existence before they touch the assignee or
+// priority columns, just reached in the other order. One observable
+// consequence: `set --ticket MISSING --assignee bogus` fails on the bad
+// assignee (exit 2) before the missing ticket is ever checked, while
+// `set --id BDF-999 --assignee bogus` fails on the missing row (exit 3)
+// and the bad assignee is never evaluated. Reordering the write path to make
+// the two consistent was considered and rejected: restructuring code this
+// late in the branch is riskier than the inconsistency it would resolve.
+func (s *Service) SetByUniqueID(ctx context.Context, input string, f tracker.Fields, body *BodyRequest) (Result, error) {
+	page, err := s.findByUniqueID(ctx, input)
+	if err != nil {
+		return Result{}, err
+	}
+	return s.SetByID(ctx, page.ID, f, body)
 }
 
 // ListFilter is what List narrows on. Every field is optional; the zero value

@@ -49,6 +49,11 @@ type Properties struct {
 	// Priority is the column ranking how urgent a row is. Optional, and
 	// usually sparse: a board marks what is burning, not everything.
 	Priority string `yaml:"priority,omitempty"`
+	// ID is the column carrying Notion's own row identifier ("BDF-271").
+	// Optional, and read-only by nature: it is a way to address a row, never a
+	// value to write, which is why nothing in tracker.BuildProperties knows it
+	// exists.
+	ID string `yaml:"id,omitempty"`
 }
 
 // Profile is one configured data source.

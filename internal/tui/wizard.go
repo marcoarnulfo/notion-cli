@@ -60,6 +60,9 @@ var roles = []roleSpec{
 	{name: "due", key: "d", types: []string{"date"}, optional: true},
 	{name: "assignee", key: "a", types: []string{"select"}, optional: true},
 	{name: "priority", key: "p", types: []string{"select"}, optional: true},
+	// id's key is "u", for unique_id: "i" went to title, which itself only has
+	// "i" because ticket claimed "t".
+	{name: "id", key: "u", types: []string{"unique_id"}, optional: true},
 }
 
 // Result is what the wizard produces. Exactly one of the three outcomes holds:
@@ -445,6 +448,8 @@ func roleValue(p config.Properties, role string) string {
 		return p.Assignee
 	case "priority":
 		return p.Priority
+	case "id":
+		return p.ID
 	}
 	return ""
 }
@@ -463,6 +468,8 @@ func setRole(p *config.Properties, role, value string) {
 		p.Assignee = value
 	case "priority":
 		p.Priority = value
+	case "id":
+		p.ID = value
 	}
 }
 

@@ -159,7 +159,7 @@ opens a wizard: it picks up your token (asking for it only if there isn't one ye
 The wizard needs a terminal *and* an otherwise-bare command line. Passing any configuring flag, or running without a TTY — CI, a pipe, an agent — takes the explicit form below, unchanged:
 
 ```
-notion-track init --data-source-id <id> --ticket-prop <name> --status-prop <name> --title-prop <name> [--due-prop <name>] [--assignee-prop <name>] [--priority-prop <name>] [--me <value>] [--database-id <id>] [--list]
+notion-track init --data-source-id <id> --ticket-prop <name> --status-prop <name> --title-prop <name> [--due-prop <name>] [--assignee-prop <name>] [--priority-prop <name>] [--id-prop <name>] [--me <value>] [--database-id <id>] [--list]
 ```
 
 | Flag | Meaning |
@@ -171,6 +171,7 @@ notion-track init --data-source-id <id> --ticket-prop <name> --status-prop <name
 | `--due-prop string` | date property (optional) |
 | `--assignee-prop string` | `select` property naming who owns the row (optional) |
 | `--priority-prop string` | `select` property ranking how urgent the row is (optional) |
+| `--id-prop string` | `unique_id` property holding the row's board id, e.g. `BDF-271` (optional) |
 | `--me string` | the value `--assignee me` resolves to; resolved and validated against `--assignee-prop`'s options before being saved (optional, needs `--assignee-prop`) |
 | `--database-id string` | database id, recorded for reference only — every read/write is keyed off `--data-source-id`, not this |
 | `--list` | list the data source ids shared with the integration, and exit |
@@ -180,6 +181,8 @@ Each mapped property is checked against the data source's live schema; `init` re
 `--assignee-prop` behaves like `--due-prop`: a board that tracks nobody in particular simply leaves it unmapped, and every command behaves exactly as it did before this feature. `--me` resolves its value against `--assignee-prop`'s options the same way `--assignee me` does, so a typo can't reach the file, and saves the canonical name — but because `config.yml` is meant to be committed and shared, `init --me` prints a warning recommending `NOTION_TRACK_ME` instead of relying on the value it just wrote (see [Environment variables](#environment-variables)).
 
 `--priority-prop` behaves like `--due-prop` too: a board with no notion of urgency simply leaves it unmapped, and every command behaves exactly as it did before this feature. Unlike `--assignee-prop`, there is no `--priority-me` equivalent — a priority belongs to no one, so there is no identity to resolve it against.
+
+`--id-prop` maps Notion's own row identifier — a `unique_id` column, the kind that renders as `BDF-271` on the board — so rows can be addressed by that short id instead of by ticket key or page id (see `--id` under `get` and `set` below). It behaves like `--due-prop`: a board with no such column simply leaves it unmapped, and `--id` is then unavailable — the row is still reachable the other two ways. `init` requires the mapped property to actually be `unique_id`, the same way `--ticket-prop` requires `rich_text` or `title`.
 
 **Token prompt.** If no token is found in `NOTION_TOKEN` or `credentials.yml`, `init` behaves differently depending on how it's run:
 
@@ -197,12 +200,18 @@ The flagship command. Queries the data source for the row whose ticket property 
 ### `set` — update an existing row only
 
 ```
-notion-track set (--ticket <key> | --page-id <id>) [--title <title>] [--status <status>] [--due YYYY-MM-DD] [--assignee <value>] [--unassign] [--priority <value>] [--json]
+notion-track set (--ticket <key> | --id <board-id> | --page-id <id>) [--title <title>] [--status <status>] [--due YYYY-MM-DD] [--assignee <value>] [--unassign] [--priority <value>] [--json]
 ```
 
 Same fields as `upsert`, but fails with exit code 3 if the row doesn't exist yet, instead of creating it. Use this where a missing row is a symptom worth surfacing rather than something to paper over.
 
-`--ticket` and `--page-id` are mutually exclusive and exactly one is required. `--page-id` addresses a row directly by its Notion page id — no query by ticket key at all — which is faster and unambiguous when you already have it (e.g. from a prior `--json` call's `page_id`, see [JSON output](#json-output)). It accepts the full page URL you'd copy out of Notion's browser address bar, a bare 32-character hex id, or a dashed UUID; any other input fails immediately with exit code 2, before any request is made. Because `GET`ting a page by id works for anything shared with the integration — not just rows of the configured data source — a page id that resolves to a *different* data source than the active profile is rejected with exit code 2 rather than left to fail later with a confusing property-name error from Notion. `set --page-id` also rejects, with the same exit code, a page whose parent carries no data source at all — its membership can never be confirmed, and a write must not proceed on a page that cannot prove it belongs to this profile.
+```bash
+notion-track set --id BDF-271 --status "Done"
+```
+
+`--ticket`, `--id` and `--page-id` are mutually exclusive and exactly one is required. `--page-id` addresses a row directly by its Notion page id — no query by ticket key at all — which is faster and unambiguous when you already have it (e.g. from a prior `--json` call's `page_id`, see [JSON output](#json-output)). It accepts the full page URL you'd copy out of Notion's browser address bar, a bare 32-character hex id, or a dashed UUID; any other input fails immediately with exit code 2, before any request is made. Because `GET`ting a page by id works for anything shared with the integration — not just rows of the configured data source — a page id that resolves to a *different* data source than the active profile is rejected with exit code 2 rather than left to fail later with a confusing property-name error from Notion. `set --page-id` also rejects, with the same exit code, a page whose parent carries no data source at all — its membership can never be confirmed, and a write must not proceed on a page that cannot prove it belongs to this profile.
+
+`--id` addresses a row by its **board id** — the short identifier Notion shows on the row and the one people read aloud (`BDF-271`, or the bare number `271` on its own) — resolved with a query against the mapped `unique_id` column, the same way `--ticket` resolves against the ticket property; Notion's API filters on `unique_id` natively, so this needs no client-side scan. It needs a `unique_id` property mapped first (`init --id-prop`, see `init` above); without one mapped, `--id` fails with exit code 2 — the same class of mistake as running before `notion-track init` — naming the fix. An empty `--id` fails the same way, before any request is made. A malformed `--id` — the wrong prefix, or not a number at all — is exit code 2 too, but not that early: telling a bad prefix from a good one needs the data source's schema first, so a malformed `--id` costs one request before it fails, short of the row query itself.
 
 ### `--assignee` / `--unassign` — set or clear who owns a row
 
@@ -258,7 +267,7 @@ Available on both `upsert` and `set`. `--body-file` takes a path to a Markdown f
 notion-track upsert --ticket BDF-231 --body-file release-notes.md --expand
 ```
 
-A placeholder nothing can fill in is a usage error naming the line, rather than a body reaching Notion with a literal `{{tikcet}}` in it that nobody notices until they read the page. Expansion is off by default and there is no escape syntax: a body that legitimately contains braces — a document about templating, a snippet of Handlebars — simply does not pass the flag. Addressing a row with `--page-id` leaves `{{ticket}}` empty, since no ticket key was given.
+A placeholder nothing can fill in is a usage error naming the line, rather than a body reaching Notion with a literal `{{tikcet}}` in it that nobody notices until they read the page. Expansion is off by default and there is no escape syntax: a body that legitimately contains braces — a document about templating, a snippet of Handlebars — simply does not pass the flag. Addressing a row with `--page-id` or `--id` leaves `{{ticket}}` empty, since no ticket key was given.
 
 **Concurrency.** Two `--body-file` runs against the same page racing each other can both append before either deletes, leaving the body duplicated — there's no lock to take on a Notion page. Don't run concurrent body writes against one page.
 
@@ -267,10 +276,21 @@ With `--json`, a successful write adds a `body` object: `{"blocks_written": N, "
 ### `get` — read one row
 
 ```
-notion-track get (--ticket <key> | --page-id <id>) [--json]
+notion-track get (--ticket <key> | --id <board-id> | --page-id <id>) [--json]
 ```
 
-Prints the row's ticket, title, status and URL. `--ticket` and `--page-id` are mutually exclusive and exactly one is required — see `set` above for what `--page-id` accepts and how it's validated. Fails with exit code 3 if not found (Notion's 404 doesn't distinguish "no such page" from "never shared with this integration" — the error message says so), 4 if a ticket key matches more than one row (see [Limitations](#limitations)), or 2 for a malformed page id or one outside the active profile's data source. Unlike `set`, `get --page-id` accepts a page whose parent carries no data source at all — a read cannot do any harm with an unconfirmed page the way a write could.
+```bash
+# by exact title (or ticket key)
+notion-track get --ticket "Sistemare visualizzazione da telefono"
+
+# by board id, the one people say out loud
+notion-track get --id BDF-271
+
+# by Notion page id or URL, stable across renames
+notion-track get --page-id https://notion.so/...
+```
+
+Prints the row's board id (when mapped), ticket, title, status and URL. `--ticket`, `--id` and `--page-id` are mutually exclusive and exactly one is required — see `set` above for what `--id` and `--page-id` accept and how they're validated. Fails with exit code 3 if not found (Notion's 404 doesn't distinguish "no such page" from "never shared with this integration" — the error message says so), 4 if a ticket key matches more than one row (see [Limitations](#limitations)), or 2 for a malformed `--id` or `--page-id`, an id role that isn't mapped, or a page id outside the active profile's data source. Unlike `set`, `get --page-id` accepts a page whose parent carries no data source at all — a read cannot do any harm with an unconfirmed page the way a write could.
 
 ### `list` — read many rows
 
@@ -280,7 +300,7 @@ notion-track list [--status <status>] [--assignee <value>] [--unassigned] [--pri
 
 Lists every row, or narrows it by `--status`, by `--assignee`, to `--unassigned` rows, or by `--priority` — `--assignee` and `--unassigned` are mutually exclusive. An unknown status, assignee or priority value fails fast with exit code 2, naming the values Notion actually allows for that property; `--assignee` resolves partial names and `me` exactly as it does on `upsert`/`set`, and `--priority` resolves partial values the same way (see `--assignee` / `--unassign` and `--priority` under [Usage](#usage) above). Filtering by assignee or priority on a profile that doesn't map the role fails like any other unmapped role (exit code 1). Unlike `--unassigned`, there is no `--unprioritized` to find rows with no priority.
 
-The human-readable form appends `  !<value>` and `  @<name>` to a row that has them; rows with neither, and every row on a profile that doesn't map either role at all, print exactly as they did before this feature.
+The human-readable form appends `  !<value>` and `  @<name>` to a row that has them; rows with neither, and every row on a profile that doesn't map either role at all, print exactly as they did before this feature. When the id role is mapped, each row is also prefixed with its board id, the same way `get` shows it.
 
 When nothing matches, the human-readable form prints `no matching tasks` **to stderr** and exits 0 — stdout stays empty, so `list | wc -l` counts rows and nothing else. `list --json` prints `[]` and says nothing on stderr.
 
@@ -394,6 +414,7 @@ profiles:
       due: Due              # optional: date property
       assignee: Referente   # optional: select property naming who owns the row
       priority: Urgenza     # optional: select property ranking how urgent the row is
+      id: ID                # optional: unique_id property holding the row's board id
     me: Marco Arnulfo       # optional: the value `--assignee me` resolves to; NOTION_TRACK_ME overrides it
 ```
 
@@ -433,6 +454,7 @@ A row (`get --json`, and each entry of `list --json`):
 
 ```json
 {
+  "id": "BDF-271",
   "ticket": "BDF-231",
   "title": "Hardening",
   "status": "In progress",
@@ -444,14 +466,14 @@ A row (`get --json`, and each entry of `list --json`):
 }
 ```
 
-If the configured property mapping names a column the row doesn't actually carry, the corresponding field comes back as an empty string rather than an error — a broken mapping is `doctor`'s job to report, not a reason to fail every read. `assignee` follows the same rule and is additionally empty whenever nobody is assigned, so a script never has to branch on whether the key is present — only on whether it's empty. `priority` follows the same rule: always present, empty whenever the row carries no value or the role isn't mapped.
+`id` comes first because it is the row's identity, the same order the board displays it in. If the configured property mapping names a column the row doesn't actually carry, the corresponding field comes back as an empty string rather than an error — a broken mapping is `doctor`'s job to report, not a reason to fail every read. `id` follows the same rule as `assignee` and `priority` below: always present, empty whenever the row carries no value or the role isn't mapped, so a script never has to branch on whether the key is present — only on whether it's empty. `assignee` follows the same rule and is additionally empty whenever nobody is assigned. `priority` follows the same rule too: always present, empty whenever the row carries no value or the role isn't mapped.
 
 `upsert --json` / `set --json`:
 
 ```json
 {
   "action": "created",
-  "page": { "ticket": "BDF-231", "title": "Hardening", "status": "In progress", "page_id": "...", "url": "...", "last_edited_time": "...", "assignee": "Mirko Spinato", "priority": "ALTA" }
+  "page": { "id": "BDF-271", "ticket": "BDF-231", "title": "Hardening", "status": "In progress", "page_id": "...", "url": "...", "last_edited_time": "...", "assignee": "Mirko Spinato", "priority": "ALTA" }
 }
 ```
 
@@ -479,9 +501,9 @@ Pipelines can branch on these without parsing any message text:
 | Code | Name | Meaning |
 |---|---|---|
 | `0` | OK | success |
-| `1` | Error | a generic failure — a network/API error, `doctor` reporting a failed check other than `token`, or a value passed for a role (`--assignee`, `--priority`, `--due`, …) that isn't mapped in the active profile |
-| `2` | Usage | the invocation cannot work as written: a missing/invalid flag, `--ticket` and `--page-id` both given or neither given, an unknown command, no config yet (`notion-track init` was never run), a status value the data source doesn't allow, a malformed `--page-id`, a `--page-id` that resolves outside the active profile's data source, an `--assignee` value that resolves to zero or more than one option, an empty `--assignee`, `--assignee me` with no configured identity, `--assignee` combined with `--unassign` (or with `--unassigned` on `list`), a `--priority` value that resolves to zero or more than one option, or an empty `--priority` |
-| `3` | Not found | the requested ticket has no matching row, or the page id has no matching page (or one not shared with this integration) (`get`, `set`) |
+| `1` | Error | a generic failure — a network/API error, `doctor` reporting a failed check other than `token`, or a value passed for `--assignee`, `--priority` or `--due` when that role isn't mapped in the active profile (an unmapped `id` role is the one exception — it's exit code 2, see below) |
+| `2` | Usage | the invocation cannot work as written: a missing/invalid flag, more than one of `--ticket`/`--id`/`--page-id` given or none of the three given, an unknown command, no config yet (`notion-track init` was never run), a status value the data source doesn't allow, a malformed `--page-id` or `--id`, an `--id` used on a profile with no id role mapped, a `--page-id` that resolves outside the active profile's data source, an `--assignee` value that resolves to zero or more than one option, an empty `--assignee`, `--assignee me` with no configured identity, `--assignee` combined with `--unassign` (or with `--unassigned` on `list`), a `--priority` value that resolves to zero or more than one option, or an empty `--priority` |
+| `3` | Not found | the requested ticket, board id, or page id has no matching row (or, for a page id, one not shared with this integration) (`get`, `set`) |
 | `4` | Duplicate | the ticket key matches more than one row (`upsert`, `set`, `get`) |
 | `5` | Auth | no token was found (including a `credentials.yml` that exists but can't be read), or Notion rejected it (401/403) — including `doctor`, when its `token` check is the only one that failed |
 
@@ -531,6 +553,8 @@ Because the tool is quiet on success, speaks `--json` with a stable schema, and 
 
 It exposes `upsert_task`, `set_task`, `get_task` and `list_tasks`, returning the same JSON shape documented above. `upsert_task` and `set_task` accept `assignee` and `unassign` exactly like the CLI's flags do — a partial name, or the reserved `me`; `list_tasks` accepts `assignee` and `unassigned`, mutually exclusive with each other. `upsert_task` and `set_task` also accept `priority`, resolved the same way `--priority` is — a partial value is enough when unambiguous; `list_tasks` accepts `priority` too, narrowing to rows carrying that value. There is no `unpriority` argument, the same way the CLI has no `--unpriority` flag. It is an adapter, not a second implementation: every tool reaches the same code the CLI commands do, so the duplicate check, the status validation and the property mapping behave identically for an agent. `stdout` carries the JSON-RPC protocol and nothing else.
 
+Addressing is the one place the two surfaces diverge: over MCP a row is found **only** by ticket key — `get_task`'s and `set_task`'s only argument for finding a row is `ticket` (`set_task` also takes `title`, `status`, `due`, `assignee`, `unassign` and `priority`, but those say what to write, not which row to write it to). The CLI's `--id` and `--page-id` have no MCP equivalent, even though the JSON a tool returns still carries the board id under `id`, same as `--json` does on the CLI.
+
 This does not contradict the reason this tool exists. Notion's *hosted* MCP endpoint is the one blocked by corporate firewalls; a *local* server, running on your machine with your own integration token, reaches agents exactly where the hosted one cannot.
 
 ## Contributing
@@ -539,7 +563,7 @@ Contributions are welcome — this is a free, open-source project. See **[CONTRI
 
 ## Roadmap
 
-Implemented today: `init` (interactive wizard and flag-driven, with `--list`), the browsing TUI, `upsert`, `set`, `get`, `list`, `doctor`; `--dry-run` on `upsert`/`set`; `apply` for bulk writes from a manifest; `--body-file` on `upsert`/`set` to write the page body from Markdown, with `--expand` for `{{ticket}}`/`{{date}}` placeholders; `--json` on every command that produces output; `mcp` to serve the same operations as MCP tools; an optional `assignee` role with `--assignee`/`--unassign`, `list --assignee`/`--unassigned` and the `me` identity; an optional `priority` role with `--priority` on `upsert`/`set`/`list`; profiles; retry with backoff.
+Implemented today: `init` (interactive wizard and flag-driven, with `--list`), the browsing TUI, `upsert`, `set`, `get`, `list`, `doctor`; `--dry-run` on `upsert`/`set`; `apply` for bulk writes from a manifest; `--body-file` on `upsert`/`set` to write the page body from Markdown, with `--expand` for `{{ticket}}`/`{{date}}` placeholders; `--json` on every command that produces output; `mcp` to serve the same operations as MCP tools; an optional `assignee` role with `--assignee`/`--unassign`, `list --assignee`/`--unassigned` and the `me` identity; an optional `priority` role with `--priority` on `upsert`/`set`/`list`; an optional `id` role mapped with `init --id-prop`, addressing a row by its Notion board id with `--id` on `get`/`set`; profiles; retry with backoff.
 
 Built but not yet exercised: the **GoReleaser pipeline** (`.goreleaser.yaml` plus a release workflow triggered on `v*` tags) and the **composite GitHub Action** in [`action/`](action/). Both are in place and the pipeline has been verified locally with `goreleaser release --snapshot`, but neither has run for real: that happens when the first tag is pushed, and until then the releases page is empty and the action has nothing to download.
 

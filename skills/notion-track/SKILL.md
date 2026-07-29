@@ -47,21 +47,27 @@ human-readable lines.
 
 ## How a task is identified
 
-A task is addressed in one of two ways. Pick deliberately:
+A task is addressed in one of three ways. Pick deliberately:
 
 - **By ticket key** (`--ticket "<value>"`) — the tool looks up the row whose
   key column equals that value. In this workspace the key column *is the task
   title* (see "This workspace" below), so `--ticket` is the exact task name.
   Renaming a task in Notion changes its key, so a name that was valid yesterday
   may not resolve today.
+- **By board id** (`--id <board-id>`) — addresses a row by the short id
+  Notion itself assigns and shows on the row (`BDF-271`, or the bare number
+  `271` on its own) — the one a person reads aloud. Use it when the user gives
+  you that id instead of a name. Only works if this board maps an id column;
+  not every board does (see "This workspace" below) — `list --json` or
+  `get --json` show a non-empty `id` key only when the role is mapped.
 - **By Notion page id** (`--page-id <id>`) — addresses one specific row
   directly, no lookup. The id is stable forever, even if the task is renamed.
   It accepts the page URL copied from Notion ("Copy link"), a bare 32-hex id, or
   a dashed UUID. Use this when the user pastes a Notion link or id, or when the
   task might have been renamed.
 
-`--ticket` and `--page-id` are mutually exclusive on `get` and `set`; exactly
-one is required. `upsert` only takes `--ticket` (see below for why).
+`--ticket`, `--id` and `--page-id` are mutually exclusive on `get` and `set`;
+exactly one is required. `upsert` only takes `--ticket` (see below for why).
 
 ## Commands
 
@@ -88,6 +94,7 @@ properties that did get applied — check `body.written` before assuming a
 
 ```sh
 notion-track set --ticket "<name>"     --status "<status>" [--title ...] [--due ...] [--assignee "<name-or-me>"] [--priority "<value>"] [--body-file <path>] [--dry-run] [--json]
+notion-track set --id <board-id>       --status "<status>" [--title ...] [--due ...] [--assignee "<name-or-me>"] [--priority "<value>"] [--body-file <path>] [--dry-run] [--json]
 notion-track set --page-id <id-or-url> --status "<status>" [--title ...] [--due ...] [--assignee "<name-or-me>"] [--priority "<value>"] [--body-file <path>] [--dry-run] [--json]
 ```
 
@@ -202,16 +209,20 @@ placeholder names.
 
 ```sh
 notion-track get --ticket "<name>"     [--json]
+notion-track get --id <board-id>       [--json]
 notion-track get --page-id <id-or-url> [--json]
 ```
 
 Use it to confirm a task exists and to see its current state before changing it.
-With `--json` the fields are `ticket`, `title`, `status`, `page_id`, `url`,
+With `--json` the fields are `id`, `ticket`, `title`, `status`, `page_id`, `url`,
 `last_edited_time`, `assignee`, `priority` — a stable schema, safe to parse.
-`assignee` is always present and empty both when nobody is assigned and when
-the board doesn't map the role, so check for an empty string rather than a
-missing key. `priority` follows the same rule: always present, empty both
-when the row carries no value and when the board doesn't map the role.
+`id` is the board id (`BDF-271`), always present and empty both when the row
+carries no value and when the board doesn't map that role — the same rule
+`assignee` and `priority` follow next. `assignee` is always present and empty
+both when nobody is assigned and when the board doesn't map the role, so check
+for an empty string rather than a missing key. `priority` follows the same
+rule: always present, empty both when the row carries no value and when the
+board doesn't map the role.
 
 ### List tasks — `list`
 
@@ -292,11 +303,11 @@ reporting to the user but does not block anything.
 | Code | Meaning | What to do |
 |---|---|---|
 | 0 | success | proceed |
-| 2 | bad usage (missing/invalid flag, unknown status, malformed page id, an `--assignee` value that's unknown or ambiguous, an empty `--assignee`, `--assignee me` with no identity configured, `--assignee` combined with `--unassign`/`--unassigned`, or a `--priority` value that's unknown or ambiguous) | fix the invocation; a rejected status, assignee or priority means the value isn't one the board allows — read the error's list of valid options rather than guessing again |
-| 3 | task not found | with `set`/`get`: the ticket or page id doesn't match a row — don't retry as `upsert` without checking with the user |
+| 2 | bad usage (missing/invalid flag, unknown status, a malformed `--page-id` or `--id`, an `--assignee` value that's unknown or ambiguous, an empty `--assignee`, `--assignee me` with no identity configured, `--assignee` combined with `--unassign`/`--unassigned`, a `--priority` value that's unknown or ambiguous, or `--id` used on a board with no id column mapped) | fix the invocation; a rejected status, assignee or priority means the value isn't one the board allows — read the error's list of valid options rather than guessing again. **An unmapped id role is exit 2, not 1** — the one role that differs from the row below |
+| 3 | task not found | with `set`/`get`: the ticket, board id, or page id doesn't match a row — don't retry as `upsert` without checking with the user |
 | 4 | duplicate key | more than one row has that ticket key; the tool refuses to guess. Surface it and run `doctor` to list the duplicates |
 | 5 | auth failure | the token is missing or invalid; tell the user to run `notion-track init` |
-| 1 | other error, including a role (e.g. assignee, priority, due) that simply isn't mapped on this board | report it; for an unmapped role, say so and point at `init` rather than retrying |
+| 1 | other error, including an `--assignee`, `--priority` or `--due` role that simply isn't mapped on this board | report it; for one of these unmapped roles, say so and point at `init` rather than retrying. (Unmapped **id** is the exception — see exit 2 above.) |
 
 `apply` reports the exit code of the entry that stopped it, so the same table
 applies: a run that ends with 3 means one of its entries addressed a row that
@@ -399,6 +410,12 @@ front, because they change how you address and create tasks:
   accepted values are whatever the column's options actually are; read them
   with `doctor` or `list` rather than assuming a fixed set like
   ALTA/MEDIA/NORMALE applies here.
+- **Is there a board id column?** Not every board maps one — `list --json` or
+  `get --json` show a non-empty `id` key only when the role is mapped, and
+  `--id` fails if it isn't mapped, but with **exit 2, not 1** (unlike
+  assignee/priority/due, an unmapped id role is a usage error). When it is
+  mapped, `--id` accepts the id exactly as Notion shows it (`BDF-271`) or the
+  bare number alone (`271`).
 
 - **Attribution caveat**: every change is recorded by the integration's bot
   identity, not by the person running the command. If the user asks "who moved
@@ -432,4 +449,11 @@ front, because they change how you address and create tasks:
   tools (`upsert_task`, `set_task`, `get_task`, `list_tasks`) over stdio, with
   the same JSON shapes documented here. It is the same code underneath, so
   everything on this page — read before you write, never invent a status,
-  branch on the outcome — applies there unchanged.
+  branch on the outcome — applies there unchanged, with one exception:
+  addressing. Over MCP a row is addressed **only** by ticket key —
+  `get_task`/`set_task`'s only argument for finding a row is `ticket`.
+  `--id` and `--page-id` are CLI-only; there is no MCP equivalent for either,
+  even though a tool's JSON result still carries the board id under `id`
+  exactly like the CLI's `--json` does. Don't call an MCP tool with an `id`
+  or `page_id` argument expecting it to address a row — it will be rejected
+  (or, worse, ignored as an unknown field).

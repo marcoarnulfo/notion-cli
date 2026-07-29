@@ -33,11 +33,16 @@ type DataSourceRef struct {
 }
 
 // Property is one column of a data source, flattened to what notion-track
-// cares about: its name, its type, and the options a select or status accepts.
+// cares about: its name, its type, the options a select or status accepts,
+// and the prefix a unique_id column carries.
 type Property struct {
 	Name    string
 	Type    string
 	Options []string
+	// Prefix is the string Notion prepends to a unique_id column's numbers
+	// ("BDF" in "BDF-271"). Empty for every other property type, and also for
+	// a unique_id column configured without one.
+	Prefix string
 }
 
 // Schema is the property set of a data source.

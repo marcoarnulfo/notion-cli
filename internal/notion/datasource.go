@@ -22,6 +22,9 @@ func (c *Client) GetSchema(ctx context.Context, dataSourceID string) (*Schema, e
 		Status *struct {
 			Options []option `json:"options"`
 		} `json:"status"`
+		UniqueID *struct {
+			Prefix *string `json:"prefix"`
+		} `json:"unique_id"`
 	}
 	var resp struct {
 		ID         string                 `json:"id"`
@@ -52,6 +55,10 @@ func (c *Client) GetSchema(ctx context.Context, dataSourceID string) (*Schema, e
 		case raw.Status != nil:
 			for _, o := range raw.Status.Options {
 				p.Options = append(p.Options, o.Name)
+			}
+		case raw.UniqueID != nil:
+			if raw.UniqueID.Prefix != nil {
+				p.Prefix = *raw.UniqueID.Prefix
 			}
 		}
 		schema.Properties[name] = p

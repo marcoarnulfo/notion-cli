@@ -821,3 +821,209 @@ func TestResolvePriorityEdges(t *testing.T) {
 		}
 	})
 }
+
+// idSchemaJSON is schemaJSON's shape plus the unique_id column the id role maps
+// onto. A separate const, so the existing fixtures keep the property set the
+// tests written against them assert on.
+const idSchemaJSON = `{
+  "id":"ds1","title":[{"plain_text":"Tasks"}],
+  "properties":{
+    "Name":{"name":"Name","type":"title","title":{}},
+    "Ticket":{"name":"Ticket","type":"rich_text","rich_text":{}},
+    "Stato":{"name":"Stato","type":"status","status":{"options":[{"name":"In corso"},{"name":"Fatto"}]}},
+    "ID":{"name":"ID","type":"unique_id","unique_id":{"prefix":"BDF"}}
+  }}`
+
+// idRowJSON is a row carrying a board id.
+//
+// The page id is a real UUID, not the "page1" the older fixtures use: Task 9
+// sends this row's id through SetByID, which normalises it, and
+// notion.NormalizePageID accepts only a URL, a bare 32-hex id or a dashed UUID.
+// A fixture with "page1" would fail there with "malformed page id" — a failure
+// about the fixture, dressed up as a failure of the feature.
+const idRowJSON = `{
+  "id":"23fb4e5c-8a5f-4d21-b7c9-d0e1f2a3b4c5",
+  "url":"https://notion.so/23fb4e5c8a5f4d21b7c9d0e1f2a3b4c5",
+  "last_edited_time":"2026-07-20T10:00:00.000Z",
+  "parent":{"type":"data_source_id","data_source_id":"ds1"},
+  "properties":{
+    "Name":{"type":"title","title":[{"plain_text":"Hardening"}]},
+    "Stato":{"type":"status","status":{"name":"In corso"}},
+    "ID":{"type":"unique_id","unique_id":{"prefix":"BDF","number":271}}
+  }}`
+
+// idProfile is testProfile with the id role mapped.
+func idProfile() config.Profile {
+	p := testProfile()
+	p.Properties.ID = "ID"
+	return p
+}
+
+// idRoutes is routes() against the schema that has the unique_id column, with
+// a copy of the query body: the filter this feature sends is the thing worth
+// asserting on, and it never appears in the response.
+func idRoutes(t *testing.T, queryResults string, sent *map[string]any) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/data_sources/ds1":
+			w.Write([]byte(idSchemaJSON))
+		case r.URL.Path == "/v1/data_sources/ds1/query":
+			if sent != nil {
+				if err := json.NewDecoder(r.Body).Decode(sent); err != nil {
+					t.Errorf("decoding the query body: %v", err)
+				}
+			}
+			w.Write([]byte(`{"results":[` + queryResults + `],"has_more":false}`))
+		default: // POST /v1/pages, PATCH /v1/pages/{id}
+			w.Write([]byte(idRowJSON))
+		}
+	}))
+}
+
+func TestGetByUniqueIDFiltersByTheBareNumber(t *testing.T) {
+	var sent map[string]any
+	srv := idRoutes(t, idRowJSON, &sent)
+	defer srv.Close()
+
+	page, err := New(notion.New("t", notion.WithBaseURL(srv.URL)), idProfile()).
+		GetByUniqueID(context.Background(), "BDF-271")
+	if err != nil {
+		t.Fatalf("GetByUniqueID: %v", err)
+	}
+	if page.ID != "23fb4e5c-8a5f-4d21-b7c9-d0e1f2a3b4c5" {
+		t.Errorf("page.ID = %q, want the fixture's page id", page.ID)
+	}
+	// The request body is the contract: Notion rejects a quoted value here, so
+	// a test that only checked the response would pass against a filter that
+	// matches nothing on a real board.
+	filter, _ := sent["filter"].(map[string]any)
+	unique, _ := filter["unique_id"].(map[string]any)
+	if filter["property"] != "ID" {
+		t.Errorf("filter.property = %v, want ID", filter["property"])
+	}
+	// encoding/json decodes every JSON number into float64.
+	if unique["equals"] != float64(271) {
+		t.Errorf("filter.unique_id.equals = %#v, want the number 271", unique["equals"])
+	}
+}
+
+func TestGetByUniqueIDReportsAMissingRowAsNotFound(t *testing.T) {
+	srv := idRoutes(t, "", nil)
+	defer srv.Close()
+
+	_, err := New(notion.New("t", notion.WithBaseURL(srv.URL)), idProfile()).
+		GetByUniqueID(context.Background(), "BDF-999")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetByUniqueID error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestGetByUniqueIDRefusesTwoRowsRatherThanPickingOne(t *testing.T) {
+	srv := idRoutes(t, idRowJSON+","+idRowJSON, nil)
+	defer srv.Close()
+
+	// A unique_id matching twice is impossible on a healthy board. Returning
+	// the first would bury a fault nobody else would ever notice.
+	_, err := New(notion.New("t", notion.WithBaseURL(srv.URL)), idProfile()).
+		GetByUniqueID(context.Background(), "BDF-271")
+	if err == nil {
+		t.Error("GetByUniqueID = nil error for two matches, want a failure")
+	}
+}
+
+func TestGetByUniqueIDWithoutAMappedColumn(t *testing.T) {
+	// An unreachable address on purpose: this must fail before any request
+	// goes out, and a working stub would hide a regression that moved the
+	// check after the query.
+	svc := New(notion.New("t", notion.WithBaseURL("http://127.0.0.1:1")), testProfile())
+	_, err := svc.GetByUniqueID(context.Background(), "BDF-271")
+	if !errors.Is(err, ErrNoIDProperty) {
+		t.Fatalf("GetByUniqueID error = %v, want ErrNoIDProperty", err)
+	}
+	// The message has to carry the fix: nobody can guess the flag name from
+	// "no id property is mapped".
+	if !strings.Contains(err.Error(), "--id-prop") {
+		t.Errorf("error = %q, want it to name the init flag", err.Error())
+	}
+}
+
+func TestGetByUniqueIDRejectsAnEmptyValue(t *testing.T) {
+	svc := New(notion.New("t", notion.WithBaseURL("http://127.0.0.1:1")), idProfile())
+	if _, err := svc.GetByUniqueID(context.Background(), ""); !errors.Is(err, ErrEmptyID) {
+		t.Errorf("GetByUniqueID error = %v, want ErrEmptyID", err)
+	}
+}
+
+func TestGetByUniqueIDRejectsAWronglyTypedColumn(t *testing.T) {
+	srv := idRoutes(t, idRowJSON, nil)
+	defer srv.Close()
+
+	// The config points the role at a rich_text column: doctor reports this,
+	// but the lookup has to refuse it too rather than send a filter Notion
+	// will reject with a 400.
+	p := idProfile()
+	p.Properties.ID = "Ticket"
+	_, err := New(notion.New("t", notion.WithBaseURL(srv.URL)), p).
+		GetByUniqueID(context.Background(), "BDF-271")
+	if err == nil || !strings.Contains(err.Error(), "unique_id") {
+		t.Errorf("GetByUniqueID error = %v, want it to name the type the role needs", err)
+	}
+}
+
+// idWriteRoutes is idRoutes plus a record of every "METHOD path": the point of
+// these two tests is which requests went out, and in which order.
+func idWriteRoutes(t *testing.T, queryResults string, seen *[]string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*seen = append(*seen, r.Method+" "+r.URL.Path)
+		switch {
+		case r.URL.Path == "/v1/data_sources/ds1":
+			w.Write([]byte(idSchemaJSON))
+		case r.URL.Path == "/v1/data_sources/ds1/query":
+			w.Write([]byte(`{"results":[` + queryResults + `],"has_more":false}`))
+		default: // POST /v1/pages, PATCH /v1/pages/{id}
+			w.Write([]byte(idRowJSON))
+		}
+	}))
+}
+
+func TestSetByUniqueIDUpdatesTheResolvedPage(t *testing.T) {
+	var seen []string
+	srv := idWriteRoutes(t, idRowJSON, &seen)
+	defer srv.Close()
+
+	res, err := New(notion.New("t", notion.WithBaseURL(srv.URL)), idProfile()).
+		SetByUniqueID(context.Background(), "BDF-271", tracker.Fields{Status: "Fatto"}, nil)
+	if err != nil {
+		t.Fatalf("SetByUniqueID: %v", err)
+	}
+	// The write must land on the page the id resolved to, through the same
+	// SetByID path --page-id uses: one write path, three ways to address it.
+	if !contains(seen, "PATCH /v1/pages/23fb4e5c-8a5f-4d21-b7c9-d0e1f2a3b4c5") {
+		t.Errorf("requests = %v, want a PATCH on the resolved page", seen)
+	}
+	if res.Action != "updated" {
+		t.Errorf("action = %q, want %q", res.Action, "updated")
+	}
+}
+
+func TestSetByUniqueIDFailsBeforeWritingWhenTheIDIsUnknown(t *testing.T) {
+	var seen []string
+	srv := idWriteRoutes(t, "", &seen)
+	defer srv.Close()
+
+	_, err := New(notion.New("t", notion.WithBaseURL(srv.URL)), idProfile()).
+		SetByUniqueID(context.Background(), "BDF-999", tracker.Fields{Status: "Fatto"}, nil)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetByUniqueID error = %v, want ErrNotFound", err)
+	}
+	// Resolution comes first for exactly this reason: an id nobody recognises
+	// must not reach the board at all.
+	for _, req := range seen {
+		if strings.HasPrefix(req, "PATCH ") || req == "POST /v1/pages" {
+			t.Errorf("requests = %v, want no write after failing to resolve the id", seen)
+			break
+		}
+	}
+}

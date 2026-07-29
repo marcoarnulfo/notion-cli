@@ -159,7 +159,7 @@ apre una procedura guidata: recupera il tuo token (chiedendolo solo se non ne es
 La procedura guidata richiede un terminale **e** una riga di comando altrimenti nuda. Passare un qualsiasi flag di configurazione, o eseguire il comando senza un TTY — CI, una pipe, un agente — porta alla forma esplicita qui sotto, invariata:
 
 ```
-notion-track init --data-source-id <id> --ticket-prop <nome> --status-prop <nome> --title-prop <nome> [--due-prop <nome>] [--assignee-prop <nome>] [--priority-prop <nome>] [--me <valore>] [--database-id <id>] [--list]
+notion-track init --data-source-id <id> --ticket-prop <nome> --status-prop <nome> --title-prop <nome> [--due-prop <nome>] [--assignee-prop <nome>] [--priority-prop <nome>] [--id-prop <nome>] [--me <valore>] [--database-id <id>] [--list]
 ```
 
 | Flag | Significato |
@@ -171,6 +171,7 @@ notion-track init --data-source-id <id> --ticket-prop <nome> --status-prop <nome
 | `--due-prop string` | proprietà data (opzionale) |
 | `--assignee-prop string` | proprietà `select` che indica chi possiede la riga (opzionale) |
 | `--priority-prop string` | proprietà `select` che indica quanto è urgente la riga (opzionale) |
+| `--id-prop string` | proprietà `unique_id` che contiene l'id di board della riga, es. `BDF-271` (opzionale) |
 | `--me string` | il valore a cui risolve `--assignee me`; risolto e validato contro le opzioni di `--assignee-prop` prima di essere salvato (opzionale, richiede `--assignee-prop`) |
 | `--database-id string` | id del database, registrato solo come riferimento — ogni lettura/scrittura usa `--data-source-id`, non questo |
 | `--list` | elenca gli id delle data source condivise con l'integrazione, ed esce |
@@ -180,6 +181,8 @@ Ogni proprietà mappata viene verificata contro lo schema live della data source
 `--assignee-prop` si comporta come `--due-prop`: una board che non traccia referenti in particolare lo lascia semplicemente non mappato, e ogni comando si comporta esattamente come prima di questa funzionalità. `--me` risolve il proprio valore contro le opzioni di `--assignee-prop` nello stesso modo di `--assignee me`, così un refuso non può finire nel file, e salva il nome canonico — ma poiché `config.yml` è pensato per essere committato e condiviso, `init --me` stampa un avviso che raccomanda `NOTION_TRACK_ME` invece di affidarsi al valore appena scritto (vedi [Variabili d'ambiente](#variabili-dambiente)).
 
 `--priority-prop` si comporta come `--due-prop` a sua volta: una board senza nessuna nozione di urgenza lo lascia semplicemente non mappato, e ogni comando si comporta esattamente come prima di questa funzionalità. A differenza di `--assignee-prop`, non esiste un equivalente `--priority-me`: una priorità non appartiene a nessuno, quindi non c'è nessuna identità da risolvere.
+
+`--id-prop` mappa l'identificatore che Notion stesso assegna alla riga — una colonna `unique_id`, il tipo che sulla board appare come `BDF-271` — così una riga può essere indirizzata con quel breve id invece che con la chiave ticket o il page id (vedi `--id` sotto `get` e `set` più avanti). Si comporta come `--due-prop`: una board senza una colonna di questo tipo lo lascia semplicemente non mappato, e `--id` resta indisponibile — la riga è comunque raggiungibile con gli altri due metodi. `init` richiede che la proprietà mappata sia effettivamente di tipo `unique_id`, allo stesso modo in cui `--ticket-prop` richiede `rich_text` o `title`.
 
 **Richiesta del token.** Se non trova nessun token né in `NOTION_TOKEN` né in `credentials.yml`, `init` si comporta diversamente a seconda di come viene eseguito:
 
@@ -197,12 +200,18 @@ Il comando principale. Interroga la data source per la riga la cui proprietà ti
 ### `set` — aggiorna solo una riga esistente
 
 ```
-notion-track set (--ticket <chiave> | --page-id <id>) [--title <titolo>] [--status <stato>] [--due YYYY-MM-DD] [--assignee <valore>] [--unassign] [--priority <valore>] [--json]
+notion-track set (--ticket <chiave> | --id <id-board> | --page-id <id>) [--title <titolo>] [--status <stato>] [--due YYYY-MM-DD] [--assignee <valore>] [--unassign] [--priority <valore>] [--json]
 ```
 
 Stessi campi di `upsert`, ma fallisce con exit code 3 se la riga non esiste ancora, invece di crearla. Usalo dove una riga mancante è un sintomo da far emergere, non un dettaglio da ignorare.
 
-`--ticket` e `--page-id` sono mutuamente esclusivi ed è obbligatorio esattamente uno dei due. `--page-id` indirizza una riga direttamente tramite il suo page id di Notion — nessuna query per chiave ticket — il che è più rapido e privo di ambiguità quando lo si ha già a disposizione (ad es. dal `page_id` restituito da una precedente chiamata `--json`, vedi [Output JSON](#output-json)). Accetta l'URL completo della pagina copiato dalla barra degli indirizzi di Notion, un id esadecimale nudo di 32 caratteri, o un UUID con trattini; qualsiasi altro input fallisce immediatamente con exit code 2, prima di qualunque chiamata di rete. Poiché leggere una pagina per id funziona per qualsiasi pagina condivisa con l'integrazione — non solo per le righe della data source configurata — un page id che risolve verso una data source *diversa* da quella del profilo attivo viene rifiutato con exit code 2 invece di fallire più avanti con un criptico errore sui nomi delle proprietà da parte di Notion. Anche `set --page-id` rifiuta, con lo stesso exit code, una pagina il cui parent non riporta alcuna data source — la sua appartenenza non può mai essere confermata, e una scrittura non deve procedere su una pagina che non può dimostrare di appartenere a questo profilo.
+```bash
+notion-track set --id BDF-271 --status "Fatto"
+```
+
+`--ticket`, `--id` e `--page-id` sono mutuamente esclusivi ed è obbligatorio esattamente uno dei tre. `--page-id` indirizza una riga direttamente tramite il suo page id di Notion — nessuna query per chiave ticket — il che è più rapido e privo di ambiguità quando lo si ha già a disposizione (ad es. dal `page_id` restituito da una precedente chiamata `--json`, vedi [Output JSON](#output-json)). Accetta l'URL completo della pagina copiato dalla barra degli indirizzi di Notion, un id esadecimale nudo di 32 caratteri, o un UUID con trattini; qualsiasi altro input fallisce immediatamente con exit code 2, prima di qualunque chiamata di rete. Poiché leggere una pagina per id funziona per qualsiasi pagina condivisa con l'integrazione — non solo per le righe della data source configurata — un page id che risolve verso una data source *diversa* da quella del profilo attivo viene rifiutato con exit code 2 invece di fallire più avanti con un criptico errore sui nomi delle proprietà da parte di Notion. Anche `set --page-id` rifiuta, con lo stesso exit code, una pagina il cui parent non riporta alcuna data source — la sua appartenenza non può mai essere confermata, e una scrittura non deve procedere su una pagina che non può dimostrare di appartenere a questo profilo.
+
+`--id` indirizza una riga tramite il suo **id di board** — l'identificatore breve che Notion mostra sulla riga e che si legge ad alta voce (`BDF-271`, o il numero nudo `271` da solo) — risolto con una query sulla colonna `unique_id` mappata, allo stesso modo in cui `--ticket` si risolve sulla proprietà ticket; l'API di Notion filtra nativamente su `unique_id`, quindi non serve nessuna scansione lato client. Richiede una proprietà `unique_id` mappata (`init --id-prop`, vedi `init` sopra); senza una mappata, `--id` fallisce con exit code 2 — la stessa classe di errore di eseguire il comando prima di `notion-track init` — indicando come risolverlo. Un `--id` vuoto fallisce allo stesso modo, prima di qualunque richiesta. Un `--id` malformato — prefisso sbagliato, o non un numero — è anch'esso exit code 2, ma non così presto: per distinguere un prefisso sbagliato da uno giusto serve prima lo schema della data source, quindi un `--id` malformato costa una richiesta prima di fallire, pur senza arrivare alla query sulle righe.
 
 ### `--assignee` / `--unassign` — assegna o svuota il referente di una riga
 
@@ -258,7 +267,7 @@ Disponibile sia su `upsert` sia su `set`. `--body-file` accetta il percorso di u
 notion-track upsert --ticket BDF-231 --body-file note-di-rilascio.md --expand
 ```
 
-Un segnaposto che nulla può riempire è un errore d'uso che indica la riga, invece di un corpo che arriva su Notion con un letterale `{{tikcet}}` dentro, che nessuno nota finché non legge la pagina. L'espansione è disattivata per default e non esiste una sintassi di escape: un corpo che contiene legittimamente delle graffe — un documento sul templating, uno snippet di Handlebars — semplicemente non passa il flag. Indirizzare una riga con `--page-id` lascia `{{ticket}}` vuoto, dato che nessuna chiave ticket è stata fornita.
+Un segnaposto che nulla può riempire è un errore d'uso che indica la riga, invece di un corpo che arriva su Notion con un letterale `{{tikcet}}` dentro, che nessuno nota finché non legge la pagina. L'espansione è disattivata per default e non esiste una sintassi di escape: un corpo che contiene legittimamente delle graffe — un documento sul templating, uno snippet di Handlebars — semplicemente non passa il flag. Indirizzare una riga con `--page-id` o `--id` lascia `{{ticket}}` vuoto, dato che nessuna chiave ticket è stata fornita.
 
 **Concorrenza.** Due esecuzioni di `--body-file` in corsa sulla stessa pagina possono entrambe aggiungere contenuto prima che una delle due cancelli il vecchio, duplicando il corpo — non c'è alcun lock da acquisire su una pagina Notion. Non eseguire scritture concorrenti del corpo sulla stessa pagina.
 
@@ -267,10 +276,21 @@ Con `--json`, una scrittura riuscita aggiunge un oggetto `body`: `{"blocks_writt
 ### `get` — legge una riga
 
 ```
-notion-track get (--ticket <chiave> | --page-id <id>) [--json]
+notion-track get (--ticket <chiave> | --id <id-board> | --page-id <id>) [--json]
 ```
 
-Stampa ticket, titolo, stato e URL della riga. `--ticket` e `--page-id` sono mutuamente esclusivi ed è obbligatorio esattamente uno dei due — vedi `set` sopra per cosa accetta `--page-id` e come viene validato. Fallisce con exit code 3 se non trovata (il 404 di Notion non distingue "pagina inesistente" da "mai condivisa con questa integrazione" — il messaggio d'errore lo dice esplicitamente), 4 se una chiave ticket corrisponde a più di una riga (vedi [Limitazioni](#limitazioni)), o 2 per un page id malformato o esterno alla data source del profilo attivo. A differenza di `set`, `get --page-id` accetta una pagina il cui parent non riporta alcuna data source — una lettura non può fare danni con una pagina non confermata, a differenza di una scrittura.
+```bash
+# per titolo esatto (o chiave ticket)
+notion-track get --ticket "Sistemare visualizzazione da telefono"
+
+# per id di board, quello che si dice ad alta voce
+notion-track get --id BDF-271
+
+# per page id o URL di Notion, stabile anche dopo un rename
+notion-track get --page-id https://notion.so/...
+```
+
+Stampa l'id di board della riga (quando mappato), ticket, titolo, stato e URL. `--ticket`, `--id` e `--page-id` sono mutuamente esclusivi ed è obbligatorio esattamente uno dei tre — vedi `set` sopra per cosa accettano `--id` e `--page-id` e come vengono validati. Fallisce con exit code 3 se non trovata (il 404 di Notion non distingue "pagina inesistente" da "mai condivisa con questa integrazione" — il messaggio d'errore lo dice esplicitamente), 4 se una chiave ticket corrisponde a più di una riga (vedi [Limitazioni](#limitazioni)), o 2 per un `--id` o `--page-id` malformato, un ruolo id non mappato, o un page id esterno alla data source del profilo attivo. A differenza di `set`, `get --page-id` accetta una pagina il cui parent non riporta alcuna data source — una lettura non può fare danni con una pagina non confermata, a differenza di una scrittura.
 
 ### `list` — legge più righe
 
@@ -280,7 +300,7 @@ notion-track list [--status <stato>] [--assignee <valore>] [--unassigned] [--pri
 
 Elenca tutte le righe, oppure le restringe per `--status`, per `--assignee`, alle righe `--unassigned`, o per `--priority` — `--assignee` e `--unassigned` sono mutuamente esclusivi. Un valore di stato, referente o priorità sconosciuto fallisce subito con exit code 2, indicando i valori realmente ammessi da Notion per quella proprietà; `--assignee` risolve nomi parziali e `me` esattamente come su `upsert`/`set`, e `--priority` risolve valori parziali allo stesso modo (vedi `--assignee` / `--unassign` e `--priority` sotto [Uso](#uso) sopra). Filtrare per referente o priorità su un profilo che non mappa il ruolo fallisce come qualsiasi altro ruolo non mappato (exit code 1). A differenza di `--unassigned`, non esiste un `--unprioritized` per trovare le righe senza priorità.
 
-La forma leggibile aggiunge `  !<valore>` e `  @<nome>` a una riga che li ha; le righe senza nessuno dei due, e ogni riga su un profilo che non mappa affatto uno dei due ruoli, sono stampate esattamente come prima di questa funzionalità.
+La forma leggibile aggiunge `  !<valore>` e `  @<nome>` a una riga che li ha; le righe senza nessuno dei due, e ogni riga su un profilo che non mappa affatto uno dei due ruoli, sono stampate esattamente come prima di questa funzionalità. Quando il ruolo id è mappato, ogni riga è anche preceduta dal proprio id di board, allo stesso modo in cui lo mostra `get`.
 
 Quando non corrisponde nulla, la forma leggibile stampa `no matching tasks` **su stderr** ed esce con 0 — stdout resta vuoto, così `list | wc -l` conta righe e nient'altro. `list --json` stampa `[]` e non dice nulla su stderr.
 
@@ -394,6 +414,7 @@ profiles:
       due: Scadenza         # opzionale: proprietà data
       assignee: Referente   # opzionale: proprietà select che indica chi possiede la riga
       priority: Urgenza     # opzionale: proprietà select che indica quanto è urgente la riga
+      id: ID                # opzionale: proprietà unique_id che contiene l'id di board della riga
     me: Marco Arnulfo       # opzionale: il valore a cui risolve `--assignee me`; NOTION_TRACK_ME lo sovrascrive
 ```
 
@@ -433,6 +454,7 @@ Una riga (`get --json`, e ogni elemento di `list --json`):
 
 ```json
 {
+  "id": "BDF-271",
   "ticket": "BDF-231",
   "title": "Hardening",
   "status": "In corso",
@@ -444,14 +466,14 @@ Una riga (`get --json`, e ogni elemento di `list --json`):
 }
 ```
 
-Se il mapping configurato indica una colonna che la riga non porta davvero, il campo corrispondente torna come stringa vuota invece che come errore — segnalare un mapping rotto è compito di `doctor`, non un motivo per far fallire ogni lettura. `assignee` segue la stessa regola ed è inoltre vuoto ogni volta che non c'è nessun referente, così uno script non deve mai ramificare sulla presenza della chiave — solo su se è vuota. `priority` segue la stessa regola: sempre presente, vuota ogni volta che la riga non ha un valore o il ruolo non è mappato.
+`id` viene per primo perché è l'identità della riga, lo stesso ordine in cui la board la mostra. Se il mapping configurato indica una colonna che la riga non porta davvero, il campo corrispondente torna come stringa vuota invece che come errore — segnalare un mapping rotto è compito di `doctor`, non un motivo per far fallire ogni lettura. `id` segue la stessa regola di `assignee` e `priority` qui sotto: sempre presente, vuoto ogni volta che la riga non ha un valore o il ruolo non è mappato, così uno script non deve mai ramificare sulla presenza della chiave — solo su se è vuota. `assignee` segue la stessa regola ed è inoltre vuoto ogni volta che non c'è nessun referente. `priority` segue la stessa regola a sua volta: sempre presente, vuota ogni volta che la riga non ha un valore o il ruolo non è mappato.
 
 `upsert --json` / `set --json`:
 
 ```json
 {
   "action": "created",
-  "page": { "ticket": "BDF-231", "title": "Hardening", "status": "In corso", "page_id": "...", "url": "...", "last_edited_time": "...", "assignee": "Mirko Spinato", "priority": "ALTA" }
+  "page": { "id": "BDF-271", "ticket": "BDF-231", "title": "Hardening", "status": "In corso", "page_id": "...", "url": "...", "last_edited_time": "...", "assignee": "Mirko Spinato", "priority": "ALTA" }
 }
 ```
 
@@ -479,9 +501,9 @@ Le pipeline possono ramificare su questi valori senza fare parsing di alcun mess
 | Codice | Nome | Significato |
 |---|---|---|
 | `0` | OK | successo |
-| `1` | Error | un errore generico — un errore di rete/API, `doctor` che segnala un check fallito diverso da `token`, oppure un valore passato per un ruolo (`--assignee`, `--priority`, `--due`, …) che non è mappato nel profilo attivo |
-| `2` | Usage | l'invocazione non può funzionare così com'è: un flag mancante o non valido, `--ticket` e `--page-id` passati insieme o nessuno dei due, un comando sconosciuto, nessuna configurazione ancora presente (`notion-track init` non è mai stato eseguito), un valore di stato che la data source non ammette, un `--page-id` malformato, un `--page-id` che risolve fuori dalla data source del profilo attivo, un valore di `--assignee` che risolve a zero o a più di un'opzione, un `--assignee` vuoto, `--assignee me` senza identità configurata, `--assignee` combinato con `--unassign` (o con `--unassigned` su `list`), un valore di `--priority` che risolve a zero o a più di un'opzione, oppure un `--priority` vuoto |
-| `3` | Not found | il ticket richiesto non ha una riga corrispondente, oppure il page id non corrisponde a nessuna pagina (o a una non condivisa con questa integrazione) (`get`, `set`) |
+| `1` | Error | un errore generico — un errore di rete/API, `doctor` che segnala un check fallito diverso da `token`, oppure un valore passato per `--assignee`, `--priority` o `--due` quando quel ruolo non è mappato nel profilo attivo (un ruolo `id` non mappato è l'unica eccezione — è exit code 2, vedi sotto) |
+| `2` | Usage | l'invocazione non può funzionare così com'è: un flag mancante o non valido, più di uno fra `--ticket`/`--id`/`--page-id` passati insieme o nessuno dei tre, un comando sconosciuto, nessuna configurazione ancora presente (`notion-track init` non è mai stato eseguito), un valore di stato che la data source non ammette, un `--page-id` o `--id` malformato, un `--id` usato su un profilo senza ruolo id mappato, un `--page-id` che risolve fuori dalla data source del profilo attivo, un valore di `--assignee` che risolve a zero o a più di un'opzione, un `--assignee` vuoto, `--assignee me` senza identità configurata, `--assignee` combinato con `--unassign` (o con `--unassigned` su `list`), un valore di `--priority` che risolve a zero o a più di un'opzione, oppure un `--priority` vuoto |
+| `3` | Not found | il ticket, l'id di board, o il page id richiesto non ha una riga corrispondente (o, per un page id, una non condivisa con questa integrazione) (`get`, `set`) |
 | `4` | Duplicate | la chiave del ticket corrisponde a più di una riga (`upsert`, `set`, `get`) |
 | `5` | Auth | nessun token trovato (incluso il caso in cui `credentials.yml` esiste ma non è leggibile), oppure Notion lo ha rifiutato (401/403) — incluso `doctor`, quando il suo check `token` è l'unico fallito |
 
@@ -531,6 +553,8 @@ Poiché il tool è muto in caso di successo, parla `--json` con uno schema stabi
 
 Espone `upsert_task`, `set_task`, `get_task` e `list_tasks`, restituendo la stessa forma JSON documentata sopra. `upsert_task` e `set_task` accettano `assignee` e `unassign` esattamente come i flag della CLI — un nome parziale, o il valore riservato `me`; `list_tasks` accetta `assignee` e `unassigned`, mutuamente esclusivi tra loro. `upsert_task` e `set_task` accettano anche `priority`, risolta nello stesso modo di `--priority` — un valore parziale basta se non è ambiguo; anche `list_tasks` accetta `priority`, restringendo alle righe che portano quel valore. Non esiste un argomento `unpriority`, nello stesso modo in cui la CLI non ha un flag `--unpriority`. È un adapter, non una seconda implementazione: ogni tool passa dallo stesso codice dei comandi CLI, quindi il controllo dei duplicati, la validazione dello stato e il mapping delle proprietà si comportano in modo identico per un agente. `stdout` trasporta il protocollo JSON-RPC e nient'altro.
 
+L'indirizzamento è l'unico punto in cui le due superfici divergono: via MCP una riga si trova **solo** per chiave ticket — l'unico argomento di `get_task` e `set_task` per trovare una riga è `ticket` (`set_task` accetta anche `title`, `status`, `due`, `assignee`, `unassign` e `priority`, ma quelli dicono cosa scrivere, non su quale riga scriverlo). `--id` e `--page-id` della CLI non hanno un equivalente MCP, anche se il JSON restituito da un tool porta comunque l'id di board nella chiave `id`, come fa `--json` sulla CLI.
+
 Questo non contraddice la ragione per cui questo strumento esiste. È l'endpoint MCP *ospitato* di Notion a essere bloccato dai firewall aziendali; un server *locale*, che gira sulla tua macchina con il tuo token di integrazione, raggiunge gli agenti proprio dove quello ospitato non arriva.
 
 ## Contribuire
@@ -539,7 +563,7 @@ I contributi sono benvenuti — questo è un progetto libero e open-source. Vedi
 
 ## Roadmap
 
-Implementato oggi: `init` (procedura guidata interattiva e forma a flag, con `--list`), la TUI di navigazione, `upsert`, `set`, `get`, `list`, `doctor`; `--dry-run` su `upsert`/`set`; `apply` per le scritture in blocco da manifest; `--body-file` su `upsert`/`set` per scrivere il corpo della pagina da Markdown, con `--expand` per i segnaposto `{{ticket}}`/`{{date}}`; `--json` su ogni comando che produce output; `mcp` per servire le stesse operazioni come tool MCP; un ruolo `assignee` opzionale con `--assignee`/`--unassign`, `list --assignee`/`--unassigned` e l'identità `me`; un ruolo `priority` opzionale con `--priority` su `upsert`/`set`/`list`; profili; retry con backoff.
+Implementato oggi: `init` (procedura guidata interattiva e forma a flag, con `--list`), la TUI di navigazione, `upsert`, `set`, `get`, `list`, `doctor`; `--dry-run` su `upsert`/`set`; `apply` per le scritture in blocco da manifest; `--body-file` su `upsert`/`set` per scrivere il corpo della pagina da Markdown, con `--expand` per i segnaposto `{{ticket}}`/`{{date}}`; `--json` su ogni comando che produce output; `mcp` per servire le stesse operazioni come tool MCP; un ruolo `assignee` opzionale con `--assignee`/`--unassign`, `list --assignee`/`--unassigned` e l'identità `me`; un ruolo `priority` opzionale con `--priority` su `upsert`/`set`/`list`; un ruolo `id` opzionale mappato con `init --id-prop`, che indirizza una riga tramite il suo id di board con `--id` su `get`/`set`; profili; retry con backoff.
 
 Costruito ma non ancora esercitato: la **pipeline GoReleaser** (`.goreleaser.yaml` più un workflow di release che parte sui tag `v*`) e la **composite GitHub Action** in [`action/`](action/). Ci sono entrambe, e la pipeline è stata verificata in locale con `goreleaser release --snapshot`, ma nessuna delle due ha ancora girato per davvero: succederà col primo tag, e fino ad allora la pagina delle release è vuota e la action non ha nulla da scaricare.
 

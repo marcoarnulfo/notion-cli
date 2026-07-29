@@ -12,9 +12,14 @@ import (
 // assignee are appended as trailing %s segments, each empty when there is
 // nothing to show, keeping the existing columns byte-identical for profiles
 // without the role.
+//
+// The id leads as a %s segment of its own, ahead of the ticket/title columns:
+// it is the row's name, and names read down the left edge of a list. Empty
+// when the role is unmapped, the same rule the two trailing suffixes follow,
+// so a profile without the id role prints byte-identical columns to before.
 const (
-	listRowFormat       = "%-20s %-40s [%s]%s%s\n"
-	listMergedRowFormat = "%-61s [%s]%s%s\n"
+	listRowFormat       = "%s%-20s %-40s [%s]%s%s\n"
+	listMergedRowFormat = "%s%-61s [%s]%s%s\n"
 )
 
 func newListCmd() *cobra.Command {
@@ -64,11 +69,13 @@ func newListCmd() *cobra.Command {
 				status := p.Properties[profile.Properties.Status].Text
 				priority := prioritySuffix(p, profile.Properties)
 				assignee := assigneeSuffix(p, profile.Properties)
+				id := idPrefix(p, profile.Properties)
 				if merged {
-					cmd.Printf(listMergedRowFormat, p.Properties[profile.Properties.Title].Text, status, priority, assignee)
+					cmd.Printf(listMergedRowFormat, id,
+						p.Properties[profile.Properties.Title].Text, status, priority, assignee)
 					continue
 				}
-				cmd.Printf(listRowFormat,
+				cmd.Printf(listRowFormat, id,
 					p.Properties[profile.Properties.Ticket].Text,
 					p.Properties[profile.Properties.Title].Text,
 					status, priority, assignee)

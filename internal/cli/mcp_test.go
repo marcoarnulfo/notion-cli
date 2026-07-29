@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"net/http"
+	"reflect"
 	"testing"
 
 	"github.com/marcoarnulfo/notion-cli/internal/mcp"
@@ -90,4 +91,25 @@ func TestTheMCPConversionsStayDirect(t *testing.T) {
 
 	var lf mcp.ListFilter
 	_ = service.ListFilter(lf)
+}
+
+func TestMCPRowMirrorsPageJSON(t *testing.T) {
+	// The two structs are converted with a direct type conversion, which only
+	// compiles while they match field for field. This test states the contract
+	// the compiler enforces, so a reviewer reading either file finds out why.
+	pj := reflect.TypeOf(pageJSON{})
+	row := reflect.TypeOf(mcp.Row{})
+	if pj.NumField() != row.NumField() {
+		t.Fatalf("pageJSON has %d fields, mcp.Row has %d", pj.NumField(), row.NumField())
+	}
+	for i := 0; i < pj.NumField(); i++ {
+		a, b := pj.Field(i), row.Field(i)
+		if a.Name != b.Name || a.Type != b.Type || a.Tag.Get("json") != b.Tag.Get("json") {
+			t.Errorf("field %d: pageJSON has %s %s `%s`, mcp.Row has %s %s `%s`",
+				i, a.Name, a.Type, a.Tag.Get("json"), b.Name, b.Type, b.Tag.Get("json"))
+		}
+	}
+	if _, ok := pj.FieldByName("ID"); !ok {
+		t.Error("pageJSON has no ID field")
+	}
 }

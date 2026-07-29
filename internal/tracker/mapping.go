@@ -119,5 +119,17 @@ func GuessMapping(schema *notion.Schema) config.Properties {
 		}
 	}
 
+	// The only unique_id column wins, by type rather than by name. Here the
+	// "only candidate of a suitable type wins" rule is safe in a way it is not
+	// for assignee and priority: no other role accepts unique_id, so there is
+	// no role to steal a column from. Two or more and the guess stays empty,
+	// the same rule every other role follows.
+	//
+	// That "id" also appears in ticketNames is not a conflict: ticket
+	// candidates are drawn from rich_text and title only.
+	if ids := byType["unique_id"]; len(ids) == 1 {
+		out.ID = ids[0]
+	}
+
 	return out
 }

@@ -456,3 +456,46 @@ func TestDoctorChecksAMappedPriority(t *testing.T) {
 		t.Errorf("properties = %s (%s), want fail for a column that is gone", props.Status, props.Detail)
 	}
 }
+
+func TestDoctorRejectsAnIDPropertyOfTheWrongType(t *testing.T) {
+	srv := doctorRoutes(t)
+	defer srv.Close()
+
+	// schemaJSON's "Ticket" is rich_text: exactly the shape of mistake this
+	// check exists for — it looks plausible in the config and can never work,
+	// because a rich_text column cannot carry Notion's own row id.
+	p := testProfile()
+	p.Properties.ID = "Ticket"
+	checks := New(notion.New("t", notion.WithBaseURL(srv.URL)), p).Doctor(context.Background())
+
+	props, ok := findCheck(checks, "properties")
+	if !ok {
+		t.Fatal("no properties check")
+	}
+	if props.Status != "fail" {
+		t.Errorf("properties = %s (%s), want fail for an id property of type rich_text",
+			props.Status, props.Detail)
+	}
+	if !strings.Contains(props.Detail, "unique_id") {
+		t.Errorf("detail = %q, want it to name the type the role needs", props.Detail)
+	}
+}
+
+func TestDoctorTreatsTheIDAsOptional(t *testing.T) {
+	srv := doctorRoutes(t)
+	defer srv.Close()
+
+	// testProfile leaves the role unmapped, the way every profile written
+	// before this feature does. A board with no unique_id column is not
+	// broken — it is addressed the other two ways.
+	checks := New(notion.New("t", notion.WithBaseURL(srv.URL)), testProfile()).
+		Doctor(context.Background())
+
+	props, ok := findCheck(checks, "properties")
+	if !ok {
+		t.Fatal("no properties check")
+	}
+	if props.Status == "fail" {
+		t.Errorf("properties = fail (%s), want the optional role to be skipped", props.Detail)
+	}
+}
