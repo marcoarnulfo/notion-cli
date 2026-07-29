@@ -74,7 +74,7 @@ Windows viaggia come `.zip` con lo stesso nome — cambia il pattern e scompatta
 
 I binari non usano cgo, quindi girano su qualunque immagine, con o senza libc. `notion-track --version` riporta il tag della release; una build da sorgente riporta `dev`.
 
-Nota: finché non viene spinto il primo tag la pagina delle release è vuota, e `go install` qui sopra è l'unica strada.
+Nota: `go install` qui sopra non richiede nessuna release — compila direttamente dal sorgente tramite il proxy dei moduli Go — quindi funziona sempre, indipendentemente dal fatto che questo repository abbia già un tag di release.
 </details>
 
 ## Avvio rapido
@@ -104,15 +104,15 @@ Nota: finché non viene spinto il primo tag la pagina delle release è vuota, e 
    ```
 7. **Crea o aggiorna una riga** — questo è il comando che userai davvero ogni giorno:
    ```bash
-   notion-track upsert --ticket BDF-231 --title "Hardening" --status "In corso"
-   notion-track upsert --ticket BDF-231 --status "Fatto"   # aggiorna la stessa riga, nessun duplicato
+   notion-track upsert --ticket TASK-231 --title "Hardening" --status "In corso"
+   notion-track upsert --ticket TASK-231 --status "Fatto"  # aggiorna la stessa riga, nessun duplicato
    ```
 8. **(Facoltativo) Traccia chi possiede ogni riga.** Mappa una colonna `select` con `--assignee-prop` (vedi [Uso](#uso) più sotto), esporta la tua identità una volta sola, e `me` funziona ovunque sia accettato `--assignee`:
    ```bash
    # una volta sola, nel tuo shell profile
-   export NOTION_TRACK_ME="Marco Arnulfo"
+   export NOTION_TRACK_ME="Jordan Lee"
 
-   notion-track set --ticket BDF-231 --status "In corso" --assignee me
+   notion-track set --ticket TASK-231 --status "In corso" --assignee me
    notion-track list --assignee me --status "Da fare"
    notion-track list --unassigned
    ```
@@ -120,7 +120,7 @@ Nota: finché non viene spinto il primo tag la pagina delle release è vuota, e 
    ```bash
    notion-track list --priority ALTA --status "Da fare"
    notion-track list --priority ALTA --assignee me
-   notion-track set --ticket BDF-1 --priority alta --assignee mirko
+   notion-track set --ticket TASK-1 --priority alta --assignee sam
    ```
 
 ## Uso
@@ -171,7 +171,7 @@ notion-track init --data-source-id <id> --ticket-prop <nome> --status-prop <nome
 | `--due-prop string` | proprietà data (opzionale) |
 | `--assignee-prop string` | proprietà `select` che indica chi possiede la riga (opzionale) |
 | `--priority-prop string` | proprietà `select` che indica quanto è urgente la riga (opzionale) |
-| `--id-prop string` | proprietà `unique_id` che contiene l'id di board della riga, es. `BDF-271` (opzionale) |
+| `--id-prop string` | proprietà `unique_id` che contiene l'id di board della riga, es. `TASK-271` (opzionale) |
 | `--me string` | il valore a cui risolve `--assignee me`; risolto e validato contro le opzioni di `--assignee-prop` prima di essere salvato (opzionale, richiede `--assignee-prop`) |
 | `--database-id string` | id del database, registrato solo come riferimento — ogni lettura/scrittura usa `--data-source-id`, non questo |
 | `--list` | elenca gli id delle data source condivise con l'integrazione, ed esce |
@@ -182,7 +182,7 @@ Ogni proprietà mappata viene verificata contro lo schema live della data source
 
 `--priority-prop` si comporta come `--due-prop` a sua volta: una board senza nessuna nozione di urgenza lo lascia semplicemente non mappato, e ogni comando si comporta esattamente come prima di questa funzionalità. A differenza di `--assignee-prop`, non esiste un equivalente `--priority-me`: una priorità non appartiene a nessuno, quindi non c'è nessuna identità da risolvere.
 
-`--id-prop` mappa l'identificatore che Notion stesso assegna alla riga — una colonna `unique_id`, il tipo che sulla board appare come `BDF-271` — così una riga può essere indirizzata con quel breve id invece che con la chiave ticket o il page id (vedi `--id` sotto `get` e `set` più avanti). Si comporta come `--due-prop`: una board senza una colonna di questo tipo lo lascia semplicemente non mappato, e `--id` resta indisponibile — la riga è comunque raggiungibile con gli altri due metodi. `init` richiede che la proprietà mappata sia effettivamente di tipo `unique_id`, allo stesso modo in cui `--ticket-prop` richiede `rich_text` o `title`.
+`--id-prop` mappa l'identificatore che Notion stesso assegna alla riga — una colonna `unique_id`, il tipo che sulla board appare come `TASK-271` — così una riga può essere indirizzata con quel breve id invece che con la chiave ticket o il page id (vedi `--id` sotto `get` e `set` più avanti). Si comporta come `--due-prop`: una board senza una colonna di questo tipo lo lascia semplicemente non mappato, e `--id` resta indisponibile — la riga è comunque raggiungibile con gli altri due metodi. `init` richiede che la proprietà mappata sia effettivamente di tipo `unique_id`, allo stesso modo in cui `--ticket-prop` richiede `rich_text` o `title`.
 
 **Richiesta del token.** Se non trova nessun token né in `NOTION_TOKEN` né in `credentials.yml`, `init` si comporta diversamente a seconda di come viene eseguito:
 
@@ -206,25 +206,25 @@ notion-track set (--ticket <chiave> | --id <id-board> | --page-id <id>) [--title
 Stessi campi di `upsert`, ma fallisce con exit code 3 se la riga non esiste ancora, invece di crearla. Usalo dove una riga mancante è un sintomo da far emergere, non un dettaglio da ignorare.
 
 ```bash
-notion-track set --id BDF-271 --status "Fatto"
+notion-track set --id TASK-271 --status "Fatto"
 ```
 
 `--ticket`, `--id` e `--page-id` sono mutuamente esclusivi ed è obbligatorio esattamente uno dei tre. `--page-id` indirizza una riga direttamente tramite il suo page id di Notion — nessuna query per chiave ticket — il che è più rapido e privo di ambiguità quando lo si ha già a disposizione (ad es. dal `page_id` restituito da una precedente chiamata `--json`, vedi [Output JSON](#output-json)). Accetta l'URL completo della pagina copiato dalla barra degli indirizzi di Notion, un id esadecimale nudo di 32 caratteri, o un UUID con trattini; qualsiasi altro input fallisce immediatamente con exit code 2, prima di qualunque chiamata di rete. Poiché leggere una pagina per id funziona per qualsiasi pagina condivisa con l'integrazione — non solo per le righe della data source configurata — un page id che risolve verso una data source *diversa* da quella del profilo attivo viene rifiutato con exit code 2 invece di fallire più avanti con un criptico errore sui nomi delle proprietà da parte di Notion. Anche `set --page-id` rifiuta, con lo stesso exit code, una pagina il cui parent non riporta alcuna data source — la sua appartenenza non può mai essere confermata, e una scrittura non deve procedere su una pagina che non può dimostrare di appartenere a questo profilo.
 
-`--id` indirizza una riga tramite il suo **id di board** — l'identificatore breve che Notion mostra sulla riga e che si legge ad alta voce (`BDF-271`, o il numero nudo `271` da solo) — risolto con una query sulla colonna `unique_id` mappata, allo stesso modo in cui `--ticket` si risolve sulla proprietà ticket; l'API di Notion filtra nativamente su `unique_id`, quindi non serve nessuna scansione lato client. Richiede una proprietà `unique_id` mappata (`init --id-prop`, vedi `init` sopra); senza una mappata, `--id` fallisce con exit code 2 — la stessa classe di errore di eseguire il comando prima di `notion-track init` — indicando come risolverlo. Un `--id` vuoto fallisce allo stesso modo, prima di qualunque richiesta. Un `--id` malformato — prefisso sbagliato, o non un numero — è anch'esso exit code 2, ma non così presto: per distinguere un prefisso sbagliato da uno giusto serve prima lo schema della data source, quindi un `--id` malformato costa una richiesta prima di fallire, pur senza arrivare alla query sulle righe.
+`--id` indirizza una riga tramite il suo **id di board** — l'identificatore breve che Notion mostra sulla riga e che si legge ad alta voce (`TASK-271`, o il numero nudo `271` da solo) — risolto con una query sulla colonna `unique_id` mappata, allo stesso modo in cui `--ticket` si risolve sulla proprietà ticket; l'API di Notion filtra nativamente su `unique_id`, quindi non serve nessuna scansione lato client. Richiede una proprietà `unique_id` mappata (`init --id-prop`, vedi `init` sopra); senza una mappata, `--id` fallisce con exit code 2 — la stessa classe di errore di eseguire il comando prima di `notion-track init` — indicando come risolverlo. Un `--id` vuoto fallisce allo stesso modo, prima di qualunque richiesta. Un `--id` malformato — prefisso sbagliato, o non un numero — è anch'esso exit code 2, ma non così presto: per distinguere un prefisso sbagliato da uno giusto serve prima lo schema della data source, quindi un `--id` malformato costa una richiesta prima di fallire, pur senza arrivare alla query sulle righe.
 
 ### `--assignee` / `--unassign` — assegna o svuota il referente di una riga
 
 ```bash
-notion-track set --ticket BDF-231 --assignee "Mirko Spinato"
-notion-track set --ticket BDF-231 --assignee mirko    # un nome parziale basta se non è ambiguo
-notion-track set --ticket BDF-231 --assignee me        # NOTION_TRACK_ME, o il `me:` del profilo — vedi sotto
-notion-track set --ticket BDF-231 --unassign            # svuota la colonna
+notion-track set --ticket TASK-231 --assignee "Sam Rivera"
+notion-track set --ticket TASK-231 --assignee sam     # un nome parziale basta se non è ambiguo
+notion-track set --ticket TASK-231 --assignee me       # NOTION_TRACK_ME, o il `me:` del profilo — vedi sotto
+notion-track set --ticket TASK-231 --unassign           # svuota la colonna
 ```
 
-Disponibile su `upsert` e `set`. `--assignee` risolve ciò che digiti contro le opzioni della colonna mappata, provando un match esatto, poi un match esatto case-insensitive, poi un match per sottostringa case-insensitive, e si ferma al primo passaggio che trova esattamente un candidato — così `mirko` arriva a Notion come `Mirko Spinato`. Zero corrispondenze e più di una sono entrambi errori d'uso (exit code 2): il primo indica i valori che la colonna offre davvero, il secondo indica quali sono le corrispondenze trovate e chiede più caratteri del nome.
+Disponibile su `upsert` e `set`. `--assignee` risolve ciò che digiti contro le opzioni della colonna mappata, provando un match esatto, poi un match esatto case-insensitive, poi un match per sottostringa case-insensitive, e si ferma al primo passaggio che trova esattamente un candidato — così `sam` arriva a Notion come `Sam Rivera`. Zero corrispondenze e più di una sono entrambi errori d'uso (exit code 2): il primo indica i valori che la colonna offre davvero, il secondo indica quali sono le corrispondenze trovate e chiede più caratteri del nome.
 
-`me` è un valore riservato: prima che la risoluzione avvenga, viene sostituito da `NOTION_TRACK_ME` (o, in mancanza, dal campo `me:` del profilo — vedi [Variabili d'ambiente](#variabili-dambiente) per capire perché la variabile d'ambiente è quella da usare davvero), così `NOTION_TRACK_ME=marco` funziona esattamente come digitare il nome per intero. Usare `me` senza che nessuno dei due sia configurato è un errore d'uso che indica il fix.
+`me` è un valore riservato: prima che la risoluzione avvenga, viene sostituito da `NOTION_TRACK_ME` (o, in mancanza, dal campo `me:` del profilo — vedi [Variabili d'ambiente](#variabili-dambiente) per capire perché la variabile d'ambiente è quella da usare davvero), così `NOTION_TRACK_ME=jordan` funziona esattamente come digitare il nome per intero. Usare `me` senza che nessuno dei due sia configurato è un errore d'uso che indica il fix.
 
 Non passare `--assignee` lascia la colonna intatta — la stessa regola "vuoto significa lascia stare" che segue ogni altro campo. `--assignee ""` è quindi un errore d'uso, non un modo per svuotare la colonna; usa `--unassign` per quello. `--assignee` e `--unassign` sono mutuamente esclusivi, e una colonna select tiene un valore solo, quindi `--assignee` non è ripetibile.
 
@@ -233,8 +233,8 @@ Se il ruolo non è mappato, passare `--assignee` o `--unassign` fallisce come fa
 ### `--priority` — quanto è urgente una riga
 
 ```bash
-notion-track set --ticket BDF-231 --priority ALTA
-notion-track set --ticket BDF-231 --priority alta    # un valore parziale basta se non è ambiguo
+notion-track set --ticket TASK-231 --priority ALTA
+notion-track set --ticket TASK-231 --priority alta   # un valore parziale basta se non è ambiguo
 notion-track list --priority ALTA
 ```
 
@@ -264,7 +264,7 @@ Disponibile sia su `upsert` sia su `set`. `--body-file` accetta il percorso di u
 **Segnaposto (`--expand`).** Con `--expand`, `{{ticket}}` e `{{date}}` nel file del corpo vengono sostituiti prima che il file sia interpretato — `{{date}}` è la data di oggi, in forma `YYYY-MM-DD`. Gli spazi dentro le graffe sono ammessi (`{{ ticket }}`).
 
 ```bash
-notion-track upsert --ticket BDF-231 --body-file note-di-rilascio.md --expand
+notion-track upsert --ticket TASK-231 --body-file note-di-rilascio.md --expand
 ```
 
 Un segnaposto che nulla può riempire è un errore d'uso che indica la riga, invece di un corpo che arriva su Notion con un letterale `{{tikcet}}` dentro, che nessuno nota finché non legge la pagina. L'espansione è disattivata per default e non esiste una sintassi di escape: un corpo che contiene legittimamente delle graffe — un documento sul templating, uno snippet di Handlebars — semplicemente non passa il flag. Indirizzare una riga con `--page-id` o `--id` lascia `{{ticket}}` vuoto, dato che nessuna chiave ticket è stata fornita.
@@ -284,7 +284,7 @@ notion-track get (--ticket <chiave> | --id <id-board> | --page-id <id>) [--json]
 notion-track get --ticket "Sistemare visualizzazione da telefono"
 
 # per id di board, quello che si dice ad alta voce
-notion-track get --id BDF-271
+notion-track get --id TASK-271
 
 # per page id o URL di Notion, stabile anche dopo un rename
 notion-track get --page-id https://notion.so/...
@@ -314,15 +314,15 @@ Applica un elenco di scritture da un file JSON o CSV, un'entry alla volta, in or
 
 ```json
 [
-  {"op": "upsert", "ticket": "BDF-1", "title": "Hardening", "status": "In corso", "assignee": "mirko", "priority": "alta"},
-  {"op": "set", "ticket": "BDF-2", "status": "Fatto", "unassign": true}
+  {"op": "upsert", "ticket": "TASK-1", "title": "Hardening", "status": "In corso", "assignee": "sam", "priority": "alta"},
+  {"op": "set", "ticket": "TASK-2", "status": "Fatto", "unassign": true}
 ]
 ```
 
 ```csv
 op,ticket,title,status,due,body_file,assignee,unassign,priority
-upsert,BDF-1,Hardening,In corso,2026-08-01,note.md,mirko,,alta
-set,BDF-2,,Fatto,,,,true,
+upsert,TASK-1,Hardening,In corso,2026-08-01,note.md,sam,,alta
+set,TASK-2,,Fatto,,,,true,
 ```
 
 Campi: `op` (`upsert` o `set`, con default `upsert` — quello idempotente, così un manifest eseguito due volte per sbaglio lascia la board com'era), `ticket` (obbligatorio), `title`, `status`, `due`, `body_file`, `assignee`, `unassign`, `priority`. Un campo sconosciuto è un errore, non qualcosa da ignorare in silenzio: un manifest con dentro `stuats` lascerebbe altrimenti ogni riga senza stato senza dire nulla.
@@ -334,8 +334,8 @@ I percorsi in `body_file` sono risolti **relativamente al manifest**, non alla d
 **Si ferma alla prima entry che fallisce**, riporta quale e quante ne sono state applicate, ed esce con l'exit code di quella entry — così una pipeline che si dirama su 3 (non trovato) o 4 (duplicato) scopre comunque perché l'esecuzione si è fermata. Le entry sono applicate in sequenza, mai in parallelo: due scritture in corsa sulla stessa chiave ticket possono creare un duplicato, e un manifest è proprio il posto dove la stessa chiave ha più probabilità di comparire due volte.
 
 ```
-1/3 upsert BDF-1 updated
-2/3 upsert BDF-2 failed: unknown status "Nonexistent"; allowed values are: Da fare, In corso, Fatto
+1/3 upsert TASK-1 updated
+2/3 upsert TASK-2 failed: unknown status "Nonexistent"; allowed values are: Da fare, In corso, Fatto
 stopped at entry 2 of 3: 1 applied, 2 not applied
 ```
 
@@ -344,12 +344,12 @@ stopped at entry 2 of 3: 1 applied, 2 not applied
 ### `--dry-run` — vedere cosa farebbe una scrittura
 
 ```bash
-notion-track upsert --ticket BDF-231 --status Fatto --dry-run
+notion-track upsert --ticket TASK-231 --status Fatto --dry-run
 ```
 
 ```
 would update 1f2e3d4c-...
-  Ticket               BDF-231
+  Ticket               TASK-231
   Stato                Fatto
   https://notion.so/...
 ```
@@ -359,7 +359,7 @@ Disponibile su `upsert` e `set`. Riporta se la riga verrebbe creata o aggiornata
 `--unassign --dry-run` stampa una riga `clear` che indica la colonna invece di un valore — senza, svuotare il referente sarebbe l'unica scrittura su cui un dry run non direbbe nulla, la più distruttiva di questa funzionalità e invisibile proprio nel comando che esiste per mostrarla:
 
 ```
-$ notion-track set --ticket BDF-231 --unassign --dry-run
+$ notion-track set --ticket TASK-231 --unassign --dry-run
 would update 1f2e3d4c-...
   clear                Referente
   https://notion.so/...
@@ -415,7 +415,7 @@ profiles:
       assignee: Referente   # opzionale: proprietà select che indica chi possiede la riga
       priority: Urgenza     # opzionale: proprietà select che indica quanto è urgente la riga
       id: ID                # opzionale: proprietà unique_id che contiene l'id di board della riga
-    me: Marco Arnulfo       # opzionale: il valore a cui risolve `--assignee me`; NOTION_TRACK_ME lo sovrascrive
+    me: Jordan Lee          # opzionale: il valore a cui risolve `--assignee me`; NOTION_TRACK_ME lo sovrascrive
 ```
 
 ```yaml
@@ -454,14 +454,14 @@ Una riga (`get --json`, e ogni elemento di `list --json`):
 
 ```json
 {
-  "id": "BDF-271",
-  "ticket": "BDF-231",
+  "id": "TASK-271",
+  "ticket": "TASK-231",
   "title": "Hardening",
   "status": "In corso",
   "page_id": "1a2b3c4d-...",
   "url": "https://www.notion.so/...",
   "last_edited_time": "2026-07-23T10:15:00Z",
-  "assignee": "Mirko Spinato",
+  "assignee": "Sam Rivera",
   "priority": "ALTA"
 }
 ```
@@ -473,7 +473,7 @@ Una riga (`get --json`, e ogni elemento di `list --json`):
 ```json
 {
   "action": "created",
-  "page": { "id": "BDF-271", "ticket": "BDF-231", "title": "Hardening", "status": "In corso", "page_id": "...", "url": "...", "last_edited_time": "...", "assignee": "Mirko Spinato", "priority": "ALTA" }
+  "page": { "id": "TASK-271", "ticket": "TASK-231", "title": "Hardening", "status": "In corso", "page_id": "...", "url": "...", "last_edited_time": "...", "assignee": "Sam Rivera", "priority": "ALTA" }
 }
 ```
 
@@ -486,7 +486,7 @@ Una riga (`get --json`, e ogni elemento di `list --json`):
   { "name": "token", "status": "ok", "detail": "token from environment\n  authenticated as notion-track" },
   { "name": "data_source", "status": "ok", "detail": "reachable: Tasks" },
   { "name": "properties", "status": "ok", "detail": "all mapped properties exist with the expected types" },
-  { "name": "assignee", "status": "ok", "detail": "--assignee me resolves to Mirko Spinato" },
+  { "name": "assignee", "status": "ok", "detail": "--assignee me resolves to Sam Rivera" },
   { "name": "duplicates", "status": "ok", "detail": "42 rows, no repeated ticket keys" },
   { "name": "secrets", "status": "ok", "detail": "37 tracked files scanned, no token-looking strings" }
 ]
@@ -525,7 +525,7 @@ Poiché il file di configurazione non contiene segreti, lo schema comune è **co
     TICKET: ${{ github.event.inputs.ticket }}
 ```
 
-La action scarica l'archivio della release adatto al runner su cui gira, lo verifica contro il `checksums.txt` della release e mette il binario nel `PATH` — niente toolchain Go, niente compilazione. Runner Linux, macOS e Windows (su Windows via Git Bash), amd64 e arm64; altrove fallisce con un messaggio che lo dice. Ha bisogno di una release pubblicata da scaricare, quindi finché non esiste il primo tag usa `go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest`.
+La action scarica l'archivio della release adatto al runner su cui gira, lo verifica contro il `checksums.txt` della release e mette il binario nel `PATH` — niente toolchain Go, niente compilazione. Runner Linux, macOS e Windows (su Windows via Git Bash), amd64 e arm64; altrove fallisce con un messaggio che lo dice. Installa da una release pubblicata che corrisponde all'input `version`, quindi ha bisogno che almeno un tag `v*` sia stato spinto su questo repository prima di avere qualcosa da installare; `go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest` non ha bisogno di niente di tutto questo e funziona sempre.
 
 `@main` è un riferimento mobile: ti ritrovi quello che c'è sul branch in quel momento. Pinnalo a uno SHA se vuoi un workflow che non possa cambiarti sotto i piedi — un tag `@v1` esisterà quando il progetto arriverà alla 1.0.
 
@@ -565,7 +565,7 @@ I contributi sono benvenuti — questo è un progetto libero e open-source. Vedi
 
 Implementato oggi: `init` (procedura guidata interattiva e forma a flag, con `--list`), la TUI di navigazione, `upsert`, `set`, `get`, `list`, `doctor`; `--dry-run` su `upsert`/`set`; `apply` per le scritture in blocco da manifest; `--body-file` su `upsert`/`set` per scrivere il corpo della pagina da Markdown, con `--expand` per i segnaposto `{{ticket}}`/`{{date}}`; `--json` su ogni comando che produce output; `mcp` per servire le stesse operazioni come tool MCP; un ruolo `assignee` opzionale con `--assignee`/`--unassign`, `list --assignee`/`--unassigned` e l'identità `me`; un ruolo `priority` opzionale con `--priority` su `upsert`/`set`/`list`; un ruolo `id` opzionale mappato con `init --id-prop`, che indirizza una riga tramite il suo id di board con `--id` su `get`/`set`; profili; retry con backoff.
 
-Costruito ma non ancora esercitato: la **pipeline GoReleaser** (`.goreleaser.yaml` più un workflow di release che parte sui tag `v*`) e la **composite GitHub Action** in [`action/`](action/). Ci sono entrambe, e la pipeline è stata verificata in locale con `goreleaser release --snapshot`, ma nessuna delle due ha ancora girato per davvero: succederà col primo tag, e fino ad allora la pagina delle release è vuota e la action non ha nulla da scaricare.
+Automazione di release: la **pipeline GoReleaser** (`.goreleaser.yaml` più un workflow di release che parte sui tag `v*`) compila e pubblica i binari e il `checksums.txt` descritti in [Installazione](#installazione) a ogni tag spinto; è stata verificata in locale con `goreleaser release --snapshot`. La **composite GitHub Action** in [`action/`](action/) installa dalla release a cui risolve il suo input `version` (vedi [Uso in CI](#uso-in-ci)); è pronta, ma non è ancora stata esercitata in un workflow fuori da questo repository.
 
 ## Licenza
 

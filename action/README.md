@@ -40,7 +40,7 @@ What this proves is that the bytes match what the release published. It does not
 
 - **Linux, macOS or Windows runners**, amd64 or arm64. Windows goes through Git Bash, and unpacking the `.zip` needs one of `unzip`, `7z` or a `tar` that reads zip — the GitHub-hosted images have `7z`. Anything else fails with an explicit message rather than installing something wrong.
 - **The GitHub CLI (`gh`)**, which is preinstalled on GitHub-hosted runners but not inside `container:` jobs or on most self-hosted runners. The action checks for it up front and says so.
-- **A published release to download.** Until this project's first tag is pushed, there is nothing to install — use `go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest` in the meantime.
+- **A published release matching `version` to download from.** The action needs at least one `v*` tag pushed to this repository before there's anything to install; `go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest` needs no release at all and always works.
 
 ## Pinning
 

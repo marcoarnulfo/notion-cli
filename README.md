@@ -74,7 +74,7 @@ Windows ships as a `.zip` of the same name — swap the pattern and unzip it ins
 
 The binaries carry no cgo, so they run on any image with or without a libc. `notion-track --version` reports the release tag; a build from source reports `dev`.
 
-Note: until the first tag is pushed the releases page is empty, and `go install` above is the only route.
+Note: `go install` above needs no release at all — it builds straight from source through the Go module proxy — so it always works, regardless of whether this repository has a tagged release yet.
 </details>
 
 ## Quick start
@@ -104,15 +104,15 @@ Note: until the first tag is pushed the releases page is empty, and `go install`
    ```
 7. **Create or update a row** — this is the command you'll actually run day to day:
    ```bash
-   notion-track upsert --ticket BDF-231 --title "Hardening" --status "In progress"
-   notion-track upsert --ticket BDF-231 --status "Done"   # updates the same row, no duplicate
+   notion-track upsert --ticket TASK-231 --title "Hardening" --status "In progress"
+   notion-track upsert --ticket TASK-231 --status "Done"  # updates the same row, no duplicate
    ```
 8. **(Optional) Track who owns each row.** Map a `select` column with `--assignee-prop` (see [Usage](#usage) below), export your own identity once, and `me` works everywhere `--assignee` is accepted:
    ```bash
    # once, in your shell profile
-   export NOTION_TRACK_ME="Marco Arnulfo"
+   export NOTION_TRACK_ME="Jordan Lee"
 
-   notion-track set --ticket BDF-231 --status "In progress" --assignee me
+   notion-track set --ticket TASK-231 --status "In progress" --assignee me
    notion-track list --assignee me --status "To do"
    notion-track list --unassigned
    ```
@@ -120,7 +120,7 @@ Note: until the first tag is pushed the releases page is empty, and `go install`
    ```bash
    notion-track list --priority ALTA --status "To do"
    notion-track list --priority ALTA --assignee me
-   notion-track set --ticket BDF-1 --priority alta --assignee mirko
+   notion-track set --ticket TASK-1 --priority alta --assignee sam
    ```
 
 ## Usage
@@ -171,7 +171,7 @@ notion-track init --data-source-id <id> --ticket-prop <name> --status-prop <name
 | `--due-prop string` | date property (optional) |
 | `--assignee-prop string` | `select` property naming who owns the row (optional) |
 | `--priority-prop string` | `select` property ranking how urgent the row is (optional) |
-| `--id-prop string` | `unique_id` property holding the row's board id, e.g. `BDF-271` (optional) |
+| `--id-prop string` | `unique_id` property holding the row's board id, e.g. `TASK-271` (optional) |
 | `--me string` | the value `--assignee me` resolves to; resolved and validated against `--assignee-prop`'s options before being saved (optional, needs `--assignee-prop`) |
 | `--database-id string` | database id, recorded for reference only — every read/write is keyed off `--data-source-id`, not this |
 | `--list` | list the data source ids shared with the integration, and exit |
@@ -182,7 +182,7 @@ Each mapped property is checked against the data source's live schema; `init` re
 
 `--priority-prop` behaves like `--due-prop` too: a board with no notion of urgency simply leaves it unmapped, and every command behaves exactly as it did before this feature. Unlike `--assignee-prop`, there is no `--priority-me` equivalent — a priority belongs to no one, so there is no identity to resolve it against.
 
-`--id-prop` maps Notion's own row identifier — a `unique_id` column, the kind that renders as `BDF-271` on the board — so rows can be addressed by that short id instead of by ticket key or page id (see `--id` under `get` and `set` below). It behaves like `--due-prop`: a board with no such column simply leaves it unmapped, and `--id` is then unavailable — the row is still reachable the other two ways. `init` requires the mapped property to actually be `unique_id`, the same way `--ticket-prop` requires `rich_text` or `title`.
+`--id-prop` maps Notion's own row identifier — a `unique_id` column, the kind that renders as `TASK-271` on the board — so rows can be addressed by that short id instead of by ticket key or page id (see `--id` under `get` and `set` below). It behaves like `--due-prop`: a board with no such column simply leaves it unmapped, and `--id` is then unavailable — the row is still reachable the other two ways. `init` requires the mapped property to actually be `unique_id`, the same way `--ticket-prop` requires `rich_text` or `title`.
 
 **Token prompt.** If no token is found in `NOTION_TOKEN` or `credentials.yml`, `init` behaves differently depending on how it's run:
 
@@ -206,25 +206,25 @@ notion-track set (--ticket <key> | --id <board-id> | --page-id <id>) [--title <t
 Same fields as `upsert`, but fails with exit code 3 if the row doesn't exist yet, instead of creating it. Use this where a missing row is a symptom worth surfacing rather than something to paper over.
 
 ```bash
-notion-track set --id BDF-271 --status "Done"
+notion-track set --id TASK-271 --status "Done"
 ```
 
 `--ticket`, `--id` and `--page-id` are mutually exclusive and exactly one is required. `--page-id` addresses a row directly by its Notion page id — no query by ticket key at all — which is faster and unambiguous when you already have it (e.g. from a prior `--json` call's `page_id`, see [JSON output](#json-output)). It accepts the full page URL you'd copy out of Notion's browser address bar, a bare 32-character hex id, or a dashed UUID; any other input fails immediately with exit code 2, before any request is made. Because `GET`ting a page by id works for anything shared with the integration — not just rows of the configured data source — a page id that resolves to a *different* data source than the active profile is rejected with exit code 2 rather than left to fail later with a confusing property-name error from Notion. `set --page-id` also rejects, with the same exit code, a page whose parent carries no data source at all — its membership can never be confirmed, and a write must not proceed on a page that cannot prove it belongs to this profile.
 
-`--id` addresses a row by its **board id** — the short identifier Notion shows on the row and the one people read aloud (`BDF-271`, or the bare number `271` on its own) — resolved with a query against the mapped `unique_id` column, the same way `--ticket` resolves against the ticket property; Notion's API filters on `unique_id` natively, so this needs no client-side scan. It needs a `unique_id` property mapped first (`init --id-prop`, see `init` above); without one mapped, `--id` fails with exit code 2 — the same class of mistake as running before `notion-track init` — naming the fix. An empty `--id` fails the same way, before any request is made. A malformed `--id` — the wrong prefix, or not a number at all — is exit code 2 too, but not that early: telling a bad prefix from a good one needs the data source's schema first, so a malformed `--id` costs one request before it fails, short of the row query itself.
+`--id` addresses a row by its **board id** — the short identifier Notion shows on the row and the one people read aloud (`TASK-271`, or the bare number `271` on its own) — resolved with a query against the mapped `unique_id` column, the same way `--ticket` resolves against the ticket property; Notion's API filters on `unique_id` natively, so this needs no client-side scan. It needs a `unique_id` property mapped first (`init --id-prop`, see `init` above); without one mapped, `--id` fails with exit code 2 — the same class of mistake as running before `notion-track init` — naming the fix. An empty `--id` fails the same way, before any request is made. A malformed `--id` — the wrong prefix, or not a number at all — is exit code 2 too, but not that early: telling a bad prefix from a good one needs the data source's schema first, so a malformed `--id` costs one request before it fails, short of the row query itself.
 
 ### `--assignee` / `--unassign` — set or clear who owns a row
 
 ```bash
-notion-track set --ticket BDF-231 --assignee "Mirko Spinato"
-notion-track set --ticket BDF-231 --assignee mirko    # a partial name is enough when it's unambiguous
-notion-track set --ticket BDF-231 --assignee me        # NOTION_TRACK_ME, or the profile's `me:` — see below
-notion-track set --ticket BDF-231 --unassign            # clears the column
+notion-track set --ticket TASK-231 --assignee "Sam Rivera"
+notion-track set --ticket TASK-231 --assignee sam     # a partial name is enough when it's unambiguous
+notion-track set --ticket TASK-231 --assignee me       # NOTION_TRACK_ME, or the profile's `me:` — see below
+notion-track set --ticket TASK-231 --unassign           # clears the column
 ```
 
-Available on `upsert` and `set`. `--assignee` resolves what you type against the mapped column's options, trying an exact match, then an exact case-insensitive match, then a case-insensitive substring match, and stopping at whichever pass finds exactly one candidate — so `mirko` reaches Notion as `Mirko Spinato`. Zero matches and more than one are both usage errors (exit code 2): the first names the values the column actually offers, the second names which ones matched and asks for more of the name.
+Available on `upsert` and `set`. `--assignee` resolves what you type against the mapped column's options, trying an exact match, then an exact case-insensitive match, then a case-insensitive substring match, and stopping at whichever pass finds exactly one candidate — so `sam` reaches Notion as `Sam Rivera`. Zero matches and more than one are both usage errors (exit code 2): the first names the values the column actually offers, the second names which ones matched and asks for more of the name.
 
-`me` is a reserved value: before resolution runs, it is replaced by `NOTION_TRACK_ME` (or, failing that, the profile's `me:` field — see [Environment variables](#environment-variables) for why the environment variable is the one to actually use), so `NOTION_TRACK_ME=marco` works exactly like typing the full name. Using `me` with neither configured is a usage error naming the fix.
+`me` is a reserved value: before resolution runs, it is replaced by `NOTION_TRACK_ME` (or, failing that, the profile's `me:` field — see [Environment variables](#environment-variables) for why the environment variable is the one to actually use), so `NOTION_TRACK_ME=jordan` works exactly like typing the full name. Using `me` with neither configured is a usage error naming the fix.
 
 Not passing `--assignee` at all leaves the column untouched — the same "empty means leave it alone" rule every other field follows. `--assignee ""` is therefore a usage error, not a way to clear the column; use `--unassign` for that. `--assignee` and `--unassign` are mutually exclusive, and a select column holds one value, so `--assignee` cannot be repeated.
 
@@ -233,8 +233,8 @@ If the role isn't mapped, passing `--assignee` or `--unassign` fails the same wa
 ### `--priority` — how urgent a row is
 
 ```bash
-notion-track set --ticket BDF-231 --priority ALTA
-notion-track set --ticket BDF-231 --priority alta    # a partial value is enough when it's unambiguous
+notion-track set --ticket TASK-231 --priority ALTA
+notion-track set --ticket TASK-231 --priority alta   # a partial value is enough when it's unambiguous
 notion-track list --priority ALTA
 ```
 
@@ -264,7 +264,7 @@ Available on both `upsert` and `set`. `--body-file` takes a path to a Markdown f
 **Placeholders (`--expand`).** With `--expand`, `{{ticket}}` and `{{date}}` in the body file are substituted before the file is parsed — `{{date}}` being today, as `YYYY-MM-DD`. Whitespace inside the braces is fine (`{{ ticket }}`).
 
 ```bash
-notion-track upsert --ticket BDF-231 --body-file release-notes.md --expand
+notion-track upsert --ticket TASK-231 --body-file release-notes.md --expand
 ```
 
 A placeholder nothing can fill in is a usage error naming the line, rather than a body reaching Notion with a literal `{{tikcet}}` in it that nobody notices until they read the page. Expansion is off by default and there is no escape syntax: a body that legitimately contains braces — a document about templating, a snippet of Handlebars — simply does not pass the flag. Addressing a row with `--page-id` or `--id` leaves `{{ticket}}` empty, since no ticket key was given.
@@ -284,7 +284,7 @@ notion-track get (--ticket <key> | --id <board-id> | --page-id <id>) [--json]
 notion-track get --ticket "Sistemare visualizzazione da telefono"
 
 # by board id, the one people say out loud
-notion-track get --id BDF-271
+notion-track get --id TASK-271
 
 # by Notion page id or URL, stable across renames
 notion-track get --page-id https://notion.so/...
@@ -314,15 +314,15 @@ Applies a list of writes from a JSON or CSV file, one entry at a time, in order.
 
 ```json
 [
-  {"op": "upsert", "ticket": "BDF-1", "title": "Hardening", "status": "In progress", "assignee": "mirko", "priority": "alta"},
-  {"op": "set", "ticket": "BDF-2", "status": "Done", "unassign": true}
+  {"op": "upsert", "ticket": "TASK-1", "title": "Hardening", "status": "In progress", "assignee": "sam", "priority": "alta"},
+  {"op": "set", "ticket": "TASK-2", "status": "Done", "unassign": true}
 ]
 ```
 
 ```csv
 op,ticket,title,status,due,body_file,assignee,unassign,priority
-upsert,BDF-1,Hardening,In progress,2026-08-01,notes.md,mirko,,alta
-set,BDF-2,,Done,,,,true,
+upsert,TASK-1,Hardening,In progress,2026-08-01,notes.md,sam,,alta
+set,TASK-2,,Done,,,,true,
 ```
 
 Fields: `op` (`upsert` or `set`, defaulting to `upsert` — the idempotent one, so a manifest run twice by mistake leaves the board as it was), `ticket` (required), `title`, `status`, `due`, `body_file`, `assignee`, `unassign`, `priority`. An unknown field is an error rather than something quietly ignored: a manifest with `stuats` in it would otherwise leave every row's status unset and say nothing.
@@ -334,8 +334,8 @@ Fields: `op` (`upsert` or `set`, defaulting to `upsert` — the idempotent one, 
 **It stops at the first entry that fails**, reports which one and how many were applied, and exits with that entry's own code — so a pipeline branching on 3 (not found) or 4 (duplicate) still learns why the run stopped. Entries are applied sequentially, never in parallel: two writes racing on the same ticket key can create a duplicate, and a manifest is exactly where the same key is most likely to appear twice.
 
 ```
-1/3 upsert BDF-1 updated
-2/3 upsert BDF-2 failed: unknown status "Nonexistent"; allowed values are: To do, In progress, Done
+1/3 upsert TASK-1 updated
+2/3 upsert TASK-2 failed: unknown status "Nonexistent"; allowed values are: To do, In progress, Done
 stopped at entry 2 of 3: 1 applied, 2 not applied
 ```
 
@@ -344,12 +344,12 @@ stopped at entry 2 of 3: 1 applied, 2 not applied
 ### `--dry-run` — see what a write would do
 
 ```bash
-notion-track upsert --ticket BDF-231 --status Done --dry-run
+notion-track upsert --ticket TASK-231 --status Done --dry-run
 ```
 
 ```
 would update 1f2e3d4c-...
-  Ticket               BDF-231
+  Ticket               TASK-231
   Stato                Done
   https://notion.so/...
 ```
@@ -359,7 +359,7 @@ Available on `upsert` and `set`. It reports whether the row would be created or 
 `--unassign --dry-run` prints a `clear` line naming the column instead of a value — without it, clearing the assignee would be the one write a dry run has nothing to say about, the most destructive one in this feature and invisible in the very command that exists to show it:
 
 ```
-$ notion-track set --ticket BDF-231 --unassign --dry-run
+$ notion-track set --ticket TASK-231 --unassign --dry-run
 would update 1f2e3d4c-...
   clear                Referente
   https://notion.so/...
@@ -415,7 +415,7 @@ profiles:
       assignee: Referente   # optional: select property naming who owns the row
       priority: Urgenza     # optional: select property ranking how urgent the row is
       id: ID                # optional: unique_id property holding the row's board id
-    me: Marco Arnulfo       # optional: the value `--assignee me` resolves to; NOTION_TRACK_ME overrides it
+    me: Jordan Lee          # optional: the value `--assignee me` resolves to; NOTION_TRACK_ME overrides it
 ```
 
 ```yaml
@@ -454,14 +454,14 @@ A row (`get --json`, and each entry of `list --json`):
 
 ```json
 {
-  "id": "BDF-271",
-  "ticket": "BDF-231",
+  "id": "TASK-271",
+  "ticket": "TASK-231",
   "title": "Hardening",
   "status": "In progress",
   "page_id": "1a2b3c4d-...",
   "url": "https://www.notion.so/...",
   "last_edited_time": "2026-07-23T10:15:00Z",
-  "assignee": "Mirko Spinato",
+  "assignee": "Sam Rivera",
   "priority": "ALTA"
 }
 ```
@@ -473,7 +473,7 @@ A row (`get --json`, and each entry of `list --json`):
 ```json
 {
   "action": "created",
-  "page": { "id": "BDF-271", "ticket": "BDF-231", "title": "Hardening", "status": "In progress", "page_id": "...", "url": "...", "last_edited_time": "...", "assignee": "Mirko Spinato", "priority": "ALTA" }
+  "page": { "id": "TASK-271", "ticket": "TASK-231", "title": "Hardening", "status": "In progress", "page_id": "...", "url": "...", "last_edited_time": "...", "assignee": "Sam Rivera", "priority": "ALTA" }
 }
 ```
 
@@ -486,7 +486,7 @@ A row (`get --json`, and each entry of `list --json`):
   { "name": "token", "status": "ok", "detail": "token from environment\n  authenticated as notion-track" },
   { "name": "data_source", "status": "ok", "detail": "reachable: Tasks" },
   { "name": "properties", "status": "ok", "detail": "all mapped properties exist with the expected types" },
-  { "name": "assignee", "status": "ok", "detail": "--assignee me resolves to Mirko Spinato" },
+  { "name": "assignee", "status": "ok", "detail": "--assignee me resolves to Sam Rivera" },
   { "name": "duplicates", "status": "ok", "detail": "42 rows, no repeated ticket keys" },
   { "name": "secrets", "status": "ok", "detail": "37 tracked files scanned, no token-looking strings" }
 ]
@@ -525,7 +525,7 @@ Because the config file has no secret in it, the common pattern is to **commit i
     TICKET: ${{ github.event.inputs.ticket }}
 ```
 
-The action downloads the release archive for the runner it is on, checks it against the release's `checksums.txt`, and puts the binary on `PATH` — no Go toolchain, no compile. Linux, macOS and Windows runners (Windows through Git Bash), amd64 and arm64; anywhere else it fails with a message that says so. It needs a published release to download, so until the first tag exists use `go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest` instead.
+The action downloads the release archive for the runner it is on, checks it against the release's `checksums.txt`, and puts the binary on `PATH` — no Go toolchain, no compile. Linux, macOS and Windows runners (Windows through Git Bash), amd64 and arm64; anywhere else it fails with a message that says so. It installs from a published release matching the `version` input, so it needs at least one `v*` tag pushed to this repository before it has anything to install; `go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest` needs none of that and always works.
 
 `@main` is a moving reference: you get whatever is on the branch at the time. Pin it to a commit SHA if you want a workflow that cannot change under you — a `@v1` tag will exist once this project reaches 1.0.
 
@@ -565,7 +565,7 @@ Contributions are welcome — this is a free, open-source project. See **[CONTRI
 
 Implemented today: `init` (interactive wizard and flag-driven, with `--list`), the browsing TUI, `upsert`, `set`, `get`, `list`, `doctor`; `--dry-run` on `upsert`/`set`; `apply` for bulk writes from a manifest; `--body-file` on `upsert`/`set` to write the page body from Markdown, with `--expand` for `{{ticket}}`/`{{date}}` placeholders; `--json` on every command that produces output; `mcp` to serve the same operations as MCP tools; an optional `assignee` role with `--assignee`/`--unassign`, `list --assignee`/`--unassigned` and the `me` identity; an optional `priority` role with `--priority` on `upsert`/`set`/`list`; an optional `id` role mapped with `init --id-prop`, addressing a row by its Notion board id with `--id` on `get`/`set`; profiles; retry with backoff.
 
-Built but not yet exercised: the **GoReleaser pipeline** (`.goreleaser.yaml` plus a release workflow triggered on `v*` tags) and the **composite GitHub Action** in [`action/`](action/). Both are in place and the pipeline has been verified locally with `goreleaser release --snapshot`, but neither has run for real: that happens when the first tag is pushed, and until then the releases page is empty and the action has nothing to download.
+Release automation: the **GoReleaser pipeline** (`.goreleaser.yaml` plus a release workflow triggered on `v*` tags) builds and publishes the binaries and `checksums.txt` described under [Installation](#installation) every time a tag is pushed; it has been verified locally with `goreleaser release --snapshot`. The **composite GitHub Action** in [`action/`](action/) installs from whichever release its `version` input resolves to (see [CI usage](#ci-usage)); it is built and ready, but has not yet been exercised in a workflow outside this repository.
 
 ## License
 

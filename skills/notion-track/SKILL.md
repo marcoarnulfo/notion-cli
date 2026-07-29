@@ -11,7 +11,7 @@ description: >-
   changes at once from a file. Triggers on: "task su Notion", "segna come
   fatto", "mettilo in corso", "aggiorna lo stato", "crea un task", "elenca i
   task", "che task ho da fare", "creali tutti", "aggiornali tutti", "assegna a
-  Mirko", "prendi in carico", "chi ha in mano X", "cosa devo fare io", "task
+  Sam", "prendi in carico", "chi ha in mano X", "cosa devo fare io", "task
   senza referente", "è urgente", "priorità alta", "mettilo in alta", "cosa c'è
   di urgente", "cosa faccio prima", "mark done", "update the status", "assign
   this to X", "take ownership of X", "who owns X", "what's on my plate",
@@ -55,7 +55,7 @@ A task is addressed in one of three ways. Pick deliberately:
   Renaming a task in Notion changes its key, so a name that was valid yesterday
   may not resolve today.
 - **By board id** (`--id <board-id>`) — addresses a row by the short id
-  Notion itself assigns and shows on the row (`BDF-271`, or the bare number
+  Notion itself assigns and shows on the row (`TASK-271`, or the bare number
   `271` on its own) — the one a person reads aloud. Use it when the user gives
   you that id instead of a name. Only works if this board maps an id column;
   not every board does (see "This workspace" below) — `list --json` or
@@ -106,19 +106,19 @@ of a stray new row.
 
 ### Assign a task, or clear who owns it — `--assignee` / `--unassign`
 
-Available on `upsert` and `set`. This is what "assegna a Mirko", "prendi in
+Available on `upsert` and `set`. This is what "assegna a Sam", "prendi in
 carico questo task", or "assign this to X" mean in practice:
 
 ```sh
-notion-track set --ticket "<name>" --assignee "Mirko Spinato"
-notion-track set --ticket "<name>" --assignee mirko   # a partial name is enough when it's unambiguous
+notion-track set --ticket "<name>" --assignee "Sam Rivera"
+notion-track set --ticket "<name>" --assignee sam     # a partial name is enough when it's unambiguous
 notion-track set --ticket "<name>" --assignee me       # "prendi in carico" / "assign it to me"
 notion-track set --ticket "<name>" --unassign           # clears it — "task senza referente" going forward
 ```
 
 `--assignee` takes a name and resolves it against whatever the board's assignee
 column actually offers — exact match, then case-insensitive, then a
-case-insensitive substring — so `mirko` is enough when only one option
+case-insensitive substring — so `sam` is enough when only one option
 contains it. **Don't invent or guess a full name**: pass what the user said and
 let resolution do the matching; if it's genuinely ambiguous or unknown the
 error message lists the real options, which is more reliable than guessing
@@ -216,7 +216,7 @@ notion-track get --page-id <id-or-url> [--json]
 Use it to confirm a task exists and to see its current state before changing it.
 With `--json` the fields are `id`, `ticket`, `title`, `status`, `page_id`, `url`,
 `last_edited_time`, `assignee`, `priority` — a stable schema, safe to parse.
-`id` is the board id (`BDF-271`), always present and empty both when the row
+`id` is the board id (`TASK-271`), always present and empty both when the row
 carries no value and when the board doesn't map that role — the same rule
 `assignee` and `priority` follow next. `assignee` is always present and empty
 both when nobody is assigned and when the board doesn't map the role, so check
@@ -257,8 +257,8 @@ applied in order, in a single process.
 
 ```json
 [
-  {"op": "upsert", "ticket": "BDF-1", "title": "Hardening", "status": "In corso", "assignee": "mirko", "priority": "alta"},
-  {"op": "set", "ticket": "BDF-2", "status": "Fatto", "unassign": true}
+  {"op": "upsert", "ticket": "TASK-1", "title": "Hardening", "status": "In corso", "assignee": "sam", "priority": "alta"},
+  {"op": "set", "ticket": "TASK-2", "status": "Fatto", "unassign": true}
 ]
 ```
 
@@ -326,11 +326,11 @@ notion-track get --ticket "Deploy staging" --json   # confirm it's there and see
 notion-track set --ticket "Deploy staging" --status "Fatto"
 ```
 
-Assign a task ("assegna a Mirko") or take it yourself ("prendi in carico"):
+Assign a task ("assegna a Sam") or take it yourself ("prendi in carico"):
 
 ```sh
 notion-track get --ticket "Deploy staging" --json   # confirm it's there and who has it now
-notion-track set --ticket "Deploy staging" --assignee mirko
+notion-track set --ticket "Deploy staging" --assignee sam
 notion-track set --ticket "Deploy staging" --assignee me   # "prendi in carico" — needs an identity configured, see doctor
 ```
 
@@ -352,14 +352,14 @@ Answer "what am I working on?", "chi ha in mano X?", or "task senza referente":
 ```sh
 notion-track list --status "In corso" --json                # what am I working on? (scoped by status)
 notion-track list --assignee me --status "In corso" --json   # narrowed to mine
-notion-track list --assignee "Mirko Spinato" --json          # chi ha in mano X? / what's assigned to Mirko
+notion-track list --assignee "Sam Rivera" --json             # chi ha in mano X? / what's assigned to Sam
 notion-track list --unassigned --json                        # task senza referente
 ```
 
-Mark a task urgent and hand it off in one write ("è urgente" + "assegna a Mirko"), then answer "cosa c'è di urgente":
+Mark a task urgent and hand it off in one write ("è urgente" + "assegna a Sam"), then answer "cosa c'è di urgente":
 
 ```sh
-notion-track set --ticket "Deploy staging" --priority alta --assignee mirko
+notion-track set --ticket "Deploy staging" --priority alta --assignee sam
 notion-track list --priority ALTA --json                     # cosa c'è di urgente, across the board
 notion-track list --priority ALTA --assignee me --json        # cosa c'è di urgente ed è mio
 ```
@@ -427,7 +427,7 @@ address and create tasks:
   `get --json` show a non-empty `id` key only when the role is mapped, and
   `--id` fails if it isn't mapped, but with **exit 2, not 1** (unlike
   assignee/priority/due, an unmapped id role is a usage error). When it is
-  mapped, `--id` accepts the id exactly as Notion shows it (`BDF-271`) or the
+  mapped, `--id` accepts the id exactly as Notion shows it (`TASK-271`) or the
   bare number alone (`271`).
 
 - **Attribution caveat**: every change is recorded by the integration's bot

@@ -38,14 +38,14 @@ func (o applyOutcome) fail(err error) applyOutcome {
 
 const applyExample = `  # tasks.json
   [
-    {"op": "upsert", "ticket": "BDF-1", "title": "Hardening", "status": "In progress", "assignee": "mirko", "priority": "alta"},
-    {"op": "set", "ticket": "BDF-2", "status": "Done", "unassign": true}
+    {"op": "upsert", "ticket": "TASK-1", "title": "Hardening", "status": "In progress", "assignee": "sam", "priority": "alta"},
+    {"op": "set", "ticket": "TASK-2", "status": "Done", "unassign": true}
   ]
 
   # tasks.csv
   op,ticket,title,status,due,body_file,assignee,unassign,priority
-  upsert,BDF-1,Hardening,In progress,2026-08-01,notes.md,mirko,,alta
-  set,BDF-2,,Done,,,,true,`
+  upsert,TASK-1,Hardening,In progress,2026-08-01,notes.md,sam,,alta
+  set,TASK-2,,Done,,,,true,`
 
 func newApplyCmd() *cobra.Command {
 	var (
