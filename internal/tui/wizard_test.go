@@ -409,3 +409,19 @@ func TestWizardPriorityRole(t *testing.T) {
 		seen[r.key] = r.name
 	}
 }
+
+func TestRoleAccessorsRoundTripEveryRole(t *testing.T) {
+	// Every role must survive setRole -> roleValue. A role added to the slice
+	// but forgotten in one of the two switches would otherwise be silently
+	// unsettable, and the wizard would show it as unmapped no matter what the
+	// user picked.
+	var p config.Properties
+	for _, r := range roles {
+		setRole(&p, r.name, "col-"+r.name)
+	}
+	for _, r := range roles {
+		if got := roleValue(p, r.name); got != "col-"+r.name {
+			t.Errorf("roleValue(%q) = %q, want %q", r.name, got, "col-"+r.name)
+		}
+	}
+}

@@ -138,7 +138,7 @@ func promptForToken(cmd *cobra.Command) (string, error) {
 // them.
 var configFlags = []string{
 	"data-source-id", "database-id", "ticket-prop", "status-prop",
-	"title-prop", "due-prop", "assignee-prop", "priority-prop", "me", "list",
+	"title-prop", "due-prop", "assignee-prop", "priority-prop", "id-prop", "me", "list",
 }
 
 func anyConfigFlagSet(cmd *cobra.Command) bool {
@@ -212,8 +212,7 @@ func runInitWizard(cmd *cobra.Command) error {
 	// so this cannot fail as things stand. It runs anyway because it is the
 	// one thing standing between a future wizard bug and a profile that is
 	// broken on first use — and it is where status_type comes from.
-	statusType, err := validateMapping(res.Schema,
-		res.Props.Ticket, res.Props.Status, res.Props.Title, res.Props.Due, res.Props.Assignee, res.Props.Priority)
+	statusType, err := validateMapping(res.Schema, res.Props)
 	if err != nil {
 		return Errorf(ExitUsage, "%v", err)
 	}
@@ -266,6 +265,7 @@ func newInitCmd() *cobra.Command {
 		dueProp      string
 		assigneeProp string
 		priorityProp string
+		idProp       string
 		me           string
 		list         bool
 	)
@@ -324,7 +324,11 @@ func newInitCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			statusType, err := validateMapping(schema, ticketProp, statusProp, titleProp, dueProp, assigneeProp, priorityProp)
+			props := config.Properties{
+				Ticket: ticketProp, Status: statusProp, Title: titleProp, Due: dueProp,
+				Assignee: assigneeProp, Priority: priorityProp, ID: idProp,
+			}
+			statusType, err := validateMapping(schema, props)
 			if err != nil {
 				return Errorf(ExitUsage, "%v", err)
 			}
@@ -353,11 +357,8 @@ func newInitCmd() *cobra.Command {
 				DatabaseID:   databaseID,
 				DataSourceID: dataSourceID,
 				StatusType:   statusType,
-				Properties: config.Properties{
-					Ticket: ticketProp, Status: statusProp, Title: titleProp, Due: dueProp,
-					Assignee: assigneeProp, Priority: priorityProp,
-				},
-				Me: resolvedMe,
+				Properties:   props,
+				Me:           resolvedMe,
 			}, schema.Title)
 		},
 	}
@@ -370,6 +371,7 @@ func newInitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&dueProp, "due-prop", "", "date property (optional)")
 	cmd.Flags().StringVar(&assigneeProp, "assignee-prop", "", "select property holding the assignee (optional)")
 	cmd.Flags().StringVar(&priorityProp, "priority-prop", "", "select property holding the priority (optional)")
+	cmd.Flags().StringVar(&idProp, "id-prop", "", "unique_id property holding the board id, e.g. BDF-271 (optional)")
 	cmd.Flags().StringVar(&me, "me", "", "the assignee value '--assignee me' stands for (optional)")
 	cmd.Flags().BoolVar(&list, "list", false, "list the data sources shared with the integration and exit")
 	return cmd
@@ -378,15 +380,18 @@ func newInitCmd() *cobra.Command {
 // validateMapping checks each mapped property against the schema and returns
 // the status property's actual type.
 //
+// It takes the whole Properties struct rather than one string per role: the
+// roles are named at the call site by field name, so no caller can silently
+// swap two of them, and adding a role is a line here instead of a new
+// positional parameter at every call site.
+//
 // ticket, status and title are required: internal/service/doctor.go reports
 // each of them as a "fail" when unmapped, and get/list/upsert key every
 // lookup off them, so writing a profile with one left blank produces a
-// config that is broken on first use. due, assignee and priority are the
+// config that is broken on first use. due, assignee, priority and id are the
 // roles doctor treats as optional, so they are the only ones that may be
-// left unmapped here too: a board that tracks nobody in particular simply
-// has no assignee column to map, and one with no notion of urgency has no
-// priority column either.
-func validateMapping(schema *notion.Schema, ticket, status, title, due, assignee, priority string) (string, error) {
+// left unmapped here too.
+func validateMapping(schema *notion.Schema, p config.Properties) (string, error) {
 	check := func(role, flag, name string, required bool, want ...string) (string, error) {
 		if name == "" {
 			if required {
@@ -395,35 +400,38 @@ func validateMapping(schema *notion.Schema, ticket, status, title, due, assignee
 			}
 			return "", nil
 		}
-		p, ok := schema.Properties[name]
+		prop, ok := schema.Properties[name]
 		if !ok {
 			return "", fmt.Errorf("%s property %q does not exist in this data source", role, name)
 		}
 		for _, t := range want {
-			if p.Type == t {
-				return p.Type, nil
+			if prop.Type == t {
+				return prop.Type, nil
 			}
 		}
 		return "", fmt.Errorf("%s property %q has type %q, which is not usable as %s",
-			role, name, p.Type, role)
+			role, name, prop.Type, role)
 	}
 
-	if _, err := check("ticket", "ticket-prop", ticket, true, "rich_text", "title"); err != nil {
+	if _, err := check("ticket", "ticket-prop", p.Ticket, true, "rich_text", "title"); err != nil {
 		return "", err
 	}
-	if _, err := check("title", "title-prop", title, true, "title"); err != nil {
+	if _, err := check("title", "title-prop", p.Title, true, "title"); err != nil {
 		return "", err
 	}
-	if _, err := check("due", "due-prop", due, false, "date"); err != nil {
+	if _, err := check("due", "due-prop", p.Due, false, "date"); err != nil {
 		return "", err
 	}
-	if _, err := check("assignee", "assignee-prop", assignee, false, "select"); err != nil {
+	if _, err := check("assignee", "assignee-prop", p.Assignee, false, "select"); err != nil {
 		return "", err
 	}
-	if _, err := check("priority", "priority-prop", priority, false, "select"); err != nil {
+	if _, err := check("priority", "priority-prop", p.Priority, false, "select"); err != nil {
 		return "", err
 	}
-	statusType, err := check("status", "status-prop", status, true, "status", "select")
+	if _, err := check("id", "id-prop", p.ID, false, "unique_id"); err != nil {
+		return "", err
+	}
+	statusType, err := check("status", "status-prop", p.Status, true, "status", "select")
 	if err != nil {
 		return "", err
 	}
