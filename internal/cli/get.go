@@ -92,13 +92,15 @@ func newGetCmd() *cobra.Command {
 			status := page.Properties[profile.Properties.Status].Text
 			priority := prioritySuffix(page, profile.Properties)
 			assignee := assigneeSuffix(page, profile.Properties)
+			id := idPrefix(page, profile.Properties)
 			if ticketIsTitle(profile.Properties) {
-				cmd.Printf("%s  [%s]%s%s\n  %s\n",
-					page.Properties[profile.Properties.Title].Text, status,
+				cmd.Printf("%s%s  [%s]%s%s\n  %s\n",
+					id, page.Properties[profile.Properties.Title].Text, status,
 					priority, assignee, page.URL)
 				return nil
 			}
-			cmd.Printf("%s  %s  [%s]%s%s\n  %s\n",
+			cmd.Printf("%s%s  %s  [%s]%s%s\n  %s\n",
+				id,
 				page.Properties[profile.Properties.Ticket].Text,
 				page.Properties[profile.Properties.Title].Text,
 				status, priority, assignee, page.URL)

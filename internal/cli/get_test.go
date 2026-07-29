@@ -794,3 +794,38 @@ func TestGetRejectsAnEmptyBoardID(t *testing.T) {
 		t.Errorf("stderr = %q, want it to report an empty id", errOut)
 	}
 }
+
+func TestGetPrintsTheBoardIDForHumans(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(cliSchemaWithIDJSON))
+			return
+		}
+		w.Write([]byte(`{"results":[` + cliRowWithIDJSON + `],"has_more":false}`))
+	}, idProfileYAML)
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"get", "--ticket", "BDF-231", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+	if !strings.Contains(out, "BDF-271") {
+		t.Errorf("output = %q, want it to show the board id", out)
+	}
+}
+
+func TestGetHumanOutputIsUnchangedWithoutTheIDRole(t *testing.T) {
+	// The profile from withStubbedAPI maps no id role: the line must come out
+	// byte-identical to what it was before this feature existed, which is the
+	// rule the two suffixes in output.go already follow.
+	cfg := withStubbedAPI(t, stubbedRow)
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"get", "--ticket", "BDF-231", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+	if strings.HasPrefix(out, " ") {
+		t.Errorf("output = %q, want no leading padding when the id role is unmapped", out)
+	}
+}

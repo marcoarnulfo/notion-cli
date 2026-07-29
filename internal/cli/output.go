@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 
@@ -57,6 +58,23 @@ func assigneeSuffix(p notion.Page, props config.Properties) string {
 func prioritySuffix(p notion.Page, props config.Properties) string {
 	if value := p.Properties[props.Priority].Text; value != "" {
 		return "  !" + value
+	}
+	return ""
+}
+
+// idPrefix formats a row's board id for human-readable output.
+//
+// A prefix and not a suffix, unlike assigneeSuffix and prioritySuffix above: it
+// is the row's name, and names read down the left edge of a list. Padded to a
+// fixed width so list's columns stay aligned across rows whose ids differ in
+// length ("BDF-9" and "BDF-1234"); get prints one row, where the padding costs
+// nothing.
+//
+// Empty when the role is unmapped, which is what keeps every existing profile's
+// output byte-identical — the same rule the two suffixes follow.
+func idPrefix(p notion.Page, props config.Properties) string {
+	if id := p.Properties[props.ID].Text; id != "" {
+		return fmt.Sprintf("%-10s ", id)
 	}
 	return ""
 }
