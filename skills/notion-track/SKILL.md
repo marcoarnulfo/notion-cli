@@ -29,6 +29,21 @@ open Notion, whenever they want to create, update, read, or list tasks.
 The tool is already authenticated (the token lives in a local credentials file);
 you never handle the token. Just run the commands.
 
+## Installing or updating the tool
+
+If the `notion-track` command isn't found, or the user asks you to update it,
+run:
+
+```sh
+go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest
+```
+
+That one command both installs and upgrades — rerunning it always fetches the
+newest release. It needs a Go toolchain and puts the binary at
+`$(go env GOPATH)/bin`, which has to be on `PATH`. `notion-track --version`
+reports what is actually installed, so check it first if a command behaves
+unexpectedly and a stale build is a plausible reason why.
+
 ## The one rule that prevents mistakes
 
 **Read before you write.** A write command acts on whichever row it resolves,
