@@ -91,7 +91,7 @@ release:
     that one line first, so a missing line fails loudly instead:
 
     ```bash
-    archive=notion-track_0.6.0_linux_amd64.tar.gz   # the exact file you downloaded
+    archive=notion-track_{{ .Version }}_linux_amd64.tar.gz   # swap in the file you downloaded
     grep -E "  ${archive}\$" checksums.txt > expected.txt
     sha256sum --check expected.txt   # no sha256sum? use: shasum -a 256 --check expected.txt
     ```
