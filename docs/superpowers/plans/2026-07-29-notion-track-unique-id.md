@@ -569,8 +569,10 @@ Expected: PASS, tutti i 15 sottocasi più il test sull'esempio.
 
 - [ ] **Step 5: Mutation test — verifica che il confronto del prefisso morda**
 
-Sostituisci temporaneamente `if !strings.EqualFold(given, prefix)` con `if false` ed esegui `go test ./internal/tracker/ -run TestParseUniqueID`.
+Sostituisci temporaneamente `if !strings.EqualFold(given, prefix)` con `if len(given) < 0` ed esegui `go test ./internal/tracker/ -run TestParseUniqueID`.
 Expected: FAIL sul caso `another board's prefix`. Se passa, il test non copre il confronto. Ripristina.
+
+`if len(given) < 0` e non `if false`: quest'ultimo lascerebbe `given` dichiarata e non usata, il package non compilerebbe, e il FAIL osservato sarebbe un errore di build invece dell'assert che morde — la stessa trappola del mutation test del Task 2.
 
 - [ ] **Step 6: Commit**
 
@@ -2206,4 +2208,6 @@ E, come specchio, l'elenco dei file non-test che il tipo lo conoscono:
 grep -rl "unique_id" --include="*.go" internal/ | grep -v _test | sort
 ```
 
-Devono comparire almeno `internal/notion/datasource.go`, `internal/notion/query.go`, `internal/tracker/uniqueid.go`, `internal/tracker/mapping.go`, `internal/cli/init.go`, `internal/tui/wizard.go`, `internal/service/doctor.go` e `internal/service/service.go`. **Non** deve comparire `internal/tracker/payload.go`. Un file inatteso nell'elenco merita una domanda prima del merge.
+Devono comparire almeno `internal/notion/datasource.go`, `internal/notion/query.go`, `internal/tracker/mapping.go`, `internal/cli/init.go`, `internal/tui/wizard.go`, `internal/service/doctor.go` e `internal/service/service.go`. **Non** deve comparire `internal/tracker/payload.go`.
+
+Due avvertenze su questo controllo, perché è più grossolano di quanto sembri. `internal/tracker/uniqueid.go` **non** compare, pur essendo il cuore del parsing: parla di `BDF-271`, non del nome del tipo Notion. E compaiono file che il tipo lo nominano solo in un commento (`internal/notion/types.go`, `internal/cli/upsert.go`). Il grep è un promemoria, non un test: l'unica riga che vincola davvero è quella su `payload.go`.
