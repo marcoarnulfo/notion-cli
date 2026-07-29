@@ -616,6 +616,20 @@ func (s *Service) SetByID(ctx context.Context, pageID string, f tracker.Fields, 
 	return s.withBody(ctx, updated, "updated", body)
 }
 
+// SetByUniqueID updates the row carrying a board id.
+//
+// It resolves the id to a page and hands off to SetByID: the id is a way to
+// find a row, not a second way to write one, so nothing about the write itself
+// is duplicated here. Resolution happens first, which is what makes a wrong id
+// fail before anything is sent to the board.
+func (s *Service) SetByUniqueID(ctx context.Context, input string, f tracker.Fields, body *BodyRequest) (Result, error) {
+	page, err := s.findByUniqueID(ctx, input)
+	if err != nil {
+		return Result{}, err
+	}
+	return s.SetByID(ctx, page.ID, f, body)
+}
+
 // ListFilter is what List narrows on. Every field is optional; the zero value
 // returns every row.
 //

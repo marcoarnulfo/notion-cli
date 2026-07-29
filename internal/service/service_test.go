@@ -970,3 +970,60 @@ func TestGetByUniqueIDRejectsAWronglyTypedColumn(t *testing.T) {
 		t.Errorf("GetByUniqueID error = %v, want it to name the type the role needs", err)
 	}
 }
+
+// idWriteRoutes is idRoutes plus a record of every "METHOD path": the point of
+// these two tests is which requests went out, and in which order.
+func idWriteRoutes(t *testing.T, queryResults string, seen *[]string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*seen = append(*seen, r.Method+" "+r.URL.Path)
+		switch {
+		case r.URL.Path == "/v1/data_sources/ds1":
+			w.Write([]byte(idSchemaJSON))
+		case r.URL.Path == "/v1/data_sources/ds1/query":
+			w.Write([]byte(`{"results":[` + queryResults + `],"has_more":false}`))
+		default: // POST /v1/pages, PATCH /v1/pages/{id}
+			w.Write([]byte(idRowJSON))
+		}
+	}))
+}
+
+func TestSetByUniqueIDUpdatesTheResolvedPage(t *testing.T) {
+	var seen []string
+	srv := idWriteRoutes(t, idRowJSON, &seen)
+	defer srv.Close()
+
+	res, err := New(notion.New("t", notion.WithBaseURL(srv.URL)), idProfile()).
+		SetByUniqueID(context.Background(), "BDF-271", tracker.Fields{Status: "Fatto"}, nil)
+	if err != nil {
+		t.Fatalf("SetByUniqueID: %v", err)
+	}
+	// The write must land on the page the id resolved to, through the same
+	// SetByID path --page-id uses: one write path, three ways to address it.
+	if !contains(seen, "PATCH /v1/pages/23fb4e5c-8a5f-4d21-b7c9-d0e1f2a3b4c5") {
+		t.Errorf("requests = %v, want a PATCH on the resolved page", seen)
+	}
+	if res.Action != "updated" {
+		t.Errorf("action = %q, want %q", res.Action, "updated")
+	}
+}
+
+func TestSetByUniqueIDFailsBeforeWritingWhenTheIDIsUnknown(t *testing.T) {
+	var seen []string
+	srv := idWriteRoutes(t, "", &seen)
+	defer srv.Close()
+
+	_, err := New(notion.New("t", notion.WithBaseURL(srv.URL)), idProfile()).
+		SetByUniqueID(context.Background(), "BDF-999", tracker.Fields{Status: "Fatto"}, nil)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetByUniqueID error = %v, want ErrNotFound", err)
+	}
+	// Resolution comes first for exactly this reason: an id nobody recognises
+	// must not reach the board at all.
+	for _, req := range seen {
+		if strings.HasPrefix(req, "PATCH ") || req == "POST /v1/pages" {
+			t.Errorf("requests = %v, want no write after failing to resolve the id", seen)
+			break
+		}
+	}
+}
