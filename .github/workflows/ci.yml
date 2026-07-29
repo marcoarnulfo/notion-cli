@@ -1,17 +1,44 @@
 name: CI
 on: [push, pull_request]
+
+# Stated rather than inherited: the repository's default is read-only today,
+# but that is a setting someone can flip, and a workflow should not silently
+# gain write access to the repo because of a change made somewhere else.
+permissions:
+  contents: read
+
+# A branch that gets three pushes in a minute does not need three full runs of
+# the older two. Unlike the release workflow, cancelling here is free: nothing
+# is published, so an interrupted run leaves nothing half-done.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      # Pinned to commit SHAs, with the version in the comment for Dependabot.
+      # A tag is mutable: whoever controls the upstream repo can repoint it.
+      # The stakes are lower here than in the release workflow — this job has
+      # no write permission and no secrets — but "lower" is not "none", and
+      # keeping both workflows on one discipline means nobody has to remember
+      # which of the two was the careful one.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26'
+          # From go.mod, so CI cannot drift from the toolchain the module asks
+          # for the way a literal version silently would.
+          go-version-file: go.mod
+
       # gofmt first: CONTRIBUTING and the PR checklist tell contributors this
       # is one of the checks CI runs, so it has to actually run here.
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
+      # staticcheck stays on @latest deliberately, and only here. It is the one
+      # unpinned thing left in either workflow, and this is the job where that
+      # is affordable: no write permission, no secrets, nothing published. The
+      # release workflow skips it for exactly that reason.
       - run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
       - run: go test ./... -race
       - run: go build ./...
