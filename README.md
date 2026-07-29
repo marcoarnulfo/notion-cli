@@ -74,7 +74,7 @@ Windows ships as a `.zip` of the same name — swap the pattern and unzip it ins
 
 The binaries carry no cgo, so they run on any image with or without a libc. `notion-track --version` reports the release tag; a build from source reports `dev`.
 
-Note: until the first tag is pushed the releases page is empty, and `go install` above is the only route.
+Note: `go install` above needs no release at all — it builds straight from source through the Go module proxy — so it always works, regardless of whether this repository has a tagged release yet.
 </details>
 
 ## Quick start
@@ -525,7 +525,7 @@ Because the config file has no secret in it, the common pattern is to **commit i
     TICKET: ${{ github.event.inputs.ticket }}
 ```
 
-The action downloads the release archive for the runner it is on, checks it against the release's `checksums.txt`, and puts the binary on `PATH` — no Go toolchain, no compile. Linux, macOS and Windows runners (Windows through Git Bash), amd64 and arm64; anywhere else it fails with a message that says so. It needs a published release to download, so until the first tag exists use `go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest` instead.
+The action downloads the release archive for the runner it is on, checks it against the release's `checksums.txt`, and puts the binary on `PATH` — no Go toolchain, no compile. Linux, macOS and Windows runners (Windows through Git Bash), amd64 and arm64; anywhere else it fails with a message that says so. It installs from a published release matching the `version` input, so it needs at least one `v*` tag pushed to this repository before it has anything to install; `go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest` needs none of that and always works.
 
 `@main` is a moving reference: you get whatever is on the branch at the time. Pin it to a commit SHA if you want a workflow that cannot change under you — a `@v1` tag will exist once this project reaches 1.0.
 
@@ -565,7 +565,7 @@ Contributions are welcome — this is a free, open-source project. See **[CONTRI
 
 Implemented today: `init` (interactive wizard and flag-driven, with `--list`), the browsing TUI, `upsert`, `set`, `get`, `list`, `doctor`; `--dry-run` on `upsert`/`set`; `apply` for bulk writes from a manifest; `--body-file` on `upsert`/`set` to write the page body from Markdown, with `--expand` for `{{ticket}}`/`{{date}}` placeholders; `--json` on every command that produces output; `mcp` to serve the same operations as MCP tools; an optional `assignee` role with `--assignee`/`--unassign`, `list --assignee`/`--unassigned` and the `me` identity; an optional `priority` role with `--priority` on `upsert`/`set`/`list`; an optional `id` role mapped with `init --id-prop`, addressing a row by its Notion board id with `--id` on `get`/`set`; profiles; retry with backoff.
 
-Built but not yet exercised: the **GoReleaser pipeline** (`.goreleaser.yaml` plus a release workflow triggered on `v*` tags) and the **composite GitHub Action** in [`action/`](action/). Both are in place and the pipeline has been verified locally with `goreleaser release --snapshot`, but neither has run for real: that happens when the first tag is pushed, and until then the releases page is empty and the action has nothing to download.
+Release automation: the **GoReleaser pipeline** (`.goreleaser.yaml` plus a release workflow triggered on `v*` tags) builds and publishes the binaries and `checksums.txt` described under [Installation](#installation) every time a tag is pushed; it has been verified locally with `goreleaser release --snapshot`. The **composite GitHub Action** in [`action/`](action/) installs from whichever release its `version` input resolves to (see [CI usage](#ci-usage)); it is built and ready, but has not yet been exercised in a workflow outside this repository.
 
 ## License
 

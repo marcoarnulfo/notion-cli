@@ -74,7 +74,7 @@ Windows viaggia come `.zip` con lo stesso nome — cambia il pattern e scompatta
 
 I binari non usano cgo, quindi girano su qualunque immagine, con o senza libc. `notion-track --version` riporta il tag della release; una build da sorgente riporta `dev`.
 
-Nota: finché non viene spinto il primo tag la pagina delle release è vuota, e `go install` qui sopra è l'unica strada.
+Nota: `go install` qui sopra non richiede nessuna release — compila direttamente dal sorgente tramite il proxy dei moduli Go — quindi funziona sempre, indipendentemente dal fatto che questo repository abbia già un tag di release.
 </details>
 
 ## Avvio rapido
@@ -525,7 +525,7 @@ Poiché il file di configurazione non contiene segreti, lo schema comune è **co
     TICKET: ${{ github.event.inputs.ticket }}
 ```
 
-La action scarica l'archivio della release adatto al runner su cui gira, lo verifica contro il `checksums.txt` della release e mette il binario nel `PATH` — niente toolchain Go, niente compilazione. Runner Linux, macOS e Windows (su Windows via Git Bash), amd64 e arm64; altrove fallisce con un messaggio che lo dice. Ha bisogno di una release pubblicata da scaricare, quindi finché non esiste il primo tag usa `go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest`.
+La action scarica l'archivio della release adatto al runner su cui gira, lo verifica contro il `checksums.txt` della release e mette il binario nel `PATH` — niente toolchain Go, niente compilazione. Runner Linux, macOS e Windows (su Windows via Git Bash), amd64 e arm64; altrove fallisce con un messaggio che lo dice. Installa da una release pubblicata che corrisponde all'input `version`, quindi ha bisogno che almeno un tag `v*` sia stato spinto su questo repository prima di avere qualcosa da installare; `go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest` non ha bisogno di niente di tutto questo e funziona sempre.
 
 `@main` è un riferimento mobile: ti ritrovi quello che c'è sul branch in quel momento. Pinnalo a uno SHA se vuoi un workflow che non possa cambiarti sotto i piedi — un tag `@v1` esisterà quando il progetto arriverà alla 1.0.
 
@@ -565,7 +565,7 @@ I contributi sono benvenuti — questo è un progetto libero e open-source. Vedi
 
 Implementato oggi: `init` (procedura guidata interattiva e forma a flag, con `--list`), la TUI di navigazione, `upsert`, `set`, `get`, `list`, `doctor`; `--dry-run` su `upsert`/`set`; `apply` per le scritture in blocco da manifest; `--body-file` su `upsert`/`set` per scrivere il corpo della pagina da Markdown, con `--expand` per i segnaposto `{{ticket}}`/`{{date}}`; `--json` su ogni comando che produce output; `mcp` per servire le stesse operazioni come tool MCP; un ruolo `assignee` opzionale con `--assignee`/`--unassign`, `list --assignee`/`--unassigned` e l'identità `me`; un ruolo `priority` opzionale con `--priority` su `upsert`/`set`/`list`; un ruolo `id` opzionale mappato con `init --id-prop`, che indirizza una riga tramite il suo id di board con `--id` su `get`/`set`; profili; retry con backoff.
 
-Costruito ma non ancora esercitato: la **pipeline GoReleaser** (`.goreleaser.yaml` più un workflow di release che parte sui tag `v*`) e la **composite GitHub Action** in [`action/`](action/). Ci sono entrambe, e la pipeline è stata verificata in locale con `goreleaser release --snapshot`, ma nessuna delle due ha ancora girato per davvero: succederà col primo tag, e fino ad allora la pagina delle release è vuota e la action non ha nulla da scaricare.
+Automazione di release: la **pipeline GoReleaser** (`.goreleaser.yaml` più un workflow di release che parte sui tag `v*`) compila e pubblica i binari e il `checksums.txt` descritti in [Installazione](#installazione) a ogni tag spinto; è stata verificata in locale con `goreleaser release --snapshot`. La **composite GitHub Action** in [`action/`](action/) installa dalla release a cui risolve il suo input `version` (vedi [Uso in CI](#uso-in-ci)); è pronta, ma non è ancora stata esercitata in un workflow fuori da questo repository.
 
 ## Licenza
 
