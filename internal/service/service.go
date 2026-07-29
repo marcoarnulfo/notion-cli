@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 
 	"github.com/marcoarnulfo/notion-cli/internal/config"
@@ -67,6 +68,18 @@ var ErrEmptyAssignee = errors.New("assignee must not be empty; use --unassign to
 // silently doing nothing in a command the user wrote specifically to change
 // something.
 var ErrEmptyPriority = errors.New("priority must not be empty")
+
+// ErrEmptyID mirrors ErrEmptyTicket and ErrEmptyPageID for the third way of
+// addressing a row: cobra reports that a flag was passed, never that it carries
+// a value, so `--id ""` would otherwise reach ParseUniqueID and surface as a
+// malformed id rather than a missing one.
+var ErrEmptyID = errors.New("id must not be empty")
+
+// ErrNoIDProperty means a row was addressed by board id on a profile that has
+// no id column mapped. It is "not configured yet", not "broken": the role is
+// optional, and a board without a unique_id column is addressed the other two
+// ways.
+var ErrNoIDProperty = errors.New("no id property is mapped")
 
 // Service performs notion-track's operations against one profile.
 //
@@ -227,6 +240,71 @@ func (s *Service) findByTicket(ctx context.Context, key string) ([]notion.Page, 
 	}
 	filter := notion.EqualsFilter(name, prop.Type, key)
 	return s.client.QueryPages(ctx, s.profile.DataSourceID, filter)
+}
+
+// findByUniqueID resolves a board id ("BDF-271", or a bare "271") to the single
+// row carrying it.
+//
+// Every failure it can produce is decided before the query goes out, except the
+// last two: a column that is missing, wrongly typed, or an id that does not
+// parse is a mistake the user can fix by rewriting the command, and saying so
+// without a round trip is both faster and clearer than an empty result set.
+func (s *Service) findByUniqueID(ctx context.Context, input string) (notion.Page, error) {
+	if strings.TrimSpace(input) == "" {
+		return notion.Page{}, ErrEmptyID
+	}
+	name := s.profile.Properties.ID
+	if name == "" {
+		return notion.Page{}, fmt.Errorf(
+			"id addressing was requested but %w; "+
+				"run 'notion-track init --id-prop <name>' to map it", ErrNoIDProperty)
+	}
+	schema, err := s.Schema(ctx)
+	if err != nil {
+		return notion.Page{}, err
+	}
+	prop, ok := schema.Properties[name]
+	if !ok {
+		return notion.Page{}, fmt.Errorf(
+			"property %q is configured but does not exist in the data source; "+
+				"run 'notion-track doctor' to see the current schema", name)
+	}
+	if prop.Type != "unique_id" {
+		return notion.Page{}, fmt.Errorf(
+			"id property %q has type %q, not unique_id; run 'notion-track doctor'",
+			name, prop.Type)
+	}
+	number, err := tracker.ParseUniqueID(input, prop.Prefix)
+	if err != nil {
+		return notion.Page{}, err
+	}
+	pages, err := s.client.QueryPages(ctx, s.profile.DataSourceID,
+		notion.UniqueIDEqualsFilter(name, number))
+	if err != nil {
+		return notion.Page{}, err
+	}
+	switch len(pages) {
+	case 0:
+		// Spelled out rather than wrapped the way Get does it: ErrNotFound
+		// reads "ticket not found", and "ticket not found: BDF-271" would name
+		// a flag this command never used.
+		return notion.Page{}, fmt.Errorf("%w: no row has id %s", ErrNotFound, input)
+	case 1:
+		return pages[0], nil
+	default:
+		// Impossible on a healthy board — the column's whole job is to be
+		// unique — but "impossible" and "silently wrong" are different things,
+		// and picking the first would bury the fault.
+		return notion.Page{}, fmt.Errorf(
+			"id %s matches %d rows, which a unique_id column should make impossible; "+
+				"run 'notion-track doctor'", input, len(pages))
+	}
+}
+
+// GetByUniqueID returns the row carrying a board id, bypassing the ticket
+// lookup that Get performs.
+func (s *Service) GetByUniqueID(ctx context.Context, input string) (notion.Page, error) {
+	return s.findByUniqueID(ctx, input)
 }
 
 // resolveOption turns what the user typed into the exact option a mapped
