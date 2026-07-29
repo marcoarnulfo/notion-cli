@@ -113,7 +113,7 @@ func newGetCmd() *cobra.Command {
 			"accepts the full page URL copied from Notion, a bare 32-hex id, or a dashed UUID")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print machine-readable JSON")
 	cmd.Flags().StringVar(&boardID, "id", "",
-		"board id of the row, as Notion shows it (e.g. BDF-271, or just 271); "+
+		"board id of the row, as Notion shows it (e.g. TASK-271, or just 271); "+
 			"needs an id property mapped in the profile")
 	cmd.MarkFlagsMutuallyExclusive("ticket", "page-id", "id")
 	cmd.MarkFlagsOneRequired("ticket", "page-id", "id")

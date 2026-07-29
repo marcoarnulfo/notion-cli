@@ -96,7 +96,7 @@ func (wf *writeFlags) bindWithPageID(cmd *cobra.Command) {
 		"Notion page id to address directly, bypassing the ticket lookup; "+
 			"accepts the full page URL copied from Notion, a bare 32-hex id, or a dashed UUID")
 	cmd.Flags().StringVar(&wf.boardID, "id", "",
-		"board id of the row, as Notion shows it (e.g. BDF-271, or just 271); "+
+		"board id of the row, as Notion shows it (e.g. TASK-271, or just 271); "+
 			"needs an id property mapped in the profile")
 	wf.bindShared(cmd)
 	cmd.MarkFlagsMutuallyExclusive("ticket", "page-id", "id")

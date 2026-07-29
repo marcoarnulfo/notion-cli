@@ -371,7 +371,7 @@ func newInitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&dueProp, "due-prop", "", "date property (optional)")
 	cmd.Flags().StringVar(&assigneeProp, "assignee-prop", "", "select property holding the assignee (optional)")
 	cmd.Flags().StringVar(&priorityProp, "priority-prop", "", "select property holding the priority (optional)")
-	cmd.Flags().StringVar(&idProp, "id-prop", "", "unique_id property holding the board id, e.g. BDF-271 (optional)")
+	cmd.Flags().StringVar(&idProp, "id-prop", "", "unique_id property holding the board id, e.g. TASK-271 (optional)")
 	cmd.Flags().StringVar(&me, "me", "", "the assignee value '--assignee me' stands for (optional)")
 	cmd.Flags().BoolVar(&list, "list", false, "list the data sources shared with the integration and exit")
 	return cmd
