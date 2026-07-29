@@ -401,8 +401,12 @@ address and create tasks:
   `upsert --ticket "X"` sets its name to X — so a rename breaks lookup by name,
   and `--page-id` is the stable way to address such a task.
 - **What status values does the board accept?** `--status` only takes an
-  existing value; anything else is rejected with exit 2. Never invent one — read
-  the allowed set from `doctor`/`list` first.
+  existing value; anything else is rejected with exit 2. Never invent one. No
+  command prints the allowed set — `doctor` checks the column's type but never
+  reads its options, and `list` shows only the values rows happen to carry. The
+  rejection itself is the cheapest way to learn them: it names every accepted
+  value ("unknown status "Done"; allowed values are: …"), so a wrong guess costs
+  one failed call rather than a wrong write.
 - **Is there an assignee column, and is `me` configured?** Not every board maps
   one, and `doctor` does not call that out when it's missing — an unmapped
   assignee role is skipped silently by the `properties` check, the same way an
