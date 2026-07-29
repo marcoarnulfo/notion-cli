@@ -404,3 +404,55 @@ func TestSetPriorityDryRunNamesTheResolvedValue(t *testing.T) {
 		t.Errorf("output = %q, printed the raw input instead of the resolved value", out)
 	}
 }
+
+func TestSetByBoardIDUpdatesTheRow(t *testing.T) {
+	var patchedPath string
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/data_sources/ds1":
+			w.Write([]byte(cliSchemaWithIDJSON))
+		case r.URL.Path == "/v1/data_sources/ds1/query":
+			w.Write([]byte(`{"results":[` + cliRowWithIDJSON + `],"has_more":false}`))
+		default: // PATCH /v1/pages/{id}
+			patchedPath = r.URL.Path
+			w.Write([]byte(cliRowWithIDJSON))
+		}
+	}, idProfileYAML)
+
+	if code := executeArgs([]string{
+		"set", "--id", "BDF-271", "--status", "Fatto", "--config", cfg,
+	}); code != ExitOK {
+		t.Fatalf("exit code = %d, want %d (ExitOK)", code, ExitOK)
+	}
+	// The write must land on the page the id resolved to.
+	if patchedPath != "/v1/pages/23fb4e5c-8a5f-4d21-b7c9-d0e1f2a3b4c5" {
+		t.Errorf("patched %q, want the resolved page", patchedPath)
+	}
+}
+
+func TestSetRejectsTwoWaysOfAddressingAtOnce(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaWithIDJSON))
+	}, idProfileYAML)
+
+	if code := executeArgs([]string{
+		"set", "--id", "BDF-271", "--page-id", "abc", "--status", "Fatto", "--config", cfg,
+	}); code != ExitUsage {
+		t.Errorf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+	}
+}
+
+func TestUpsertHasNoBoardIDFlag(t *testing.T) {
+	// upsert's key is the ticket, and a row being created has no board id yet:
+	// Notion assigns it. Offering --id there would be offering to address
+	// something that does not exist.
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaWithIDJSON))
+	}, idProfileYAML)
+
+	if code := executeArgs([]string{
+		"upsert", "--id", "BDF-271", "--config", cfg,
+	}); code != ExitUsage {
+		t.Errorf("exit code = %d, want %d for an unknown flag", code, ExitUsage)
+	}
+}
