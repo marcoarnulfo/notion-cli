@@ -84,6 +84,7 @@ func exitCodeFor(err error) int {
 		dup       *tracker.DuplicateError
 		invalid   *tracker.ValidationError
 		ambiguous *tracker.AmbiguousOptionError
+		invalidID *tracker.InvalidIDError
 		apiErr    *notion.APIError
 	)
 	switch {
@@ -92,6 +93,8 @@ func exitCodeFor(err error) int {
 	case errors.As(err, &invalid):
 		return ExitUsage
 	case errors.As(err, &ambiguous):
+		return ExitUsage
+	case errors.As(err, &invalidID):
 		return ExitUsage
 	// Every way of getting the assignee wrong is a mistake the user can fix by
 	// rewriting the command, which is exactly what exit code 2 means.
@@ -121,6 +124,12 @@ func exitCodeFor(err error) int {
 	// malformed one (any input NormalizePageID could not recognize) is a
 	// usage error caught before any request is even made.
 	case errors.Is(err, service.ErrEmptyPageID), errors.Is(err, notion.ErrMalformedPageID):
+		return ExitUsage
+	// --id "" is a missing value wearing a passed flag, like --ticket "" and
+	// --page-id "" before it. A profile with no id column mapped is the same
+	// class of mistake as config.ErrNotConfigured: the invocation cannot work
+	// as written, and the fix is the user's to make.
+	case errors.Is(err, service.ErrEmptyID), errors.Is(err, service.ErrNoIDProperty):
 		return ExitUsage
 	// A page addressed by id that resolves but belongs to another data
 	// source is a usage mistake (the wrong id, or the wrong --profile), not
