@@ -76,7 +76,7 @@ tar -xzf "$archive" notion-track
 
 Windows viaggia come `.zip` con lo stesso nome — cambia il pattern e scompattalo con unzip.
 
-I binari non usano cgo, quindi girano su qualunque immagine, con o senza libc. `notion-track --version` riporta il tag della release; una build da sorgente riporta `dev`.
+I binari non usano cgo, quindi girano su qualunque immagine, con o senza libc. `notion-track --version` riporta il tag della release su un binario precompilato o tramite `go install`, e su una build locale una pseudo-versione derivata dal commit oppure `dev`, a seconda del checkout da cui proviene.
 
 Gatekeeper su macOS: un binario scaricato dal browser porta l'attributo `com.apple.quarantine` e viene bloccato al primo avvio ("impossibile verificare lo sviluppatore"); scaricandolo con `gh` o `curl`, come sopra, quell'attributo non viene mai impostato, quindi parte senza problemi.
 

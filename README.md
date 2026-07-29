@@ -76,7 +76,7 @@ tar -xzf "$archive" notion-track
 
 Windows ships as a `.zip` of the same name — swap the pattern and unzip it instead.
 
-The binaries carry no cgo, so they run on any image with or without a libc. `notion-track --version` reports the release tag; a build from source reports `dev`.
+The binaries carry no cgo, so they run on any image with or without a libc. `notion-track --version` reports the release tag on a prebuilt binary or through `go install`, and on a local build either a commit-derived pseudo-version or `dev`, depending on the checkout it came from.
 
 macOS Gatekeeper: a binary downloaded through a browser carries the `com.apple.quarantine` attribute and gets blocked on first run ("cannot verify the developer"); downloading it with `gh` or `curl`, as above, never sets that attribute, so it just runs.
 

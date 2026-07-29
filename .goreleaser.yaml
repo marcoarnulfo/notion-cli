@@ -85,8 +85,13 @@ release:
   footer: |
     ---
 
-    Verify a download against `checksums.txt` before running it:
+    Verify a download against `checksums.txt` before running it. Checking the
+    whole file at once with `--ignore-missing` can exit 0 having verified
+    nothing, if your archive's name doesn't match any line in it — pull out
+    that one line first, so a missing line fails loudly instead:
 
     ```bash
-    sha256sum -c checksums.txt --ignore-missing
+    archive=notion-track_0.6.0_linux_amd64.tar.gz   # the exact file you downloaded
+    grep -E "  ${archive}\$" checksums.txt > expected.txt
+    sha256sum --check expected.txt   # no sha256sum? use: shasum -a 256 --check expected.txt
     ```
