@@ -263,7 +263,6 @@ implementazioni.
 // same exit 2 the CLI gives.
 type InvalidIDError struct {
 	Value  string // what the user typed, verbatim
-	Prefix string // the column's prefix, "" when it has none
 	Reason string // the clause after the colon in Error()
 }
 
@@ -271,6 +270,8 @@ func (e *InvalidIDError) Error() string {
 	return fmt.Sprintf("invalid id %q: %s", e.Value, e.Reason)
 }
 ```
+
+Nessun campo `Prefix`: il prefisso della board è già dentro `Reason` in tutti i casi in cui è lui il problema, e un campo che nessun chiamante legge è solo una cosa in più da tenere allineata.
 
 Messaggi prodotti:
 
