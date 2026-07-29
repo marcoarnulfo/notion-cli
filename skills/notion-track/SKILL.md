@@ -389,9 +389,12 @@ notion-track doctor          # token, database, property mapping, duplicates
 notion-track list --json     # real rows, real status values in use
 ```
 
-`doctor` reports the mapped columns and flags drift; the statuses actually
-present on the board are whatever `list` returns. Two things to establish up
-front, because they change how you address and create tasks:
+`doctor`'s `properties` check confirms each configured property still exists
+with the expected type, naming the property and what's wrong when one doesn't
+— it does not enumerate the mapped columns when everything checks out, only
+reports that they do; the statuses actually present on the board are whatever
+`list` returns. Two things to establish up front, because they change how you
+address and create tasks:
 
 - **Is the ticket key its own column, or the title?** If the key column *is* the
   title, then `--ticket "X"` means the task literally named X, and creating with
