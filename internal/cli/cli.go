@@ -39,8 +39,13 @@ func Errorf(code int, format string, args ...any) error {
 
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:           "notion-track",
-		Short:         "Keep a Notion task database in sync from your terminal and CI",
+		Use:   "notion-track",
+		Short: "Keep a Notion task database in sync from your terminal and CI",
+		// Setting this is all it takes for cobra to answer --version. The
+		// template drops cobra's default "notion-track version X" wrapper: a
+		// script asking a binary its version wants the version, not a sentence
+		// to parse.
+		Version:       Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		// ArbitraryArgs is inert while the root has no subcommands, and becomes
@@ -68,6 +73,7 @@ func newRootCmd() *cobra.Command {
 	// calls them yet; this is here so the first one that does is already safe.
 	root.SetOut(os.Stdout)
 	root.SetErr(os.Stderr)
+	root.SetVersionTemplate("{{.Version}}\n")
 
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
 		return Errorf(ExitUsage, "%v", err)

@@ -10,16 +10,15 @@ import (
 	"github.com/marcoarnulfo/notion-cli/internal/tracker"
 )
 
-// mcpVersion is what the MCP handshake reports. The binary has no build-stamped
-// version yet — that arrives with the GoReleaser pipeline (issue #1), which
-// will wire the release tag through here.
-const mcpVersion = "dev"
-
 // runMCPServer is the seam that keeps the blocking stdio server out of the
 // tests: it reads from stdin until the peer disconnects, which a test has no
 // peer to do.
+//
+// The handshake reports the same Version the --version flag does, so an agent
+// that misbehaves against one build can be told apart from one that misbehaves
+// against another.
 var runMCPServer = func(ctx context.Context, t mcp.Tracker) error {
-	return mcp.Run(ctx, t, mcpVersion)
+	return mcp.Run(ctx, t, Version)
 }
 
 func newMCPCmd() *cobra.Command {

@@ -1,0 +1,80 @@
+name: 'Setup notion-track'
+description: 'Install the notion-track CLI from a published release, checksum-verified, and put it on PATH'
+branding:
+  icon: 'check-square'
+  color: 'gray-dark'
+
+inputs:
+  version:
+    description: 'Release tag to install (e.g. v0.6.0), or "latest"'
+    required: false
+    default: 'latest'
+
+runs:
+  using: composite
+  steps:
+    - name: Install notion-track
+      shell: bash
+      env:
+        # Resolving "latest" and downloading assets both go through the API,
+        # which rate-limits unauthenticated callers hard enough to make a busy
+        # workflow flaky. The token every workflow already has is enough.
+        GH_TOKEN: ${{ github.token }}
+        VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+
+        # A tarball extracted into the workspace would land in whatever the
+        # calling workflow has checked out there. Its own directory keeps this
+        # action from leaving anything behind in the caller's tree.
+        workdir="$(mktemp -d)"
+        trap 'rm -rf "$workdir"' EXIT
+
+        case "$(uname -s)" in
+          Linux)  os=linux ;;
+          Darwin) os=darwin ;;
+          *)      echo "::error::unsupported runner OS: $(uname -s)" >&2; exit 1 ;;
+        esac
+        case "$(uname -m)" in
+          x86_64|amd64) arch=amd64 ;;
+          arm64|aarch64) arch=arm64 ;;
+          *) echo "::error::unsupported runner architecture: $(uname -m)" >&2; exit 1 ;;
+        esac
+
+        if [ "$VERSION" = "latest" ]; then
+          tag="$(gh release view --repo marcoarnulfo/notion-cli --json tagName -q .tagName)"
+        else
+          tag="$VERSION"
+        fi
+        # The archive name carries the version without its leading "v", which
+        # is what GoReleaser's {{ .Version }} expands to.
+        number="${tag#v}"
+        archive="notion-track_${number}_${os}_${arch}.tar.gz"
+
+        echo "Installing notion-track $tag ($os/$arch)"
+        gh release download "$tag" --repo marcoarnulfo/notion-cli \
+          --pattern "$archive" --pattern checksums.txt --dir "$workdir"
+
+        # The point of this step: prove the bytes are the ones that were built,
+        # not merely that something arrived. --ignore-missing because
+        # checksums.txt lists every platform's archive and only one was pulled.
+        #
+        # Two tools because neither is everywhere: sha256sum is standard on
+        # Linux runners and absent from some macOS images, where shasum (perl)
+        # is what exists. Both accept --ignore-missing and both exit non-zero
+        # on a mismatch, which is the only behaviour this step depends on.
+        if command -v sha256sum >/dev/null 2>&1; then
+          ( cd "$workdir" && sha256sum --check --ignore-missing checksums.txt )
+        else
+          ( cd "$workdir" && shasum -a 256 --check --ignore-missing checksums.txt )
+        fi
+
+        tar -xzf "$workdir/$archive" -C "$workdir" notion-track
+        install -m 0755 "$workdir/notion-track" "$HOME/.local/bin/notion-track" 2>/dev/null \
+          || { mkdir -p "$HOME/.local/bin" && install -m 0755 "$workdir/notion-track" "$HOME/.local/bin/notion-track"; }
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+        # Fail here rather than in the caller's first real step if the binary
+        # cannot run at all (wrong arch, truncated download the checksum somehow
+        # passed): the error is about installation, so it belongs to this step.
+        "$HOME/.local/bin/notion-track" --version

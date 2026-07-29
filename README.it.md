@@ -32,7 +32,7 @@ L'autenticazione avviene solo con un **token di integrazione interna** di Notion
 
 ## Requisiti
 
-- **[Go](https://go.dev/dl/) 1.26 o successivo** — necessario per compilare o installare da sorgente; non esistono ancora binari precompilati (vedi [Roadmap](#roadmap)).
+- **[Go](https://go.dev/dl/) 1.26 o successivo** — necessario per compilare o installare da sorgente. Non serve quando esiste una release: le release taggate pubblicano binari precompilati (vedi [Installazione](#installazione)).
 - Un **token di integrazione interna** Notion (`ntn_...`), creato da un **Workspace Owner** su <https://www.notion.so/my-integrations>.
 - Un database Notion **condiviso con quell'integrazione**.
 
@@ -55,7 +55,25 @@ go build -o notion-track ./cmd/notion-track
 ```
 </details>
 
-Non esiste ancora una release con binari precompilati — GoReleaser e le GitHub Releases sono nella [roadmap](#roadmap).
+<details>
+<summary>Binari precompilati</summary>
+
+Ogni release taggata pubblica binari statici per macOS, Linux e Windows (amd64 e arm64) nella [pagina delle release](https://github.com/marcoarnulfo/notion-cli/releases), con un `checksums.txt` per verificarli:
+
+```bash
+tag=v0.6.0            # scegli la release che vuoi
+os=linux arch=amd64   # oppure darwin/arm64, windows/amd64 …
+
+gh release download "$tag" --repo marcoarnulfo/notion-cli \
+  --pattern "notion-track_${tag#v}_${os}_${arch}.tar.gz" --pattern checksums.txt
+sha256sum --check --ignore-missing checksums.txt
+tar -xzf "notion-track_${tag#v}_${os}_${arch}.tar.gz" notion-track
+```
+
+I binari non usano cgo, quindi girano su qualunque immagine, con o senza libc. `notion-track --version` riporta il tag della release; una build da sorgente riporta `dev`.
+
+Nota: finché non viene spinto il primo tag la pagina delle release è vuota, e `go install` qui sopra è l'unica strada.
+</details>
 
 ## Avvio rapido
 
@@ -472,7 +490,9 @@ Poiché il file di configurazione non contiene segreti, lo schema comune è **co
 ```yaml
 # .github/workflows/notion.yml
 - name: Install notion-track
-  run: go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest
+  uses: marcoarnulfo/notion-cli/action@main
+  with:
+    version: v0.6.0   # oppure "latest"
 
 - name: Segna il ticket come fatto
   run: notion-track upsert --ticket "$TICKET" --status "Fatto" --config notion-track.yml
@@ -481,7 +501,7 @@ Poiché il file di configurazione non contiene segreti, lo schema comune è **co
     TICKET: ${{ github.event.inputs.ticket }}
 ```
 
-Una composite GitHub Action che avvolga questo binario è nella [roadmap](#roadmap); oggi, `go install` più le due righe sopra è l'intera integrazione.
+La action scarica l'archivio della release adatto al runner su cui gira, lo verifica contro il `checksums.txt` della release e mette il binario nel `PATH` — niente toolchain Go, niente compilazione. Ha bisogno di una release pubblicata da scaricare, quindi finché non esiste il primo tag usa `go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest`.
 
 ## Limitazioni
 
@@ -517,10 +537,7 @@ I contributi sono benvenuti — questo è un progetto libero e open-source. Vedi
 
 Implementato oggi: `init` (procedura guidata interattiva e forma a flag, con `--list`), la TUI di navigazione, `upsert`, `set`, `get`, `list`, `doctor`; `--dry-run` su `upsert`/`set`; `apply` per le scritture in blocco da manifest; `--body-file` su `upsert`/`set` per scrivere il corpo della pagina da Markdown, con `--expand` per i segnaposto `{{ticket}}`/`{{date}}`; `--json` su ogni comando che produce output; `mcp` per servire le stesse operazioni come tool MCP; un ruolo `assignee` opzionale con `--assignee`/`--unassign`, `list --assignee`/`--unassigned` e l'identità `me`; un ruolo `priority` opzionale con `--priority` su `upsert`/`set`/`list`; profili; retry con backoff.
 
-Non ancora costruito:
-
-- **Binari precompilati** — una pipeline GoReleaser che pubblica GitHub Releases per macOS/Linux/Windows; oggi le uniche opzioni sono `go install` o compilare da sorgente.
-- **Una composite GitHub Action** che avvolge il binario, così uno step di workflow non ha bisogno di un proprio `go install`.
+Costruito ma non ancora esercitato: la **pipeline GoReleaser** (`.goreleaser.yaml` più un workflow di release che parte sui tag `v*`) e la **composite GitHub Action** in [`action/`](action/). Ci sono entrambe, e la pipeline è stata verificata in locale con `goreleaser release --snapshot`, ma nessuna delle due ha ancora girato per davvero: succederà col primo tag, e fino ad allora la pagina delle release è vuota e la action non ha nulla da scaricare.
 
 ## Licenza
 

@@ -80,3 +80,30 @@ func TestAnUnknownCommandAtATerminalIsStillAUsageError(t *testing.T) {
 		t.Fatal("the browser opened for an unknown command")
 	}
 }
+
+// The version is a scripting surface: a release workflow or an install script
+// reads it to decide whether to upgrade, so it must be the bare string and
+// nothing else — not cobra's default "notion-track version X" sentence.
+func TestVersionFlagPrintsTheBareVersion(t *testing.T) {
+	old := Version
+	Version = "v9.9.9"
+	t.Cleanup(func() { Version = old })
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"--version"}); code != ExitOK {
+			t.Fatalf("exit code = %d, want %d", code, ExitOK)
+		}
+	})
+
+	if out != "v9.9.9\n" {
+		t.Errorf("output = %q, want just the version and a newline", out)
+	}
+}
+
+// An unstamped build says "dev" rather than an empty string or a plausible
+// number: whoever reads it must be able to tell a release from a `go install`.
+func TestVersionDefaultsToDev(t *testing.T) {
+	if Version != "dev" && Version != "v9.9.9" {
+		t.Errorf("Version = %q, want the unstamped default to be %q", Version, "dev")
+	}
+}

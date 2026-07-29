@@ -32,7 +32,7 @@ It authenticates with a Notion **internal integration token** only — no browse
 
 ## Requirements
 
-- **[Go](https://go.dev/dl/) 1.26 or newer** — needed to build or install from source; prebuilt binaries are not published yet (see [Roadmap](#roadmap)).
+- **[Go](https://go.dev/dl/) 1.26 or newer** — needed to build or install from source. Not needed once a release is published: tagged releases ship prebuilt binaries (see [Installation](#installation)).
 - A **Notion internal integration token** (`ntn_...`), created by a **Workspace Owner** at <https://www.notion.so/my-integrations>.
 - A Notion database **shared with that integration**.
 
@@ -55,7 +55,25 @@ go build -o notion-track ./cmd/notion-track
 ```
 </details>
 
-There is no `go get`-able prebuilt binary release yet — GoReleaser and GitHub Releases are on the [roadmap](#roadmap).
+<details>
+<summary>Prebuilt binaries</summary>
+
+Every tagged release publishes static binaries for macOS, Linux and Windows (amd64 and arm64) on the [releases page](https://github.com/marcoarnulfo/notion-cli/releases), with a `checksums.txt` to verify them against:
+
+```bash
+tag=v0.6.0            # pick the release you want
+os=linux arch=amd64   # or darwin/arm64, windows/amd64 …
+
+gh release download "$tag" --repo marcoarnulfo/notion-cli \
+  --pattern "notion-track_${tag#v}_${os}_${arch}.tar.gz" --pattern checksums.txt
+sha256sum --check --ignore-missing checksums.txt
+tar -xzf "notion-track_${tag#v}_${os}_${arch}.tar.gz" notion-track
+```
+
+The binaries carry no cgo, so they run on any image with or without a libc. `notion-track --version` reports the release tag; a build from source reports `dev`.
+
+Note: until the first tag is pushed the releases page is empty, and `go install` above is the only route.
+</details>
 
 ## Quick start
 
@@ -472,7 +490,9 @@ Because the config file has no secret in it, the common pattern is to **commit i
 ```yaml
 # .github/workflows/notion.yml
 - name: Install notion-track
-  run: go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest
+  uses: marcoarnulfo/notion-cli/action@main
+  with:
+    version: v0.6.0   # or "latest"
 
 - name: Mark the ticket done
   run: notion-track upsert --ticket "$TICKET" --status "Done" --config notion-track.yml
@@ -481,7 +501,7 @@ Because the config file has no secret in it, the common pattern is to **commit i
     TICKET: ${{ github.event.inputs.ticket }}
 ```
 
-A thin composite GitHub Action wrapping this is on the [roadmap](#roadmap); today, `go install` + the two lines above is the whole integration.
+The action downloads the release archive for the runner it is on, checks it against the release's `checksums.txt`, and puts the binary on `PATH` — no Go toolchain, no compile. It needs a published release to download, so until the first tag exists use `go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest` instead.
 
 ## Limitations
 
@@ -517,10 +537,7 @@ Contributions are welcome — this is a free, open-source project. See **[CONTRI
 
 Implemented today: `init` (interactive wizard and flag-driven, with `--list`), the browsing TUI, `upsert`, `set`, `get`, `list`, `doctor`; `--dry-run` on `upsert`/`set`; `apply` for bulk writes from a manifest; `--body-file` on `upsert`/`set` to write the page body from Markdown, with `--expand` for `{{ticket}}`/`{{date}}` placeholders; `--json` on every command that produces output; `mcp` to serve the same operations as MCP tools; an optional `assignee` role with `--assignee`/`--unassign`, `list --assignee`/`--unassigned` and the `me` identity; an optional `priority` role with `--priority` on `upsert`/`set`/`list`; profiles; retry with backoff.
 
-Not yet built:
-
-- **Prebuilt binaries** — a GoReleaser pipeline publishing GitHub Releases for macOS/Linux/Windows; today, `go install` or building from source are the only options.
-- **A composite GitHub Action** wrapping the binary, so a workflow step doesn't need its own `go install`.
+Built but not yet exercised: the **GoReleaser pipeline** (`.goreleaser.yaml` plus a release workflow triggered on `v*` tags) and the **composite GitHub Action** in [`action/`](action/). Both are in place and the pipeline has been verified locally with `goreleaser release --snapshot`, but neither has run for real: that happens when the first tag is pushed, and until then the releases page is empty and the action has nothing to download.
 
 ## License
 

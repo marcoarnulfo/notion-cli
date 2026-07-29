@@ -1,0 +1,85 @@
+# GoReleaser builds the binaries a CI runner downloads instead of compiling.
+#
+# The point of publishing these at all: a workflow that flips a task's status
+# should not need a Go toolchain and a compile to do it. See issue #1.
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: notion-track
+    main: ./cmd/notion-track
+    binary: notion-track
+    # No cgo: the binary has to run on whatever a CI runner or a container
+    # happens to be, including images with no libc to link against.
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      # -s -w strip the symbol table and DWARF: nobody debugs a released
+      # binary with gdb, and it is a third off the download.
+      #
+      # The -X is the whole reason the version lives in a package-level var:
+      # this is what makes `notion-track --version` and the MCP handshake
+      # report the tag instead of "dev".
+      - -s -w -X github.com/marcoarnulfo/notion-cli/internal/cli.Version={{ .Version }}
+
+archives:
+  - id: notion-track
+    ids:
+      - notion-track
+    # A name a human can read off a releases page and a script can predict:
+    # the composite action in action/action.yml builds exactly this string.
+    #
+    # "notion-track", not {{ .ProjectName }}: the project is notion-cli but the
+    # binary inside is notion-track, and an archive should say what it holds.
+    name_template: >-
+      notion-track_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  # One file listing every archive's SHA-256. The composite action verifies
+  # its download against this rather than trusting the transport, which is the
+  # difference between "downloaded something" and "downloaded what was built".
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    # Docs and chores are real work, but a release note listing them buries
+    # the two lines a reader actually came for.
+    exclude:
+      - "^docs:"
+      - "^docs\\("
+      - "^test:"
+      - "^test\\("
+      - "^chore:"
+      - "^ci:"
+
+release:
+  draft: false
+  prerelease: auto
+  footer: |
+    ---
+
+    Verify a download against `checksums.txt` before running it:
+
+    ```bash
+    sha256sum -c checksums.txt --ignore-missing
+    ```
