@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -103,7 +106,25 @@ func TestVersionFlagPrintsTheBareVersion(t *testing.T) {
 // An unstamped build says "dev" rather than an empty string or a plausible
 // number: whoever reads it must be able to tell a release from a `go install`.
 func TestVersionDefaultsToDev(t *testing.T) {
-	if Version != "dev" && Version != "v9.9.9" {
+	if Version != "dev" {
 		t.Errorf("Version = %q, want the unstamped default to be %q", Version, "dev")
+	}
+}
+
+// The linker ignores a -X for a symbol that does not exist: no warning, no
+// error, a green build. So if internal/cli is ever moved or renamed, the
+// release pipeline would keep passing while publishing binaries that report
+// "dev" — and nothing else in the suite would notice. This is the one test
+// that ties the string in .goreleaser.yaml to where the variable really is.
+func TestTheReleaseLdflagsPointAtThisPackage(t *testing.T) {
+	pkg := reflect.TypeOf(codedError{}).PkgPath()
+
+	raw, err := os.ReadFile(filepath.Join("..", "..", ".goreleaser.yaml"))
+	if err != nil {
+		t.Fatalf("reading the release config: %v", err)
+	}
+	want := "-X " + pkg + ".Version="
+	if !strings.Contains(string(raw), want) {
+		t.Errorf(".goreleaser.yaml does not stamp %q; a release would report %q", want, "dev")
 	}
 }

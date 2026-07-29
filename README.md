@@ -62,13 +62,15 @@ Every tagged release publishes static binaries for macOS, Linux and Windows (amd
 
 ```bash
 tag=v0.6.0            # pick the release you want
-os=linux arch=amd64   # or darwin/arm64, windows/amd64 …
+os=linux arch=amd64   # or darwin/arm64
 
 gh release download "$tag" --repo marcoarnulfo/notion-cli \
   --pattern "notion-track_${tag#v}_${os}_${arch}.tar.gz" --pattern checksums.txt
-sha256sum --check --ignore-missing checksums.txt
+sha256sum --check --ignore-missing checksums.txt   # or: shasum -a 256 --check --ignore-missing checksums.txt
 tar -xzf "notion-track_${tag#v}_${os}_${arch}.tar.gz" notion-track
 ```
+
+Windows ships as a `.zip` of the same name — swap the pattern and unzip it instead.
 
 The binaries carry no cgo, so they run on any image with or without a libc. `notion-track --version` reports the release tag; a build from source reports `dev`.
 
@@ -501,7 +503,9 @@ Because the config file has no secret in it, the common pattern is to **commit i
     TICKET: ${{ github.event.inputs.ticket }}
 ```
 
-The action downloads the release archive for the runner it is on, checks it against the release's `checksums.txt`, and puts the binary on `PATH` — no Go toolchain, no compile. It needs a published release to download, so until the first tag exists use `go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest` instead.
+The action downloads the release archive for the runner it is on, checks it against the release's `checksums.txt`, and puts the binary on `PATH` — no Go toolchain, no compile. Linux and macOS runners, amd64 and arm64; it fails with a clear message anywhere else. It needs a published release to download, so until the first tag exists use `go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest` instead.
+
+`@main` is a moving reference: you get whatever is on the branch at the time. Pin it to a commit SHA if you want a workflow that cannot change under you — a `@v1` tag will exist once this project reaches 1.0.
 
 ## Limitations
 

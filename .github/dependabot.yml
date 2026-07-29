@@ -1,0 +1,13 @@
+# The release workflow pins every third-party action to a commit SHA, which
+# is what stops a repointed upstream tag from running with write access to
+# this repo. Pins rot: this is what keeps them current without anyone having
+# to remember. Dependabot understands the "# vX.Y.Z" comment beside each SHA
+# and updates both together.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: ci

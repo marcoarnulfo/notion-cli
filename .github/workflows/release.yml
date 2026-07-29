@@ -1,41 +1,71 @@
 name: Release
 
-# Tags only. A push to main must never publish anything: releasing is a
-# decision someone makes by pushing a tag, not a side effect of merging.
+# Tags only, and only release-shaped ones. A push to main must never publish
+# anything: releasing is a decision someone makes by pushing a tag, not a side
+# effect of merging.
+#
+# The pattern is narrower than 'v*' on purpose. A moving major tag like `v1`
+# — the kind a composite action is consumed through — would otherwise fire a
+# full release run every time it is repointed, publishing archives named
+# notion-track_1_linux_amd64 and a spurious GitHub Release beside them.
 on:
   push:
     tags:
-      - 'v*'
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
 
 permissions:
   # Writing the release and uploading its assets. Nothing else — the default
   # token is read-only, and GoReleaser needs exactly this one escalation.
   contents: write
 
+# Two tags pushed moments apart would otherwise run two GoReleaser jobs
+# against the same repo. Never cancel one mid-flight: a half-uploaded release
+# is worse than a queued one.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Every third-party action here is pinned to a full commit SHA, not a
+      # tag. This job holds a token that can publish executables under this
+      # project's name, and a tag is mutable: whoever controls the upstream
+      # repo — or whoever compromises that account — can repoint v7 at any
+      # commit and have it run here with write access. The comment carries the
+      # human-readable version so Dependabot can bump both together.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # GoReleaser builds the changelog from the commits since the previous
           # tag, which it cannot see in a shallow clone.
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26'
+          # From go.mod rather than a literal, so the release cannot be built
+          # with a toolchain the module does not ask for.
+          go-version-file: go.mod
 
-      # The same gates CI runs on every push, run once more here on the exact
-      # commit being released: a tag can be pushed to any commit, including one
-      # that never went through a PR.
+      # The CI gates that do not require pulling an unpinned tool, re-run here
+      # on the exact commit being released: a tag can be pushed to any commit,
+      # including one that never went through a PR.
+      #
+      # staticcheck is deliberately absent. CI runs it as
+      # `go run honnef.co/go/tools/cmd/staticcheck@latest`, and fetching an
+      # unpinned tool inside the job that publishes binaries would give back
+      # exactly the supply-chain property the SHA pins above exist to protect.
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - run: go test ./... -race
 
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
-          version: '~> v2'
+          # An exact version, not '~> v2': the action downloads this binary at
+          # run time, and a floating range is one more unpinned dependency in
+          # a privileged job.
+          version: '2.17.1'
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -6,23 +6,44 @@ branding:
 
 inputs:
   version:
-    description: 'Release tag to install (e.g. v0.6.0), or "latest"'
+    description: 'Release tag to install (e.g. v0.6.0), or "latest" for the newest published release'
     required: false
     default: 'latest'
+  token:
+    description: 'Token used to resolve and download the release. Override it when the job restricts permissions, when the default token is rate-limited, or on GitHub Enterprise.'
+    required: false
+    default: ${{ github.token }}
+  repository:
+    description: 'Repository to install from. Only useful for a fork.'
+    required: false
+    default: 'marcoarnulfo/notion-cli'
+
+outputs:
+  version:
+    description: 'The release tag that was installed, with "latest" resolved'
+    value: ${{ steps.install.outputs.version }}
 
 runs:
   using: composite
   steps:
     - name: Install notion-track
+      id: install
       shell: bash
       env:
-        # Resolving "latest" and downloading assets both go through the API,
-        # which rate-limits unauthenticated callers hard enough to make a busy
-        # workflow flaky. The token every workflow already has is enough.
-        GH_TOKEN: ${{ github.token }}
+        GH_TOKEN: ${{ inputs.token }}
         VERSION: ${{ inputs.version }}
+        REPO: ${{ inputs.repository }}
       run: |
         set -euo pipefail
+
+        # gh ships on GitHub-hosted images but not inside a container: job, and
+        # not on most self-hosted runners. Without this check the failure is
+        # "gh: command not found", exit 127, which reads like a bug in this
+        # action rather than a missing tool on the runner.
+        command -v gh >/dev/null 2>&1 || {
+          echo "::error::this action needs the GitHub CLI (gh). It is preinstalled on GitHub-hosted runners, but not inside container jobs or on most self-hosted runners."
+          exit 1
+        }
 
         # A tarball extracted into the workspace would land in whatever the
         # calling workflow has checked out there. Its own directory keeps this
@@ -30,10 +51,12 @@ runs:
         workdir="$(mktemp -d)"
         trap 'rm -rf "$workdir"' EXIT
 
+        ext=tar.gz
         case "$(uname -s)" in
           Linux)  os=linux ;;
           Darwin) os=darwin ;;
-          *)      echo "::error::unsupported runner OS: $(uname -s)" >&2; exit 1 ;;
+          MINGW*|MSYS*|CYGWIN*) os=windows; ext=zip ;;
+          *) echo "::error::unsupported runner OS: $(uname -s)" >&2; exit 1 ;;
         esac
         case "$(uname -m)" in
           x86_64|amd64) arch=amd64 ;;
@@ -42,39 +65,61 @@ runs:
         esac
 
         if [ "$VERSION" = "latest" ]; then
-          tag="$(gh release view --repo marcoarnulfo/notion-cli --json tagName -q .tagName)"
+          # gh resolves "latest" to the newest non-prerelease, non-draft
+          # release. Saying so when it finds none is the difference between a
+          # user pinning a tag and a user filing a bug: the repo may simply
+          # have no stable release yet.
+          if ! tag="$(gh release view --repo "$REPO" --json tagName -q .tagName 2>/dev/null)"; then
+            echo "::error::no published release found for $REPO. If it only has prereleases, pin one with the 'version' input."
+            exit 1
+          fi
         else
           tag="$VERSION"
         fi
-        # The archive name carries the version without its leading "v", which
-        # is what GoReleaser's {{ .Version }} expands to.
+        # GoReleaser's {{ .Version }} is the tag without its leading "v".
         number="${tag#v}"
-        archive="notion-track_${number}_${os}_${arch}.tar.gz"
+        archive="notion-track_${number}_${os}_${arch}.${ext}"
 
         echo "Installing notion-track $tag ($os/$arch)"
-        gh release download "$tag" --repo marcoarnulfo/notion-cli \
+        gh release download "$tag" --repo "$REPO" \
           --pattern "$archive" --pattern checksums.txt --dir "$workdir"
 
-        # The point of this step: prove the bytes are the ones that were built,
-        # not merely that something arrived. --ignore-missing because
-        # checksums.txt lists every platform's archive and only one was pulled.
+        # Verify THIS archive, by name, against its line in checksums.txt.
         #
-        # Two tools because neither is everywhere: sha256sum is standard on
-        # Linux runners and absent from some macOS images, where shasum (perl)
-        # is what exists. Both accept --ignore-missing and both exit non-zero
-        # on a mismatch, which is the only behaviour this step depends on.
+        # The obvious spelling — `sha256sum --check --ignore-missing` — has a
+        # hole: --ignore-missing iterates the lines of the checksum file, not
+        # the files on disk, so an archive that is present but unlisted is
+        # never checked. GNU coreutils then exits 1 with "no file was
+        # verified", but the sha256sum shipped on some macOS images exits 0,
+        # and the only integrity check in this whole path becomes a silent
+        # no-op. Extracting the one line first makes both tools behave the
+        # same and makes a missing line an explicit error.
+        grep -E "  ${archive}\$" "$workdir/checksums.txt" > "$workdir/expected.txt" || {
+          echo "::error::$archive is not listed in the release's checksums.txt"
+          exit 1
+        }
         if command -v sha256sum >/dev/null 2>&1; then
-          ( cd "$workdir" && sha256sum --check --ignore-missing checksums.txt )
+          ( cd "$workdir" && sha256sum --check expected.txt )
         else
-          ( cd "$workdir" && shasum -a 256 --check --ignore-missing checksums.txt )
+          # macOS images that carry no sha256sum have shasum (perl).
+          ( cd "$workdir" && shasum -a 256 --check expected.txt )
         fi
 
-        tar -xzf "$workdir/$archive" -C "$workdir" notion-track
-        install -m 0755 "$workdir/notion-track" "$HOME/.local/bin/notion-track" 2>/dev/null \
-          || { mkdir -p "$HOME/.local/bin" && install -m 0755 "$workdir/notion-track" "$HOME/.local/bin/notion-track"; }
+        binary=notion-track
+        if [ "$os" = windows ]; then
+          binary=notion-track.exe
+          unzip -q "$workdir/$archive" "$binary" -d "$workdir"
+        else
+          tar -xzf "$workdir/$archive" -C "$workdir" "$binary"
+        fi
+
+        mkdir -p "$HOME/.local/bin"
+        install -m 0755 "$workdir/$binary" "$HOME/.local/bin/$binary"
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
         # Fail here rather than in the caller's first real step if the binary
-        # cannot run at all (wrong arch, truncated download the checksum somehow
-        # passed): the error is about installation, so it belongs to this step.
-        "$HOME/.local/bin/notion-track" --version
+        # cannot run at all (wrong arch, a truncated download the checksum
+        # somehow passed): the error is about installation, so it belongs to
+        # this step.
+        "$HOME/.local/bin/$binary" --version
+        echo "version=$tag" >> "$GITHUB_OUTPUT"

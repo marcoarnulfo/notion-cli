@@ -6,7 +6,10 @@ version: 2
 
 before:
   hooks:
-    - go mod tidy
+    # download, not tidy: tidy rewrites go.mod/go.sum during the release
+    # build, so the published binary could be built from a dependency set
+    # that differs from the one committed at the tag.
+    - go mod download
 
 builds:
   - id: notion-track
@@ -30,7 +33,11 @@ builds:
       # The -X is the whole reason the version lives in a package-level var:
       # this is what makes `notion-track --version` and the MCP handshake
       # report the tag instead of "dev".
-      - -s -w -X github.com/marcoarnulfo/notion-cli/internal/cli.Version={{ .Version }}
+      #
+      # .Tag, not .Version: they differ by the leading "v" (v0.6.0 vs 0.6.0),
+      # and a script comparing `notion-track --version` against a git tag
+      # should not have to know which of the two it is holding.
+      - -s -w -X github.com/marcoarnulfo/notion-cli/internal/cli.Version={{ .Tag }}
 
 archives:
   - id: notion-track
