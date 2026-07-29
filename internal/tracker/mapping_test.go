@@ -193,3 +193,36 @@ func TestGuessMappingPriority(t *testing.T) {
 		}
 	})
 }
+
+func TestGuessMappingTakesTheOnlyUniqueIDColumn(t *testing.T) {
+	schema := &notion.Schema{Properties: map[string]notion.Property{
+		"Name": {Name: "Name", Type: "title"},
+		"ID":   {Name: "ID", Type: "unique_id", Prefix: "BDF"},
+	}}
+	if got := GuessMapping(schema).ID; got != "ID" {
+		t.Errorf("ID = %q, want %q", got, "ID")
+	}
+}
+
+func TestGuessMappingLeavesTheIDEmptyWhenTwoColumnsCompete(t *testing.T) {
+	schema := &notion.Schema{Properties: map[string]notion.Property{
+		"Name": {Name: "Name", Type: "title"},
+		"ID":   {Name: "ID", Type: "unique_id", Prefix: "BDF"},
+		"Seq":  {Name: "Seq", Type: "unique_id"},
+	}}
+	if got := GuessMapping(schema).ID; got != "" {
+		t.Errorf("ID = %q, want empty: a wrong guess waved through is worse than a question", got)
+	}
+}
+
+func TestGuessMappingDoesNotOfferAUniqueIDColumnAsTheTicket(t *testing.T) {
+	schema := &notion.Schema{Properties: map[string]notion.Property{
+		"Name": {Name: "Name", Type: "title"},
+		"ID":   {Name: "ID", Type: "unique_id", Prefix: "BDF"},
+	}}
+	// "id" is in ticketNames, but the ticket is a value notion-track writes and
+	// a unique_id column is read-only: the two roles must not collide.
+	if got := GuessMapping(schema).Ticket; got == "ID" {
+		t.Errorf("Ticket = %q, want anything but the unique_id column", got)
+	}
+}
