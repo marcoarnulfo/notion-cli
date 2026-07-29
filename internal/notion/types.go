@@ -33,7 +33,8 @@ type DataSourceRef struct {
 }
 
 // Property is one column of a data source, flattened to what notion-track
-// cares about: its name, its type, and the options a select or status accepts.
+// cares about: its name, its type, the options a select or status accepts,
+// and the prefix a unique_id column carries.
 type Property struct {
 	Name    string
 	Type    string

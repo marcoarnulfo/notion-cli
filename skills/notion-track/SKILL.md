@@ -58,7 +58,8 @@ A task is addressed in one of three ways. Pick deliberately:
   Notion itself assigns and shows on the row (`BDF-271`, or the bare number
   `271` on its own) — the one a person reads aloud. Use it when the user gives
   you that id instead of a name. Only works if this board maps an id column;
-  not every board does (see "This workspace" below, or run `doctor`).
+  not every board does (see "This workspace" below) — `list --json` or
+  `get --json` show a non-empty `id` key only when the role is mapped.
 - **By Notion page id** (`--page-id <id>`) — addresses one specific row
   directly, no lookup. The id is stable forever, even if the task is renamed.
   It accepts the page URL copied from Notion ("Copy link"), a bare 32-hex id, or
@@ -409,8 +410,9 @@ front, because they change how you address and create tasks:
   accepted values are whatever the column's options actually are; read them
   with `doctor` or `list` rather than assuming a fixed set like
   ALTA/MEDIA/NORMALE applies here.
-- **Is there a board id column?** Not every board maps one — `doctor` says so,
-  and `--id` fails if it isn't mapped, but with **exit 2, not 1** (unlike
+- **Is there a board id column?** Not every board maps one — `list --json` or
+  `get --json` show a non-empty `id` key only when the role is mapped, and
+  `--id` fails if it isn't mapped, but with **exit 2, not 1** (unlike
   assignee/priority/due, an unmapped id role is a usage error). When it is
   mapped, `--id` accepts the id exactly as Notion shows it (`BDF-271`) or the
   bare number alone (`271`).
@@ -447,4 +449,11 @@ front, because they change how you address and create tasks:
   tools (`upsert_task`, `set_task`, `get_task`, `list_tasks`) over stdio, with
   the same JSON shapes documented here. It is the same code underneath, so
   everything on this page — read before you write, never invent a status,
-  branch on the outcome — applies there unchanged.
+  branch on the outcome — applies there unchanged, with one exception:
+  addressing. Over MCP a row is addressed **only** by ticket key —
+  `get_task`/`set_task`'s only argument for finding a row is `ticket`.
+  `--id` and `--page-id` are CLI-only; there is no MCP equivalent for either,
+  even though a tool's JSON result still carries the board id under `id`
+  exactly like the CLI's `--json` does. Don't call an MCP tool with an `id`
+  or `page_id` argument expecting it to address a row — it will be rejected
+  (or, worse, ignored as an unknown field).

@@ -245,10 +245,13 @@ func (s *Service) findByTicket(ctx context.Context, key string) ([]notion.Page, 
 // findByUniqueID resolves a board id ("BDF-271", or a bare "271") to the single
 // row carrying it.
 //
-// Every failure it can produce is decided before the query goes out, except the
-// last two: a column that is missing, wrongly typed, or an id that does not
-// parse is a mistake the user can fix by rewriting the command, and saying so
-// without a round trip is both faster and clearer than an empty result set.
+// Every failure it can produce is decided before the query goes out, except
+// the last two — no row matched, or more than one did, which only the query
+// itself can answer. Everything before that point (an empty input, no id
+// column mapped, a mapped column that is missing or wrongly typed, an id that
+// does not parse) is a mistake the user can fix by rewriting the command, and
+// saying so without a round trip is both faster and clearer than an empty
+// result set.
 func (s *Service) findByUniqueID(ctx context.Context, input string) (notion.Page, error) {
 	if strings.TrimSpace(input) == "" {
 		return notion.Page{}, ErrEmptyID
@@ -294,7 +297,14 @@ func (s *Service) findByUniqueID(ctx context.Context, input string) (notion.Page
 	default:
 		// Impossible on a healthy board — the column's whole job is to be
 		// unique — but "impossible" and "silently wrong" are different things,
-		// and picking the first would bury the fault.
+		// and picking the first would bury the fault. Deliberately a plain
+		// fmt.Errorf, not a *tracker.DuplicateError like the --ticket path's
+		// equivalent case: a duplicate ticket key is an ambiguous but valid
+		// state (two rows can legitimately share a name), which is what makes
+		// exit 4 the right signal there. A duplicate unique_id is not an
+		// ambiguous key, it is Notion's own uniqueness guarantee failing —
+		// board corruption, not a naming collision — so it exits 1 like any
+		// other "something is wrong with the data" failure instead.
 		return notion.Page{}, fmt.Errorf(
 			"id %s matches %d rows, which a unique_id column should make impossible; "+
 				"run 'notion-track doctor'", input, len(pages))
@@ -622,6 +632,21 @@ func (s *Service) SetByID(ctx context.Context, pageID string, f tracker.Fields, 
 // find a row, not a second way to write one, so nothing about the write itself
 // is duplicated here. Resolution happens first, which is what makes a wrong id
 // fail before anything is sent to the board.
+//
+// This ordering is the opposite of Set and SetByID, which resolve
+// --assignee/--priority before locating the row. The divergence is
+// deliberate, not an oversight: unlike a ticket key or a page id, a board id
+// only ever names a row that already exists (Notion assigns it, nothing else
+// can), so resolving it first is what makes writing to a nonexistent row
+// impossible rather than merely unlikely — the same guarantee Set and
+// SetByID get from checking existence before they touch the assignee or
+// priority columns, just reached in the other order. One observable
+// consequence: `set --ticket MISSING --assignee bogus` fails on the bad
+// assignee (exit 2) before the missing ticket is ever checked, while
+// `set --id BDF-999 --assignee bogus` fails on the missing row (exit 3)
+// and the bad assignee is never evaluated. Reordering the write path to make
+// the two consistent was considered and rejected: restructuring code this
+// late in the branch is riskier than the inconsistency it would resolve.
 func (s *Service) SetByUniqueID(ctx context.Context, input string, f tracker.Fields, body *BodyRequest) (Result, error) {
 	page, err := s.findByUniqueID(ctx, input)
 	if err != nil {

@@ -66,9 +66,9 @@ func (wf *writeFlags) bindShared(cmd *cobra.Command) {
 // a body that legitimately contains {{...}} — a document about templating, a
 // snippet of Handlebars — must keep working exactly as it did.
 //
-// ticket is offered even when the row was addressed by --page-id, where it is
-// empty: a body written for either addressing form should not fail depending
-// on which one the caller used.
+// ticket is offered even when the row was addressed by --page-id or --id,
+// where it is empty: a body written for any addressing form should not fail
+// depending on which one the caller used.
 func (wf *writeFlags) bodyVars() map[string]string {
 	if !wf.expand {
 		return nil

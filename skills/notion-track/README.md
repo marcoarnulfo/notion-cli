@@ -15,8 +15,11 @@ status, branch on exit codes).
 This skill drives the CLI over the shell, which needs nothing beyond the binary.
 If your host speaks MCP instead, `notion-track mcp` serves the same operations
 as tools over stdio — same code underneath, same JSON shapes, so the safety
-rules in `SKILL.md` apply either way. See "Use it from an AI agent" in the
-[README](../../README.md).
+rules in `SKILL.md` apply either way, with one exception: addressing. A row is
+addressed **only** by ticket key over MCP — `--id` and `--page-id` are CLI-only,
+with no MCP equivalent, even though a tool's JSON result still carries the
+board id under `id` like the CLI does. See "How a task is identified" in
+`SKILL.md` and "Use it from an AI agent" in the [README](../../README.md).
 
 ## Install
 

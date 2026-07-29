@@ -267,7 +267,7 @@ Available on both `upsert` and `set`. `--body-file` takes a path to a Markdown f
 notion-track upsert --ticket BDF-231 --body-file release-notes.md --expand
 ```
 
-A placeholder nothing can fill in is a usage error naming the line, rather than a body reaching Notion with a literal `{{tikcet}}` in it that nobody notices until they read the page. Expansion is off by default and there is no escape syntax: a body that legitimately contains braces — a document about templating, a snippet of Handlebars — simply does not pass the flag. Addressing a row with `--page-id` leaves `{{ticket}}` empty, since no ticket key was given.
+A placeholder nothing can fill in is a usage error naming the line, rather than a body reaching Notion with a literal `{{tikcet}}` in it that nobody notices until they read the page. Expansion is off by default and there is no escape syntax: a body that legitimately contains braces — a document about templating, a snippet of Handlebars — simply does not pass the flag. Addressing a row with `--page-id` or `--id` leaves `{{ticket}}` empty, since no ticket key was given.
 
 **Concurrency.** Two `--body-file` runs against the same page racing each other can both append before either deletes, leaving the body duplicated — there's no lock to take on a Notion page. Don't run concurrent body writes against one page.
 
@@ -552,6 +552,8 @@ Because the tool is quiet on success, speaks `--json` with a stable schema, and 
 ```
 
 It exposes `upsert_task`, `set_task`, `get_task` and `list_tasks`, returning the same JSON shape documented above. `upsert_task` and `set_task` accept `assignee` and `unassign` exactly like the CLI's flags do — a partial name, or the reserved `me`; `list_tasks` accepts `assignee` and `unassigned`, mutually exclusive with each other. `upsert_task` and `set_task` also accept `priority`, resolved the same way `--priority` is — a partial value is enough when unambiguous; `list_tasks` accepts `priority` too, narrowing to rows carrying that value. There is no `unpriority` argument, the same way the CLI has no `--unpriority` flag. It is an adapter, not a second implementation: every tool reaches the same code the CLI commands do, so the duplicate check, the status validation and the property mapping behave identically for an agent. `stdout` carries the JSON-RPC protocol and nothing else.
+
+Addressing is the one place the two surfaces diverge: over MCP a row is found **only** by ticket key — `get_task` and `set_task` take a `ticket` argument and nothing else. The CLI's `--id` and `--page-id` have no MCP equivalent, even though the JSON a tool returns still carries the board id under `id`, same as `--json` does on the CLI.
 
 This does not contradict the reason this tool exists. Notion's *hosted* MCP endpoint is the one blocked by corporate firewalls; a *local* server, running on your machine with your own integration token, reaches agents exactly where the hosted one cannot.
 

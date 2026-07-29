@@ -176,9 +176,10 @@ func exitCodeFor(err error) int {
 	if strings.HasPrefix(err.Error(), `required flag(s) `) {
 		return ExitUsage
 	}
-	// MarkFlagsMutuallyExclusive/MarkFlagsOneRequired (--ticket vs --page-id)
-	// fail validation with a plain fmt.Errorf, no typed error either; every
-	// message cobra's flag_groups.go produces contains this exact phrase.
+	// MarkFlagsMutuallyExclusive/MarkFlagsOneRequired (--ticket vs --page-id vs
+	// --id) fail validation with a plain fmt.Errorf, no typed error either;
+	// every message cobra's flag_groups.go produces contains this exact
+	// phrase.
 	if strings.Contains(err.Error(), "the group [") {
 		return ExitUsage
 	}

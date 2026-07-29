@@ -648,15 +648,20 @@ costruire (§7.4).
 
 ## 11. Documentazione
 
-Quattro file, non due, e devono dire tutti la stessa cosa:
+Tre file, non due, e devono dire tutti la stessa cosa:
 
 - `README.md` e **`README.it.md`**, che sono traduzioni speculari sezione per sezione:
   aggiornarne uno solo produce esattamente la documentazione che si contraddice.
-- `skills/notion-track/SKILL.md` e `skills/notion-track/README.md` — la skill dell'agente
-  sta lì, alla radice del repo, **non** sotto `.claude/skills/`.
+- `skills/notion-track/SKILL.md` — la skill dell'agente sta lì, alla radice del repo,
+  **non** sotto `.claude/skills/`.
 
 In ciascuno: `--id` fra i modi di indirizzare una riga, `--id-prop` fra i ruoli opzionali di
 `init`, e la chiave `id` negli esempi di output `--json`.
+
+(`skills/notion-track/README.md` non entra in questo elenco: è una guida d'installazione
+— copiare `SKILL.md`, requisiti, dove personalizzarla — e non documenta né flag né output
+JSON per nessun ruolo, `id` incluso. Non c'è quindi contenuto suo da aggiornare per questa
+feature; un'earlier versione di questa sezione lo elencava per errore come quarto file.)
 
 Va corretta anche l'affermazione sbagliata di §1.1 ovunque compaia — l'API Notion filtra
 per `unique_id`, il limite era della CLI.

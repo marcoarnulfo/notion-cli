@@ -267,7 +267,7 @@ Disponibile sia su `upsert` sia su `set`. `--body-file` accetta il percorso di u
 notion-track upsert --ticket BDF-231 --body-file note-di-rilascio.md --expand
 ```
 
-Un segnaposto che nulla può riempire è un errore d'uso che indica la riga, invece di un corpo che arriva su Notion con un letterale `{{tikcet}}` dentro, che nessuno nota finché non legge la pagina. L'espansione è disattivata per default e non esiste una sintassi di escape: un corpo che contiene legittimamente delle graffe — un documento sul templating, uno snippet di Handlebars — semplicemente non passa il flag. Indirizzare una riga con `--page-id` lascia `{{ticket}}` vuoto, dato che nessuna chiave ticket è stata fornita.
+Un segnaposto che nulla può riempire è un errore d'uso che indica la riga, invece di un corpo che arriva su Notion con un letterale `{{tikcet}}` dentro, che nessuno nota finché non legge la pagina. L'espansione è disattivata per default e non esiste una sintassi di escape: un corpo che contiene legittimamente delle graffe — un documento sul templating, uno snippet di Handlebars — semplicemente non passa il flag. Indirizzare una riga con `--page-id` o `--id` lascia `{{ticket}}` vuoto, dato che nessuna chiave ticket è stata fornita.
 
 **Concorrenza.** Due esecuzioni di `--body-file` in corsa sulla stessa pagina possono entrambe aggiungere contenuto prima che una delle due cancelli il vecchio, duplicando il corpo — non c'è alcun lock da acquisire su una pagina Notion. Non eseguire scritture concorrenti del corpo sulla stessa pagina.
 
@@ -552,6 +552,8 @@ Poiché il tool è muto in caso di successo, parla `--json` con uno schema stabi
 ```
 
 Espone `upsert_task`, `set_task`, `get_task` e `list_tasks`, restituendo la stessa forma JSON documentata sopra. `upsert_task` e `set_task` accettano `assignee` e `unassign` esattamente come i flag della CLI — un nome parziale, o il valore riservato `me`; `list_tasks` accetta `assignee` e `unassigned`, mutuamente esclusivi tra loro. `upsert_task` e `set_task` accettano anche `priority`, risolta nello stesso modo di `--priority` — un valore parziale basta se non è ambiguo; anche `list_tasks` accetta `priority`, restringendo alle righe che portano quel valore. Non esiste un argomento `unpriority`, nello stesso modo in cui la CLI non ha un flag `--unpriority`. È un adapter, non una seconda implementazione: ogni tool passa dallo stesso codice dei comandi CLI, quindi il controllo dei duplicati, la validazione dello stato e il mapping delle proprietà si comportano in modo identico per un agente. `stdout` trasporta il protocollo JSON-RPC e nient'altro.
+
+L'indirizzamento è l'unico punto in cui le due superfici divergono: via MCP una riga si trova **solo** per chiave ticket — `get_task` e `set_task` accettano un argomento `ticket` e nient'altro. `--id` e `--page-id` della CLI non hanno un equivalente MCP, anche se il JSON restituito da un tool porta comunque l'id di board nella chiave `id`, come fa `--json` sulla CLI.
 
 Questo non contraddice la ragione per cui questo strumento esiste. È l'endpoint MCP *ospitato* di Notion a essere bloccato dai firewall aziendali; un server *locale*, che gira sulla tua macchina con il tuo token di integrazione, raggiunge gli agenti proprio dove quello ospitato non arriva.
 
