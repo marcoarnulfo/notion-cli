@@ -81,6 +81,17 @@ var ErrEmptyID = errors.New("id must not be empty")
 // ways.
 var ErrNoIDProperty = errors.New("no id property is mapped")
 
+// idNotFoundError reports that no row carries a board id.
+//
+// It exists so the message can say "id" where ErrNotFound's own text says
+// "ticket": wrapping with %w prepends "ticket not found" to a failure on a
+// command that never took --ticket. Unwrap keeps errors.Is(err, ErrNotFound)
+// true, so the exit code stays 3.
+type idNotFoundError struct{ input string }
+
+func (e *idNotFoundError) Error() string { return "no row has id " + e.input }
+func (e *idNotFoundError) Unwrap() error { return ErrNotFound }
+
 // Service performs notion-track's operations against one profile.
 //
 // One Service may be shared by concurrent callers — the TUI runs its commands
@@ -245,13 +256,15 @@ func (s *Service) findByTicket(ctx context.Context, key string) ([]notion.Page, 
 // findByUniqueID resolves a board id ("BDF-271", or a bare "271") to the single
 // row carrying it.
 //
-// Every failure it can produce is decided before the query goes out, except
-// the last two — no row matched, or more than one did, which only the query
-// itself can answer. Everything before that point (an empty input, no id
-// column mapped, a mapped column that is missing or wrongly typed, an id that
-// does not parse) is a mistake the user can fix by rewriting the command, and
-// saying so without a round trip is both faster and clearer than an empty
-// result set.
+// Most of the failures it can produce are decided before the query goes out:
+// an empty input, no id column mapped, a mapped column that is missing or
+// wrongly typed, an id that does not parse. Those are mistakes the user can
+// fix by rewriting the command, and saying so without a round trip is both
+// faster and clearer than an empty result set. Two more — no row matched, or
+// more than one did — only the query itself can answer. A third category sits
+// outside both: s.Schema and s.client.QueryPages can themselves fail on a
+// transport error (the network down, a 401, a 429), which this function
+// returns unchanged rather than folding into either list above.
 func (s *Service) findByUniqueID(ctx context.Context, input string) (notion.Page, error) {
 	if strings.TrimSpace(input) == "" {
 		return notion.Page{}, ErrEmptyID
@@ -288,10 +301,12 @@ func (s *Service) findByUniqueID(ctx context.Context, input string) (notion.Page
 	}
 	switch len(pages) {
 	case 0:
-		// Spelled out rather than wrapped the way Get does it: ErrNotFound
-		// reads "ticket not found", and "ticket not found: BDF-271" would name
-		// a flag this command never used.
-		return notion.Page{}, fmt.Errorf("%w: no row has id %s", ErrNotFound, input)
+		// idNotFoundError, not the %w: ErrNotFound wrapping Get uses: that
+		// text reads "ticket not found", and "ticket not found: BDF-271" would
+		// name a flag this command never used. idNotFoundError carries its own
+		// message but still unwraps to ErrNotFound, so errors.Is and the exit
+		// code are unaffected.
+		return notion.Page{}, &idNotFoundError{input: input}
 	case 1:
 		return pages[0], nil
 	default:

@@ -389,27 +389,40 @@ notion-track doctor          # token, database, property mapping, duplicates
 notion-track list --json     # real rows, real status values in use
 ```
 
-`doctor` reports the mapped columns and flags drift; the statuses actually
-present on the board are whatever `list` returns. Two things to establish up
-front, because they change how you address and create tasks:
+`doctor`'s `properties` check confirms each configured property still exists
+with the expected type, naming the property and what's wrong when one doesn't
+— it does not enumerate the mapped columns when everything checks out, only
+reports that they do; the statuses actually present on the board are whatever
+`list` returns. Two things to establish up front, because they change how you
+address and create tasks:
 
 - **Is the ticket key its own column, or the title?** If the key column *is* the
   title, then `--ticket "X"` means the task literally named X, and creating with
   `upsert --ticket "X"` sets its name to X — so a rename breaks lookup by name,
   and `--page-id` is the stable way to address such a task.
 - **What status values does the board accept?** `--status` only takes an
-  existing value; anything else is rejected with exit 2. Never invent one — read
-  the allowed set from `doctor`/`list` first.
+  existing value; anything else is rejected with exit 2. Never invent one. No
+  command prints the allowed set — `doctor` checks the column's type but never
+  reads its options, and `list` shows only the values rows happen to carry. The
+  rejection itself is the cheapest way to learn them: it names every accepted
+  value ("unknown status "Done"; allowed values are: …"), so a wrong guess costs
+  one failed call rather than a wrong write.
 - **Is there an assignee column, and is `me` configured?** Not every board maps
-  one — `doctor` says so, and `--assignee`/`--unassign` fail with exit 1 if it
-  isn't. When it is mapped, `doctor`'s `assignee` check also says whether `me`
-  resolves to a real identity; if it doesn't, "prendi in carico"/"assign it to
-  me" needs the user to set `NOTION_TRACK_ME` first, not a guessed name.
-- **Is there a priority column?** Not every board ranks urgency — `doctor` says
-  so, and `--priority` fails with exit 1 if it isn't mapped. When it is, the
-  accepted values are whatever the column's options actually are; read them
-  with `doctor` or `list` rather than assuming a fixed set like
-  ALTA/MEDIA/NORMALE applies here.
+  one, and `doctor` does not call that out when it's missing — an unmapped
+  assignee role is skipped silently by the `properties` check, the same way an
+  unmapped `id` role is; the only signal is `--assignee`/`--unassign` failing
+  with exit 1. When it *is* mapped, `doctor` runs a dedicated `assignee` check
+  (absent from the output otherwise) that says whether `me` resolves to a real
+  identity, and whether that identity comes from `NOTION_TRACK_ME` or only
+  from the committed config; if it doesn't resolve, "prendi in carico"/"assign
+  it to me" needs the user to set `NOTION_TRACK_ME` first, not a guessed name.
+- **Is there a priority column?** Not every board ranks urgency, and here too
+  `doctor` stays silent when it's unmapped — `--priority` failing with exit 1
+  is the only signal. Unlike assignee, priority never gets a dedicated check
+  even when it *is* mapped: the `properties` check only confirms the column
+  exists with the expected type, it does not list the accepted values. Read
+  those from `list` — the values actually in use on real rows — rather than
+  assuming a fixed set like ALTA/MEDIA/NORMALE applies here.
 - **Is there a board id column?** Not every board maps one — `list --json` or
   `get --json` show a non-empty `id` key only when the role is mapped, and
   `--id` fails if it isn't mapped, but with **exit 2, not 1** (unlike
