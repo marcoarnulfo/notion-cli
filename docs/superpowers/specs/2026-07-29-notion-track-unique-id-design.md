@@ -1,6 +1,6 @@
 # notion-track — Indirizzamento per `unique_id` (BDF-NN) — Design doc
 
-> Data: 2026-07-29 · Stato: approvato in brainstorming, da implementare
+> Data: 2026-07-29 · Stato: approvato in brainstorming, rivisto dopo review, da implementare
 > Repo: `notion-cli` · Modulo: `github.com/marcoarnulfo/notion-cli` · Binario: `notion-track`
 > Parente stretto di `2026-07-27-notion-track-assignee-design.md`, che resta il documento
 > di riferimento per come un ruolo opzionale entra nel sistema.
@@ -40,7 +40,7 @@ l'API non consente di filtrare"*. È falso. L'API filtra benissimo:
 ```
 
 Il muro è interamente nella CLI: `grep -rn "unique_id" --include="*.go" .` non restituisce
-nulla. Il tipo non è contemplato in nessuno dei sette punti che lo toccherebbero (§9).
+nulla. Il tipo non è contemplato in nessuno dei punti che lo toccherebbero (§9).
 
 ### 1.2 Non-goal dichiarati
 
@@ -48,24 +48,36 @@ nulla. Il tipo non è contemplato in nessuno dei sette punti che lo toccherebber
   Notion alla creazione della riga. Nessun percorso di questo design mette mai una colonna
   `unique_id` in un payload di scrittura, e §3 spiega perché ciò non richiede nemmeno
   un'esclusione esplicita.
-- **Niente manifest.** `apply` non guadagna una colonna `id`. Richiederebbe di allentare la
-  regola *"ticket obbligatorio"* in *"ticket-o-id"*, che è la validazione più delicata del
-  manifest, per un caso d'uso che nessuno ha chiesto. Il campo `id` compare comunque nelle
-  righe che `apply` stampa, perché passano da `toPageJSON` (§6).
+- **Niente manifest, e l'id non compare nell'output di `apply`.** `apply` costruisce il suo
+  output da `applyOutcome` (indice, op, ticket, azione, piano, errore): una struct che non
+  contiene la pagina e non passa da `toPageJSON`. Dargli il campo `id` significherebbe
+  cambiare quella struct, non ereditare qualcosa. Fuori scope in entrambi i sensi: niente
+  colonna `id` nei manifest, e niente `id` in ciò che `apply` stampa.
 - **Niente argomenti MCP.** I tool `get` e `set` non guadagnano un argomento `id`. Le righe
   che restituiscono lo portano (§6.2), perché quello è un cambio di `mcp.Row`, non della
   superficie dei tool.
 - **Niente filtro su `list`.** Filtrare una lista per un identificatore unico restituisce
   al massimo una riga: è `get`, scritto peggio.
+- **Niente id nella TUI di browse.** `internal/cli/browse.go` popola una `tui.Row` propria,
+  che non passa da `toPageJSON`: mostrare l'id lì è un cambio separato, in un file che
+  questo lavoro non tocca.
+- **Niente id nel piano di `--dry-run`.** `set --id … --dry-run` continua a stampare il
+  `page_id` che il piano già porta. Il piano descrive la scrittura, e la scrittura avviene
+  per page-id qualunque sia il modo in cui la riga è stata trovata.
 - **Nessun cambio a `--ticket`, `upsert`, o alla semantica di creazione.** Vedi §2.
 
 ---
 
 ## 2. La decisione centrale: ruolo separato, non estensione del ticket
 
-La proposta di partenza era estendere la ticket-prop ad accettare anche `unique_id`
-(`internal/tracker/mapping.go:69-70` oggi ammette solo `rich_text` e `title`). Suona
-additivo. Non lo è, per due ragioni.
+La proposta di partenza era estendere la ticket-prop ad accettare anche `unique_id`. Oggi
+il contratto "solo `rich_text` e `title`" è scritto in tre posti — `internal/cli/init.go:411`
+(`check("ticket", …, "rich_text", "title")`), `internal/tui/wizard.go:57` e
+`internal/service/doctor.go:70` — mentre `internal/tracker/mapping.go:69-70` è un quarto
+posto diverso: lì si scelgono i *candidati* che `GuessMapping` propone, non ciò che la
+configurazione accetta.
+
+Estendere quel contratto suona additivo. Non lo è, per due ragioni.
 
 **La ticket-prop è una sola.** Sulla board reale punta alla colonna titolo — è per questo
 che oggi si indirizza per titolo esatto. Rimapparla su `ID` non aggiunge `BDF-271`: toglie
@@ -116,8 +128,8 @@ richiesto un'esclusione esplicita dentro `BuildProperties` — oggi un ticket di
 type"* — cioè un ramo condizionale che qualcuno, un giorno, avrebbe potuto rimuovere
 "semplificando". Un ruolo che il codice di scrittura non conosce non ha questo problema.
 
-**Requisito verificabile:** nessun file sotto `internal/tracker/payload.go` menziona
-`unique_id` o `Properties.ID`.
+**Requisito verificabile:** `internal/tracker/payload.go` non menziona `unique_id` né
+`Properties.ID`.
 
 ---
 
@@ -165,10 +177,10 @@ e il decoder scrive in `PropertyValue.Text` la **forma leggibile**:
 | `null` | `271` | `"271"` |
 
 Scrivere in `Text` — lo stesso campo che già porta title, rich_text, select e status — è
-ciò che fa comparire l'id nel JSON senza toccare `toPageJSON`, che legge già
-`Properties[nome].Text`. È anche la forma che l'utente vede sulla board, quindi non c'è
-nessuna traduzione mentale fra quello che legge nella UI e quello che gli restituisce la
-CLI.
+ciò che evita **logica nuova** più a valle: `toPageJSON` guadagna un campo (§6.2), ma lo
+riempie con la stessa riga con cui riempie tutti gli altri, e non ha bisogno di sapere che
+`unique_id` esiste. È anche la forma che l'utente vede sulla board, quindi non c'è nessuna
+traduzione mentale fra quello che legge nella UI e quello che gli restituisce la CLI.
 
 ### 4.3 Il filtro
 
@@ -190,11 +202,15 @@ func UniqueIDEqualsFilter(property string, number int64) Filter {
 }
 ```
 
-Forma prodotta, verificata contro l'API:
+Forma prodotta, verificata contro la reference dell'API per `Notion-Version: 2026-03-11`:
 
 ```json
 {"property": "ID", "unique_id": {"equals": 271}}
 ```
+
+L'API offre anche `does_not_equal`, `greater_than`, `greater_than_or_equal_to`,
+`less_than`, `less_than_or_equal_to`. Non c'è `is_empty`, e non serve: un `unique_id` è
+sempre valorizzato.
 
 ---
 
@@ -258,9 +274,7 @@ implementazioni.
 
 ```go
 // InvalidIDError marks an --id value that cannot be turned into the number
-// Notion filters on. Callers map it onto the "invalid usage" exit code, which is
-// how apply and the MCP server — neither of which ever touches cobra — get the
-// same exit 2 the CLI gives.
+// Notion filters on. Callers map it onto the "invalid usage" exit code.
 type InvalidIDError struct {
 	Value  string // what the user typed, verbatim
 	Reason string // the clause after the colon in Error()
@@ -271,7 +285,14 @@ func (e *InvalidIDError) Error() string {
 }
 ```
 
-Nessun campo `Prefix`: il prefisso della board è già dentro `Reason` in tutti i casi in cui è lui il problema, e un campo che nessun chiamante legge è solo una cosa in più da tenere allineata.
+Nessun campo `Prefix`: il prefisso della board è già dentro `Reason` in tutti i casi in cui
+è lui il problema, e un campo che nessun chiamante legge è solo una cosa in più da tenere
+allineata.
+
+Il tipo vive in `internal/tracker` perché lì vive il parsing, non perché un chiamante
+non-cobra debba produrlo: con manifest e tool MCP fuori scope (§1.2), oggi l'unico percorso
+che lo genera è la CLI. La collocazione resta quella giusta il giorno in cui uno degli altri
+due entrerà, ma non va motivata con un chiamante che non esiste.
 
 Messaggi prodotti:
 
@@ -298,23 +319,18 @@ cmd.MarkFlagsOneRequired("ticket", "page-id", "id")
 
 `get` e `set` già dichiarano la coppia `ticket`/`page-id` in entrambi i modi: si aggiunge
 il terzo nome a chiamate esistenti. Attenzione a dove sono: quelle di `set` **non** stanno
-in `set.go`, ma in `bindWithPageID`, dentro `internal/cli/upsert.go` — è il binder condiviso
-dei flag di scrittura, e `set.go` lo invoca in una riga sola.
+in `set.go`, ma in `bindWithPageID`, dentro `internal/cli/upsert.go`. Quel binder è di
+`set` soltanto — `upsert` usa `bind`, che richiede `--ticket` — e i due condividono
+`bindShared`, che invece porta i flag senza semantica di indirizzamento e **non** va
+toccato.
 
-`writeFlags` guadagna quindi un campo `id string`. Ciò che **non** deve guadagnare è
+`writeFlags` guadagna quindi un campo `boardID string`. Ciò che **non** deve guadagnare è
 `writeFlags.fields()`: quel metodo costruisce `tracker.Fields`, cioè i valori da scrivere,
 e l'id non è un valore da scrivere. È la stessa separazione che `pageID` già rispetta.
 
 Come per `--page-id`, il ramo si sceglie su `cmd.Flags().Changed("id")` e non sul valore:
 `--id ""` deve fallire come flag vuoto, non ricadere silenziosamente sul percorso del
 ticket.
-
-Testo dell'help:
-
-```
---id string   board id of the row (e.g. "BDF-271", or just "271"); requires an
-              id property mapped in the profile
-```
 
 `upsert` **non** guadagna `--id`: la sua chiave è il ticket, e la creazione di una riga non
 può indirizzare un id che ancora non esiste.
@@ -339,7 +355,8 @@ type pageJSON struct {
 
 Prima posizione perché è l'identità della riga così come la vede un umano, e mettendola in
 testa l'ordine di lettura del JSON (`id, ticket, title, status`) è lo stesso in cui la
-board mostra una riga.
+board mostra una riga. L'ordine delle chiavi JSON non è osservabile da nessun parser
+corretto; a doversi aggiornare sono solo gli esempi nella documentazione, che §11 copre.
 
 `toPageJSON` la riempie come tutte le altre: `p.Properties[props.ID].Text`. Come per
 assignee e priority, il campo è vuoto sia quando il ruolo non è mappato sia quando la riga
@@ -356,12 +373,41 @@ intercettato come BLOCKER, dove estendere una struct senza la gemella avrebbe la
 Lo stesso vale per il campo che il ruolo aggiunge a `config.Properties`, ma lì non c'è
 conversione diretta e quindi nessun vincolo di ordine.
 
-### 6.3 Cosa lo eredita gratis
+### 6.3 L'output umano
 
-`list --json`, l'output JSON di `upsert`/`set`/`apply` e le righe restituite dai tool MCP
-passano tutti da `toPageJSON`: guadagnano il campo `id` senza una riga di codice
-dedicata. È il motivo per cui §1.2 può escludere manifest e argomenti MCP senza che
-l'informazione resti irraggiungibile da quei percorsi.
+Un id che esiste solo dentro `--json` sarebbe incoerente con §1: se `BDF-271` è il nome con
+cui le persone chiamano i task, deve comparire dove le persone guardano. Oggi
+`notion-track get --id BDF-271` risponderebbe senza mai mostrare `BDF-271`.
+
+`get` e `list` guadagnano quindi un prefisso, sul modello dei due suffissi che già esistono
+in `internal/cli/output.go`:
+
+```go
+// idPrefix formats a row's board id for human-readable output.
+//
+// A prefix and not a suffix, unlike assigneeSuffix and prioritySuffix: it is
+// the row's name, and names read down the left edge of a list. Padded to a
+// fixed width so list's columns stay aligned across rows whose ids differ in
+// length; get prints one row, where the padding costs nothing.
+//
+// Empty when the role is unmapped, which is what keeps every existing
+// profile's output byte-identical — the same rule the two suffixes follow.
+func idPrefix(p notion.Page, props config.Properties) string {
+	if id := p.Properties[props.ID].Text; id != "" {
+		return fmt.Sprintf("%-10s ", id)
+	}
+	return ""
+}
+```
+
+`listRowFormat` e `listMergedRowFormat` guadagnano un `%s` iniziale, e le due `Printf` di
+`get` altrettanto. Per un profilo che non mappa il ruolo il prefisso è `""` e l'output
+resta identico byte per byte, che è la regola già scritta nel commento sopra quei formati.
+
+### 6.4 Cosa lo eredita gratis
+
+`list --json` e l'output JSON di `upsert` e `set` passano da `toPageJSON`, e i tool MCP da
+`mcp.Row`: guadagnano il campo `id` senza una riga di codice dedicata. `apply` **no** (§1.2).
 
 ---
 
@@ -383,27 +429,38 @@ altri ruoli opzionali convivono.
 
 ### 7.2 `init`
 
-Flag `--id-prop`, e una riga nella validazione dei tipi di `internal/cli/init.go`:
+Quattro punti, non uno. Ometterne uno produce un bug reale, non un'omissione cosmetica:
 
-```go
-if _, err := check("id", "id-prop", id, false, "unique_id"); err != nil {
-	return "", err
-}
-```
-
-`false` = opzionale, come `due`/`assignee`/`priority`.
+1. **Il flag**: `--id-prop`, opzionale.
+2. **`configFlags`** (`internal/cli/init.go:139-142`): è l'elenco che decide se
+   un'invocazione "sa già le risposte" o apre il wizard. Senza `"id-prop"` lì dentro,
+   `notion-track init --id-prop ID` da terminale **ignorerebbe il flag e aprirebbe il
+   wizard**.
+3. **`validateMapping`**: una riga di validazione del tipo,
+   `check("id", "id-prop", …, false, "unique_id")`. La funzione ha già sei parametri
+   stringa posizionali e il settimo sarebbe la settima occasione di invertirne due senza
+   che il compilatore dica niente: passa a prendere `config.Properties`. Entrambi i
+   chiamanti — `init.go:215` (ramo wizard) e `init.go:327` (ramo flag) — vanno aggiornati,
+   e il primo ha già la struct in mano.
+4. **Il literal del profilo** (`init.go:356-359`): senza `ID: idProp` lì, la validazione
+   passa e il profilo salvato non porta l'id.
 
 ### 7.3 Il wizard TUI
 
-Voce nuova in fondo a `roles`, dove stanno gli opzionali:
+Anche qui più di un punto. La voce nuova in fondo a `roles`:
 
 ```go
 {name: "id", key: "u", types: []string{"unique_id"}, optional: true},
 ```
 
-Il tasto è `u`, di `unique_id`: `i` è del titolo, `d` della scadenza. È la stessa collisione
-che il codice già commenta per `title` (*"title's key is 'i', not 't': ticket claimed 't'"*),
-e va commentata allo stesso modo.
+Il tasto è `u`, di `unique_id`: `i` è del titolo, `d` della scadenza, e `u` è libero. È la
+stessa collisione che il codice già commenta per `title` (*"title's key is 'i', not 't':
+ticket claimed 't'"*), e va commentata allo stesso modo.
+
+E i due accessori `roleValue` e `setRole` (`wizard.go:433-467`), che indirizzano i ruoli per
+nome perché è così che l'utente li sceglie dallo schermo. **Senza il caso `"id"` in
+entrambi, il tasto `u` è un no-op silenzioso**: il picker si apre, `enter` non scrive
+niente, e la riga resta "not set" per sempre — anche quando `GuessMapping` aveva indovinato.
 
 ### 7.4 `GuessMapping`
 
@@ -420,17 +477,29 @@ nessun altro ruolo accetta `unique_id`, quindi non c'è nessun ruolo a cui rubar
 colonna. E il fatto che `"id"` sia già in `ticketNames` non crea conflitto, perché i
 candidati del ticket si pescano solo fra `rich_text` e `title`.
 
-Con due o più colonne `unique_id` la guess resta vuota, come per ogni altro ruolo: una
-guess sbagliata che l'utente conferma distrattamente è peggio di una domanda.
+La guardia `len(ids) == 1` è **difensiva**, non un comportamento osservabile: Notion permette
+una sola proprietà ID per database, quindi il caso "due o più" non è producibile dalla UI.
+Sta lì per la stessa ragione del caso "due righe" di §8.1 — impossibile non è la stessa cosa
+di silenziosamente sbagliato — ma non merita un mutation test, perché l'input che lo
+eserciterebbe non esiste nel mondo reale.
 
 ### 7.5 `doctor`
 
-`"id"` entra in tre punti di `internal/service/doctor.go`:
+`"id"` entra in **quattro** punti di `internal/service/doctor.go`:
 
+- la mappa `mapped` (`doctor.go:61-68`): `"id": s.profile.Properties.ID`
 - `wantType["id"] = []string{"unique_id"}`
 - l'elenco `roles`
-- `optionalRoles`, con la stessa motivazione degli altri tre: una board può legittimamente
-  non avere una colonna id, e non averla non è un guasto.
+- `optionalRoles`
+
+Il primo è quello che si dimentica, ed è quello che rompe tutto in silenzio: il loop legge
+il nome configurato da `mapped[role]` (`doctor.go:94-95`). Con `"id"` nei `roles` ma non in
+`mapped`, il nome è sempre `""`, il ruolo è opzionale, e `doctor` fa `continue` — non
+verificherebbe **mai** né l'esistenza né il tipo della colonna, senza dire niente a nessuno.
+
+`optionalRoles` per la stessa ragione degli altri tre: una board può legittimamente non
+avere una colonna id, e non averla non è un guasto — è semplicemente una board che si
+indirizza negli altri due modi.
 
 ---
 
@@ -445,14 +514,18 @@ func (s *Service) findByUniqueID(ctx context.Context, input string) (notion.Page
 
 Sequenza, con l'errore di ciascun passo:
 
-1. `s.profile.Properties.ID == ""` → `ErrNoIDProperty`, wrappato con il suggerimento:
+1. Input vuoto o soli spazi → `ErrEmptyID`
+2. `s.profile.Properties.ID == ""` → `ErrNoIDProperty`, wrappato con il suggerimento:
    `id addressing was requested but no id property is mapped; run 'notion-track init --id-prop <name>' to map it`
-2. La colonna non esiste nello schema → `property %q is configured but does not exist in the data source; run 'notion-track doctor' to see the current schema` (la stessa frase che `BuildProperties` già usa per lo stesso guasto).
-3. Il tipo non è `unique_id` → `id property %q has type %q, not unique_id; run 'notion-track doctor'`
-4. `ParseUniqueID(input, prop.Prefix)` → `*InvalidIDError`
-5. `UniqueIDEqualsFilter` → `QueryPages`
-6. Zero righe → `fmt.Errorf("%w: %s", ErrNotFound, input)`, come fa già `Get`
-7. Più di una riga → errore esplicito. È impossibile per costruzione (un `unique_id` è
+3. La colonna non esiste nello schema → `property %q is configured but does not exist in the data source; run 'notion-track doctor' to see the current schema` (la stessa frase che `BuildProperties` già usa per lo stesso guasto).
+4. Il tipo non è `unique_id` → `id property %q has type %q, not unique_id; run 'notion-track doctor'`
+5. `ParseUniqueID(input, prop.Prefix)` → `*InvalidIDError`
+6. `UniqueIDEqualsFilter` → `QueryPages`
+7. Zero righe → `fmt.Errorf("%w: no row has id %s", ErrNotFound, input)`. Il testo esplicito
+   serve: `ErrNotFound` è `errors.New("ticket not found")`, e wrapparlo come fa `Get`
+   produrrebbe *"ticket not found: BDF-271"* per un comando che `--ticket` non l'ha mai
+   usato. `errors.Is` e l'exit 3 restano intatti.
+8. Più di una riga → errore esplicito. È impossibile per costruzione (un `unique_id` è
    unico), ma "impossibile" e "silenziosamente sbagliato" non sono la stessa cosa:
    prendere la prima nasconderebbe un guasto che nessun altro noterebbe. Testabile con un
    server finto che ne restituisce due.
@@ -468,6 +541,13 @@ func (s *Service) SetByUniqueID(ctx context.Context, input string, f tracker.Fie
 scrittura continua ad avere un percorso solo: il nuovo modo di indirizzare finisce nel
 vecchio prima che qualcosa venga scritto.
 
+Il costo, dichiarato: `SetByID` richiama `resolvePage`, cioè un `GET /v1/pages/{id}` più il
+controllo di appartenenza al data source — su una riga che `findByUniqueID` ha appena
+ottenuto dalla query del profilo, e che quindi appartiene già a quel data source per
+costruzione. È un round-trip in più per ogni `set --id`. Si accetta: un secondo percorso di
+scrittura che salta `resolvePage` è esattamente il tipo di scorciatoia che poi diverge dal
+primo, e il guadagno è una richiesta su un comando interattivo.
+
 ### 8.3 `ErrEmptyID`
 
 ```go
@@ -476,8 +556,9 @@ vecchio prima che qualcosa venga scritto.
 var ErrEmptyID = errors.New("id must not be empty")
 ```
 
-Controllato nel service e non nella CLI, per la ragione già scritta su `ErrEmptyTicket`: i
-percorsi che non toccano cobra devono ereditare la guardia.
+Controllato nel service e non nella CLI per la stessa ragione già scritta su
+`ErrEmptyTicket`: la guardia sta dove sta la logica, così un secondo chiamante non deve
+ricordarsi di riscriverla. Oggi il chiamante è uno solo.
 
 ### 8.4 Exit code
 
@@ -490,13 +571,19 @@ Tre casi nuovi in `exitCodeFor` (`internal/cli/output.go`); il quarto è già co
 | `service.ErrNoIDProperty` | 2 (`ExitUsage`) | "non ancora configurato", stessa classe di `config.ErrNotConfigured` |
 | id inesistente sulla board | 3 (`ExitNotFound`) | già coperto: wrappa `service.ErrNotFound` |
 
+**Una divergenza dichiarata.** Gli altri errori "ruolo non mappato" — quelli di
+`payload.go:59-62`, `service.go:242-244` e `service.go:586-588` per assignee e priority —
+sono `fmt.Errorf` semplici che cadono nel default di `exitCodeFor` e **escono 1**. Il ruolo
+`id` esce 2 perché è la risposta giusta secondo il significato documentato del codice: il
+comando non può funzionare come scritto, e la correzione è dell'utente. Che gli altri tre
+escano 1 è, con ogni probabilità, un difetto latente di quel codice; allinearli è un cambio
+a sé, fuori dallo scope di questo lavoro. Va sistemato, non copiato.
+
 ---
 
 ## 9. Inventario dei file
 
-L'analisi iniziale del problema aveva individuato quattro punti da toccare. Sono
-quattordici più la documentazione — e uno dei quattro originali (`get`/`list --json`) si è
-rivelato gratuito, perché §4.2 lo copre già.
+L'analisi iniziale del problema aveva individuato quattro punti da toccare.
 
 | # | File | Cosa cambia |
 |---|---|---|
@@ -507,17 +594,19 @@ rivelato gratuito, perché §4.2 lo copre già.
 | 5 | `internal/tracker/mapping.go` | `GuessMapping` per il ruolo `id` |
 | 6 | `internal/config/config.go` | `Properties.ID` |
 | 7 | `internal/service/service.go` | `findByUniqueID`, `GetByUniqueID`, `SetByUniqueID`, `ErrEmptyID`, `ErrNoIDProperty` |
-| 8 | `internal/service/doctor.go` | `wantType`, `roles`, `optionalRoles` |
-| 9 | `internal/cli/init.go` | `--id-prop` + `check(...)` |
-| 10 | `internal/tui/wizard.go` | voce `roles` |
-| 11 | `internal/cli/get.go` | `--id`, `pageJSON.ID`, `toPageJSON` |
-| 12 | `internal/cli/set.go` | `--id` |
-| 13 | `internal/cli/output.go` | `exitCodeFor` |
-| 14 | `internal/mcp/server.go` | `Row.ID`, stessa posizione di `pageJSON.ID` |
-| 15 | `README.md`, skill dell'agente | documentazione |
+| 8 | `internal/service/doctor.go` | `mapped`, `wantType`, `roles`, `optionalRoles` (§7.5) |
+| 9 | `internal/cli/init.go` | flag, `configFlags`, `validateMapping` + 2 chiamanti, literal del profilo (§7.2) |
+| 10 | `internal/tui/wizard.go` | voce in `roles`, casi in `roleValue` e `setRole` (§7.3) |
+| 11 | `internal/cli/get.go` | `pageJSON.ID`, `toPageJSON`, flag `--id`, riga umana |
+| 12 | `internal/cli/list.go` | i due formati di riga guadagnano il prefisso |
+| 13 | `internal/cli/output.go` | `idPrefix`, `exitCodeFor` |
+| 14 | `internal/cli/upsert.go` | `writeFlags.boardID`, `bindWithPageID` a tre vie |
+| 15 | `internal/cli/set.go` | il ramo `--id` |
+| 16 | `internal/mcp/server.go` | `Row.ID`, stessa posizione di `pageJSON.ID` |
+| 17 | `README.md`, `README.it.md`, `skills/notion-track/` | documentazione (§11) |
 
 Non toccati, e la loro assenza da questo elenco è una verifica: `internal/tracker/payload.go`
-(§3), `internal/manifest/`, `internal/cli/upsert.go`, `internal/cli/apply.go`.
+(§3), `internal/manifest/`, `internal/cli/apply.go`, `internal/cli/browse.go` (§1.2).
 
 ---
 
@@ -539,24 +628,35 @@ l'overflow.
 **Superficie:**
 - `get --id BDF-271` e `set --id BDF-271 --status X` percorrono la strada nuova
 - i tre flag di indirizzamento sono mutuamente esclusivi, e almeno uno è richiesto
-- `--id ""` esce 2, non ricade sul ticket
+- `--id ""` esce 2 **e dice "id must not be empty"** — il solo exit code non basta, perché
+  la regressione temuta (ramo scelto sul valore invece che su `Changed`) porterebbe a
+  `ErrEmptyTicket`, che esce 2 anche lui
 - `get --json` porta la chiave `id`, e `mcp.Row` la stessa
+- l'output umano di `get` e `list` mostra l'id quando il ruolo è mappato, e resta identico
+  byte per byte quando non lo è
 
 **Mutation testing obbligatorio** su:
 - il `case "unique_id"` di `decodePage` — un test che verifica solo "non va in panic"
   passerebbe anche con `Text` vuoto: deve asserire la stringa esatta
 - il confronto del prefisso in `ParseUniqueID` — un test che passa solo il caso canonico
   passerebbe anche senza il confronto
-- la guardia `len(ids) == 1` in `GuessMapping`
+
+Non su `GuessMapping`: la guardia `len(ids) == 1` copre un input che Notion non permette di
+costruire (§7.4).
 
 ---
 
 ## 11. Documentazione
 
-`README.md` guadagna `--id` fra i modi di indirizzare, e la skill dell'agente la riga
-corrispondente. Entrambe devono dire la stessa cosa: la review della action di release ha
-già prodotto, in questo repo, una documentazione che contraddiceva il codice due righe più
-sotto.
+Quattro file, non due, e devono dire tutti la stessa cosa:
+
+- `README.md` e **`README.it.md`**, che sono traduzioni speculari sezione per sezione:
+  aggiornarne uno solo produce esattamente la documentazione che si contraddice.
+- `skills/notion-track/SKILL.md` e `skills/notion-track/README.md` — la skill dell'agente
+  sta lì, alla radice del repo, **non** sotto `.claude/skills/`.
+
+In ciascuno: `--id` fra i modi di indirizzare una riga, `--id-prop` fra i ruoli opzionali di
+`init`, e la chiave `id` negli esempi di output `--json`.
 
 Va corretta anche l'affermazione sbagliata di §1.1 ovunque compaia — l'API Notion filtra
 per `unique_id`, il limite era della CLI.

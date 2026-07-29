@@ -37,12 +37,13 @@
 | `internal/tui/wizard.go` | il ruolo `id` nel wizard |
 | `internal/service/doctor.go` | `doctor` valida il ruolo `id` |
 | `internal/service/service.go` | `findByUniqueID`, `GetByUniqueID`, `SetByUniqueID`, gli errori |
-| `internal/cli/output.go` | `exitCodeFor` per i nuovi errori |
+| `internal/cli/output.go` | `exitCodeFor` per i nuovi errori; `idPrefix` |
+| `internal/cli/list.go` | i due formati di riga guadagnano il prefisso |
 | `internal/cli/get.go` | `pageJSON.ID`, `toPageJSON`, flag `--id` |
 | `internal/cli/upsert.go` | `writeFlags.id`, `bindWithPageID` a tre vie |
 | `internal/cli/set.go` | il ramo `--id` |
 | `internal/mcp/server.go` | `Row.ID` |
-| `README.md`, `.claude/skills/` | documentazione |
+| `README.md`, `README.it.md`, `skills/notion-track/` | documentazione — **non** `.claude/skills/`, che contiene solo `settings.local.json` |
 
 Ordine dei task: prima i tre strati che non dipendono da nulla (`internal/notion`, `internal/tracker`), poi la configurazione del ruolo, poi il service, infine la superficie. Ogni task compila e passa i test da solo.
 
@@ -246,8 +247,19 @@ Expected: PASS.
 
 - [ ] **Step 5: Mutation test — verifica che il test morda**
 
-Commenta temporaneamente il corpo del `case "unique_id"` (lasciando il `case` vuoto) ed esegui `go test ./internal/notion/ -run TestQueryPagesReadsUniqueID`.
-Expected: FAIL. Se passa, il test non sta asserendo la stringa esatta ed è da riscrivere. Ripristina il corpo.
+Sostituisci temporaneamente il corpo del `case "unique_id"` con la sola riga del numero, senza il ramo del prefisso:
+
+```go
+		case "unique_id":
+			if v.UniqueID != nil {
+				pv.Text = strconv.FormatInt(v.UniqueID.Number, 10)
+			}
+```
+
+Run: `go test ./internal/notion/ -run TestQueryPagesReadsUniqueID`
+Expected: FAIL con `ID = "271", want "BDF-271"`. Se passa, il test non sta asserendo la stringa esatta ed è da riscrivere. Ripristina il corpo completo.
+
+Non svuotare il `case`: `strconv` resterebbe importato e inutilizzato, il package non compilerebbe, e il FAIL osservato sarebbe un errore di build invece dell'assert che morde — cioè una conferma illusoria.
 
 - [ ] **Step 6: Commit**
 
@@ -454,9 +466,10 @@ import (
 // InvalidIDError marks an --id value that cannot be turned into the number
 // Notion filters on.
 //
-// Callers map it onto the "invalid usage" exit code, which is how apply and the
-// MCP server — neither of which ever touches cobra — give the same exit 2 the
-// CLI does.
+// Callers map it onto the "invalid usage" exit code. It lives here because the
+// parsing does, not because a caller outside the CLI produces it today: with
+// manifests and MCP tool arguments out of scope, the CLI is the only path that
+// can.
 type InvalidIDError struct {
 	// Value is what the user typed, verbatim: the message quotes it so they can
 	// compare it against what they meant to type.
@@ -619,6 +632,8 @@ func TestGuessMappingDoesNotOfferAUniqueIDColumnAsTheTicket(t *testing.T) {
 }
 ```
 
+Il terzo test è **documentale, non guida codice**: i candidati del ticket si pescano già solo da `rich_text` e `title` (`mapping.go:69-72`), quindi passerebbe anche senza questo task. Vale la pena scriverlo — è il guard-rail che si romperà il giorno in cui qualcuno allarga quei candidati — ma non aspettarti che sia lui a fallire allo Step 2.
+
 - [ ] **Step 2: Esegui i test e verifica che falliscano**
 
 Run: `go test ./internal/tracker/ -run TestGuessMapping -v`
@@ -705,14 +720,10 @@ func TestInitMapsTheIDColumn(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaWithIDJSON))
 	})
+	withIsolatedUserConfigDir(t)
+	withInteractivePrompt(t, false, nil, nil)
 
-	code := executeArgs([]string{
-		"init", "--data-source-id", "ds1",
-		"--ticket-prop", "Ticket", "--status-prop", "Stato", "--title-prop", "Name",
-		"--id-prop", "ID",
-		"--config", cfg,
-	})
-	if code != ExitOK {
+	if code := executeArgs(initArgs(cfg, "--id-prop", "ID")); code != ExitOK {
 		t.Fatalf("exit code = %d, want %d (ExitOK)", code, ExitOK)
 	}
 	if got := writtenProfile(t, cfg).Properties.ID; got != "ID" {
@@ -724,26 +735,26 @@ func TestInitRejectsAnIDColumnOfTheWrongType(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaWithIDJSON))
 	})
+	withIsolatedUserConfigDir(t)
+	withInteractivePrompt(t, false, nil, nil)
 
-	code := executeArgs([]string{
-		"init", "--data-source-id", "ds1",
-		"--ticket-prop", "Ticket", "--status-prop", "Stato", "--title-prop", "Name",
-		// A rich_text column cannot carry Notion's own row id.
-		"--id-prop", "Ticket",
-		"--config", cfg,
-	})
-	if code != ExitUsage {
+	// A rich_text column cannot carry Notion's own row id.
+	if code := executeArgs(initArgs(cfg, "--id-prop", "Ticket")); code != ExitUsage {
 		t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
 	}
 }
 ```
 
+**`initArgs` non è una comodità, è obbligatorio.** Costruisce l'invocazione con `--profile work`, e il commento sopra di esso (`init_test.go:458-462`) spiega perché: `withStubbedAPI` scrive una config il cui `default_profile` è già `work`, mentre `saveInitProfile` senza `--profile` scrive sul profilo `default` e lascia `default_profile` intatto perché non è vuoto. `writtenProfile` fa `Resolve("")`, quindi rileggerebbe il **vecchio** profilo e il test fallirebbe contro un'implementazione perfettamente corretta. È esattamente la trappola in cui sono cascati i test gemelli prima di essere corretti — guarda `TestInitMapsTheAssigneeColumn` e `TestInitMapsThePriorityColumn`, che usano tutti `initArgs`.
+
 `cliSchemaWithIDJSON` sta in `init_test.go` ma è visibile a tutto il package `cli`: i Task 12 e 13 lo riusano invece di ridefinirlo.
 
 - [ ] **Step 2: Esegui i test e verifica che falliscano**
 
-Run: `go test ./internal/cli/ -run TestInitMapsTheIDProperty -v`
+Run: `go test ./internal/cli/ -run 'TestInitMapsTheIDColumn|TestInitRejectsAnIDColumn' -v`
 Expected: FAIL con `unknown flag: --id-prop` ed exit code 2.
+
+La regex va quotata e deve matchare i nomi veri: `go test -run` su un nome inesistente esegue zero test e stampa `ok`, cioè mostra un PASS dove il piano promette un FAIL.
 
 - [ ] **Step 3: Cambia `validateMapping` per prendere `config.Properties`**
 
@@ -954,8 +965,10 @@ func TestDoctorTreatsTheIDAsOptional(t *testing.T) {
 
 - [ ] **Step 2: Esegui i test e verifica che falliscano**
 
-Run: `go test ./internal/service/ -run TestDoctor.*ID -v`
+Run: `go test ./internal/service/ -run 'TestDoctorRejectsAnIDProperty|TestDoctorTreatsTheIDAsOptional' -v`
 Expected: FAIL — `TestDoctorRejectsAnIDPropertyOfTheWrongType` non vede nessun errore, perché `doctor` non conosce ancora il ruolo.
+
+Regex sempre quotata: la shell di questo ambiente è zsh, dove un `-run TestDoctor.*ID` non quotato viene espanso come glob sui file e il comando non parte affatto ("no matches found").
 
 - [ ] **Step 3: Aggiungi il ruolo ai tre punti**
 
@@ -1039,8 +1052,16 @@ const idSchemaJSON = `{
   }}`
 
 // idRowJSON is a row carrying a board id.
+//
+// The page id is a real UUID, not the "page1" the older fixtures use: Task 9
+// sends this row's id through SetByID, which normalises it, and
+// notion.NormalizePageID accepts only a URL, a bare 32-hex id or a dashed UUID.
+// A fixture with "page1" would fail there with "malformed page id" — a failure
+// about the fixture, dressed up as a failure of the feature.
 const idRowJSON = `{
-  "id":"page1","url":"https://notion.so/page1","last_edited_time":"2026-07-20T10:00:00.000Z",
+  "id":"23fb4e5c-8a5f-4d21-b7c9-d0e1f2a3b4c5",
+  "url":"https://notion.so/23fb4e5c8a5f4d21b7c9d0e1f2a3b4c5",
+  "last_edited_time":"2026-07-20T10:00:00.000Z",
   "parent":{"type":"data_source_id","data_source_id":"ds1"},
   "properties":{
     "Name":{"type":"title","title":[{"plain_text":"Hardening"}]},
@@ -1087,8 +1108,8 @@ func TestGetByUniqueIDFiltersByTheBareNumber(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetByUniqueID: %v", err)
 	}
-	if page.ID != "page1" {
-		t.Errorf("page.ID = %q, want %q", page.ID, "page1")
+	if page.ID != "23fb4e5c-8a5f-4d21-b7c9-d0e1f2a3b4c5" {
+		t.Errorf("page.ID = %q, want the fixture's page id", page.ID)
 	}
 	// The request body is the contract: Notion rejects a quoted value here, so
 	// a test that only checked the response would pass against a filter that
@@ -1210,8 +1231,8 @@ func (s *Service) findByUniqueID(ctx context.Context, input string) (notion.Page
 	name := s.profile.Properties.ID
 	if name == "" {
 		return notion.Page{}, fmt.Errorf(
-			"%w: run 'notion-track init --id-prop <name>' to map the column holding the board id",
-			ErrNoIDProperty)
+			"id addressing was requested but %w; "+
+				"run 'notion-track init --id-prop <name>' to map it", ErrNoIDProperty)
 	}
 	schema, err := s.Schema(ctx)
 	if err != nil {
@@ -1239,7 +1260,10 @@ func (s *Service) findByUniqueID(ctx context.Context, input string) (notion.Page
 	}
 	switch len(pages) {
 	case 0:
-		return notion.Page{}, fmt.Errorf("%w: %s", ErrNotFound, input)
+		// Spelled out rather than wrapped the way Get does it: ErrNotFound
+		// reads "ticket not found", and "ticket not found: BDF-271" would name
+		// a flag this command never used.
+		return notion.Page{}, fmt.Errorf("%w: no row has id %s", ErrNotFound, input)
 	case 1:
 		return pages[0], nil
 	default:
@@ -1320,8 +1344,8 @@ func TestSetByUniqueIDUpdatesTheResolvedPage(t *testing.T) {
 	}
 	// The write must land on the page the id resolved to, through the same
 	// SetByID path --page-id uses: one write path, three ways to address it.
-	if !contains(seen, "PATCH /v1/pages/page1") {
-		t.Errorf("requests = %v, want a PATCH on /v1/pages/page1", seen)
+	if !contains(seen, "PATCH /v1/pages/23fb4e5c-8a5f-4d21-b7c9-d0e1f2a3b4c5") {
+		t.Errorf("requests = %v, want a PATCH on the resolved page", seen)
 	}
 	if res.Action != "updated" {
 		t.Errorf("action = %q, want %q", res.Action, "updated")
@@ -1480,7 +1504,7 @@ git commit -m "feat(cli): map the id addressing errors onto exit code 2"
 
 **Interfaces:**
 - Consumes: `config.Properties.ID` (Task 5), `PropertyValue.Text` per `unique_id` (Task 2)
-- Produces: chiave JSON `id` in ogni riga stampata da `get`, `list`, `upsert`, `set`, `apply` e nei risultati dei tool MCP
+- Produces: chiave JSON `id` in ogni riga stampata da `get`, `list`, `upsert` e `set`, e nei risultati dei tool MCP. **Non** in `apply`: il suo output è costruito da `applyOutcome` (indice, op, ticket, azione), che non contiene la pagina e non passa da `toPageJSON` — è un non-goal dichiarato dallo spec, non una dimenticanza
 
 **⚠️ Vincolo bloccante:** `pageJSON` e `mcp.Row` si convertono direttamente con `mcp.Row(toPageJSON(...))` in `internal/cli/mcp.go`. La conversione compila **solo** finché le due struct sono identiche per nome, tipo e ordine dei campi. Le due modifiche devono stare nello **stesso commit**: separarle lascia l'albero non compilabile, che è esattamente il difetto intercettato nella review del ruolo `priority`.
 
@@ -1624,7 +1648,8 @@ profiles:
 `
 
 // cliRowWithIDJSON is a row carrying a board id.
-const cliRowWithIDJSON = `{"id":"page1","url":"https://notion.so/page1",
+const cliRowWithIDJSON = `{"id":"23fb4e5c-8a5f-4d21-b7c9-d0e1f2a3b4c5",
+	"url":"https://notion.so/23fb4e5c8a5f4d21b7c9d0e1f2a3b4c5",
 	"last_edited_time":"2026-07-20T10:00:00.000Z",
 	"parent":{"type":"data_source_id","data_source_id":"ds1"},
 	"properties":{
@@ -1677,16 +1702,31 @@ func TestGetRejectsAnEmptyBoardID(t *testing.T) {
 		w.Write([]byte(cliSchemaWithIDJSON))
 	}, idProfileYAML)
 
-	if code := executeArgs([]string{"get", "--id", "", "--config", cfg}); code != ExitUsage {
-		t.Errorf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+	var code int
+	errOut := captureStderr(t, func() {
+		code = executeArgs([]string{"get", "--id", "", "--config", cfg})
+	})
+	if code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+	}
+	// The exit code alone proves nothing here: the regression this test exists
+	// for — branching on the value instead of on Changed("id") — falls through
+	// to a ticket lookup, raises ErrEmptyTicket, and exits 2 as well. The
+	// message is what tells the two apart.
+	if !strings.Contains(errOut, "id must not be empty") {
+		t.Errorf("stderr = %q, want it to report an empty id", errOut)
 	}
 }
 ```
 
+`captureStderr` esiste già in `get_test.go`.
+
 - [ ] **Step 2: Esegui i test e verifica che falliscano**
 
-Run: `go test ./internal/cli/ -run TestGet.*ID -v`
+Run: `go test ./internal/cli/ -run 'TestGetByBoardID|TestGetRejectsTwoWays|TestGetRejectsAnEmptyBoardID' -v`
 Expected: FAIL con `unknown flag: --id`.
+
+Regex quotata, e attenzione: `TestGetRejectsTwoWaysOfAddressingAtOnce` **passa già** prima dell'implementazione, perché un flag sconosciuto finisce comunque in `SetFlagErrorFunc` → exit 2. Il test che deve fallire qui è `TestGetByBoardIDReadsTheRow`.
 
 - [ ] **Step 3: Aggiungi il flag e il ramo**
 
@@ -1747,7 +1787,7 @@ git commit -m "feat(get): address a row by its board id"
 **Files:**
 - Modify: `internal/cli/upsert.go:10-24` (`writeFlags`), `:86-97` (`bindWithPageID`)
 - Modify: `internal/cli/set.go:13-16` (`Long`), `:31-38` (il ramo)
-- Test: `internal/cli/set_test.go` (o `upsert_test.go`, dove stanno i test di `set`)
+- Test: `internal/cli/upsert_test.go` (è lì che stanno i test di `set`)
 
 **Interfaces:**
 - Consumes: `service.SetByUniqueID` (Task 9)
@@ -1757,7 +1797,7 @@ git commit -m "feat(get): address a row by its board id"
 
 - [ ] **Step 1: Scrivi i test che falliscono**
 
-Nel file dove stanno i test di `set` (`internal/cli/upsert_test.go`; se `set_test.go` esiste, lì). Riusa `idProfileYAML`, `cliSchemaWithIDJSON` e `cliRowWithIDJSON` dei Task 6 e 12 — stesso package:
+In `internal/cli/upsert_test.go` — **`set_test.go` non esiste**: il package ha `set.go` ma i suoi test vivono in `upsert_test.go` e `pageid_test.go`. Riusa `idProfileYAML`, `cliSchemaWithIDJSON` e `cliRowWithIDJSON` dei Task 6 e 12 — stesso package:
 
 ```go
 func TestSetByBoardIDUpdatesTheRow(t *testing.T) {
@@ -1780,8 +1820,8 @@ func TestSetByBoardIDUpdatesTheRow(t *testing.T) {
 		t.Fatalf("exit code = %d, want %d (ExitOK)", code, ExitOK)
 	}
 	// The write must land on the page the id resolved to.
-	if patchedPath != "/v1/pages/page1" {
-		t.Errorf("patched %q, want /v1/pages/page1", patchedPath)
+	if patchedPath != "/v1/pages/23fb4e5c-8a5f-4d21-b7c9-d0e1f2a3b4c5" {
+		t.Errorf("patched %q, want the resolved page", patchedPath)
 	}
 }
 
@@ -1815,8 +1855,10 @@ func TestUpsertHasNoBoardIDFlag(t *testing.T) {
 
 - [ ] **Step 2: Esegui i test e verifica che falliscano**
 
-Run: `go test ./internal/cli/ -run 'TestSetByIDFlag|TestSetRejectsTwoWays' -v`
-Expected: FAIL con `unknown flag: --id`. `TestUpsertHasNoIDFlag` passa già, ed è lì per restare verde anche dopo.
+Run: `go test ./internal/cli/ -run 'TestSetByBoardID|TestSetRejectsTwoWays|TestUpsertHasNoBoardID' -v`
+Expected: FAIL su `TestSetByBoardIDUpdatesTheRow` con `unknown flag: --id`.
+
+Gli altri due **passano già** e devono restare verdi: un flag sconosciuto arriva comunque a `SetFlagErrorFunc` → exit 2, quindi né `TestSetRejectsTwoWaysOfAddressingAtOnce` né `TestUpsertHasNoBoardIDFlag` distinguono il prima dal dopo. Il secondo diventa significativo solo **dopo** l'implementazione, quando `--id` esiste su `set` e deve continuare a non esistere su `upsert`.
 
 - [ ] **Step 3: Aggiungi il campo e il flag**
 
@@ -1878,39 +1920,222 @@ E aggiorna il `Long`:
 - [ ] **Step 5: Esegui i test e verifica che passino**
 
 Run: `go test ./internal/cli/ -v`
-Expected: PASS, compreso `TestUpsertHasNoIDFlag` — se fallisce, il flag è finito nel binder sbagliato.
+Expected: PASS, compreso `TestUpsertHasNoBoardIDFlag` — se fallisce, il flag è finito in `bindShared` (condiviso con `upsert`) invece che in `bindWithPageID` (solo di `set`).
 
 - [ ] **Step 6: Commit**
 
 ```bash
 gofmt -l . && go vet ./... && go build ./... && go test ./... -race
-git add internal/cli/upsert.go internal/cli/set.go internal/cli/set_test.go
+git add internal/cli/upsert.go internal/cli/set.go internal/cli/upsert_test.go
 git commit -m "feat(set): update a row addressed by its board id"
 ```
 
 ---
 
-### Task 14: Documentazione
+### Task 14: L'id nell'output umano di `get` e `list`
+
+**Files:**
+- Modify: `internal/cli/output.go` (accanto a `assigneeSuffix` e `prioritySuffix`)
+- Modify: `internal/cli/get.go` (le due `cmd.Printf` del ramo umano)
+- Modify: `internal/cli/list.go:15-17` (i due formati) e il ciclo di stampa
+- Test: `internal/cli/get_test.go`, `internal/cli/list_test.go`
+
+**Interfaces:**
+- Consumes: `config.Properties.ID` (Task 5), `PropertyValue.Text` per `unique_id` (Task 2)
+- Produces: `idPrefix(p notion.Page, props config.Properties) string`
+
+**Perché esiste questo task:** senza di esso `BDF-271` vive solo dentro `--json`, e `notion-track get --id BDF-271` risponderebbe senza mai mostrare `BDF-271`. Un identificatore che le persone si dicono a voce e che nessuna superficie umana stampa è una contraddizione con la ragione stessa della feature.
+
+- [ ] **Step 1: Scrivi i test che falliscono**
+
+In fondo a `internal/cli/get_test.go`:
+
+```go
+func TestGetPrintsTheBoardIDForHumans(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(cliSchemaWithIDJSON))
+			return
+		}
+		w.Write([]byte(`{"results":[` + cliRowWithIDJSON + `],"has_more":false}`))
+	}, idProfileYAML)
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"get", "--ticket", "BDF-231", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+	if !strings.Contains(out, "BDF-271") {
+		t.Errorf("output = %q, want it to show the board id", out)
+	}
+}
+
+func TestGetHumanOutputIsUnchangedWithoutTheIDRole(t *testing.T) {
+	// The profile from withStubbedAPI maps no id role: the line must come out
+	// byte-identical to what it was before this feature existed, which is the
+	// rule the two suffixes in output.go already follow.
+	cfg := withStubbedAPI(t, stubbedRow)
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"get", "--ticket", "BDF-231", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+	if strings.HasPrefix(out, " ") {
+		t.Errorf("output = %q, want no leading padding when the id role is unmapped", out)
+	}
+}
+```
+
+Prima di scriverlo, apri `internal/cli/get_test.go` e guarda come i test umani già esistenti (`stubbedRow` a riga 386) montano il caso: riusa quello che c'è.
+
+In fondo a `internal/cli/list_test.go`, allineandoti a `stubForList` che il file già ha:
+
+```go
+func TestListPrintsTheBoardIDForHumans(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(cliSchemaWithIDJSON))
+			return
+		}
+		w.Write([]byte(`{"results":[` + cliRowWithIDJSON + `],"has_more":false}`))
+	}, idProfileYAML)
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"list", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+	// The id leads the row: names read down the left edge of a list.
+	if !strings.HasPrefix(out, "BDF-271") {
+		t.Errorf("output = %q, want the row to start with the board id", out)
+	}
+}
+```
+
+- [ ] **Step 2: Esegui i test e verifica che falliscano**
+
+Run: `go test ./internal/cli/ -run 'TestGetPrintsTheBoardID|TestListPrintsTheBoardID|TestGetHumanOutputIsUnchanged' -v`
+Expected: FAIL sui primi due (l'id non compare); il terzo passa già ed è il guard-rail della non-regressione.
+
+- [ ] **Step 3: Scrivi l'helper**
+
+In `internal/cli/output.go`, subito dopo `prioritySuffix`:
+
+```go
+// idPrefix formats a row's board id for human-readable output.
+//
+// A prefix and not a suffix, unlike assigneeSuffix and prioritySuffix above: it
+// is the row's name, and names read down the left edge of a list. Padded to a
+// fixed width so list's columns stay aligned across rows whose ids differ in
+// length ("BDF-9" and "BDF-1234"); get prints one row, where the padding costs
+// nothing.
+//
+// Empty when the role is unmapped, which is what keeps every existing profile's
+// output byte-identical — the same rule the two suffixes follow.
+func idPrefix(p notion.Page, props config.Properties) string {
+	if id := p.Properties[props.ID].Text; id != "" {
+		return fmt.Sprintf("%-10s ", id)
+	}
+	return ""
+}
+```
+
+Aggiungi `"fmt"` agli import di `internal/cli/output.go`.
+
+- [ ] **Step 4: Usalo in `get`**
+
+In `internal/cli/get.go`, nel ramo umano, entrambe le `cmd.Printf` guadagnano un `%s` iniziale alimentato da `idPrefix`:
+
+```go
+			id := idPrefix(page, profile.Properties)
+			if ticketIsTitle(profile.Properties) {
+				cmd.Printf("%s%s  [%s]%s%s\n  %s\n",
+					id, page.Properties[profile.Properties.Title].Text, status,
+					priority, assignee, page.URL)
+				return nil
+			}
+			cmd.Printf("%s%s  %s  [%s]%s%s\n  %s\n",
+				id,
+				page.Properties[profile.Properties.Ticket].Text,
+				page.Properties[profile.Properties.Title].Text,
+				status, priority, assignee, page.URL)
+			return nil
+```
+
+- [ ] **Step 5: Usalo in `list`**
+
+In `internal/cli/list.go`, i due formati guadagnano un `%s` iniziale:
+
+```go
+const (
+	listRowFormat       = "%s%-20s %-40s [%s]%s%s\n"
+	listMergedRowFormat = "%s%-61s [%s]%s%s\n"
+)
+```
+
+Estendi il commento sopra di essi, che già spiega la stessa regola per i due suffissi: il prefisso è un segmento `%s` iniziale, vuoto quando il ruolo non è mappato, così le colonne restano byte-identiche per i profili senza il ruolo.
+
+E nel ciclo di stampa:
+
+```go
+			for _, p := range pages {
+				status := p.Properties[profile.Properties.Status].Text
+				priority := prioritySuffix(p, profile.Properties)
+				assignee := assigneeSuffix(p, profile.Properties)
+				id := idPrefix(p, profile.Properties)
+				if merged {
+					cmd.Printf(listMergedRowFormat, id,
+						p.Properties[profile.Properties.Title].Text, status, priority, assignee)
+					continue
+				}
+				cmd.Printf(listRowFormat, id,
+					p.Properties[profile.Properties.Ticket].Text,
+					p.Properties[profile.Properties.Title].Text,
+					status, priority, assignee)
+			}
+```
+
+- [ ] **Step 6: Esegui i test e verifica che passino**
+
+Run: `go test ./internal/cli/ -v`
+Expected: PASS, compresi tutti i test umani preesistenti di `get` e `list` — se uno di quelli fallisce, il prefisso non sta tornando `""` per un profilo che non mappa il ruolo.
+
+- [ ] **Step 7: Commit**
+
+```bash
+gofmt -l . && go vet ./... && go build ./... && go test ./... -race
+git add internal/cli/output.go internal/cli/get.go internal/cli/list.go internal/cli/get_test.go internal/cli/list_test.go
+git commit -m "feat(output): show the board id in get and list"
+```
+
+---
+
+### Task 15: Documentazione
 
 **Files:**
 - Modify: `README.md`
-- Modify: la skill dell'agente sotto `.claude/skills/` (trovala con `ls .claude/skills/`)
+- Modify: `README.it.md`
+- Modify: `skills/notion-track/SKILL.md`
+- Modify: `skills/notion-track/README.md`
 
 **Interfaces:**
-- Consumes: tutta la superficie dei Task 6, 11, 12, 13
+- Consumes: tutta la superficie dei Task 6, 11, 12, 13, 14
 - Produces: niente codice
 
-- [ ] **Step 1: Verifica cosa dicono oggi i due file**
+**Dove sono i file:** la skill dell'agente sta in `skills/notion-track/`, alla radice del repo — **non** sotto `.claude/skills/`, che contiene solo `settings.local.json`. E `README.it.md` è la traduzione speculare di `README.md`, sezione per sezione: aggiornarne uno solo produce esattamente la documentazione che si contraddice, cioè il difetto che questo task esiste per evitare.
+
+- [ ] **Step 1: Verifica cosa dicono oggi i quattro file**
 
 ```bash
-grep -rn "page-id\|ticket\|unique_id" README.md .claude/skills/ | head -40
+grep -rn "page-id\|--ticket\|unique_id\|BDF-" README.md README.it.md skills/notion-track/
 ```
 
-Serve a trovare **ogni** punto che elenca i modi di indirizzare una riga: mancarne uno lascia una documentazione che contraddice il codice, che è esattamente il difetto emerso nella review della action di release in questo repo.
+Serve a trovare **ogni** punto che elenca i modi di indirizzare una riga: mancarne uno lascia una documentazione che contraddice il codice, che è il difetto emerso nella review della action di release in questo repo.
 
-- [ ] **Step 2: Aggiorna il README**
+- [ ] **Step 2: Aggiorna `README.md`**
 
-Dove il README elenca i modi di indirizzare una riga, aggiungi `--id` come terzo, con un esempio eseguibile:
+Dove elenca i modi di indirizzare una riga, aggiungi `--id` come terzo, con esempi eseguibili:
 
 ```bash
 # by exact title (or ticket key)
@@ -1923,29 +2148,33 @@ notion-track set --id BDF-271 --status "Fatto"
 notion-track get --page-id https://notion.so/...
 ```
 
-Dove il README documenta `init`, aggiungi `--id-prop` fra i ruoli opzionali, accanto a `--due-prop`, `--assignee-prop` e `--priority-prop`.
+Dove documenta `init`, aggiungi `--id-prop` fra i ruoli opzionali, accanto a `--due-prop`, `--assignee-prop` e `--priority-prop`.
 
-Dove il README mostra l'output di `--json`, aggiungi la chiave `id` all'esempio.
+Dove mostra l'output di `--json`, aggiungi la chiave `id` all'esempio, **in prima posizione** come nella struct.
 
-Se il README afferma da qualche parte che l'id `BDF-NN` non è leggibile dalla CLI o che l'API Notion non consente di filtrare per `unique_id`, **correggi l'affermazione**: l'API filtra per `unique_id`, ed era la CLI a non contemplare il tipo.
+Se afferma da qualche parte che l'id `BDF-NN` non è leggibile dalla CLI o che l'API Notion non consente di filtrare per `unique_id`, **correggi l'affermazione**: l'API filtra per `unique_id`, ed era la CLI a non contemplare il tipo.
 
-- [ ] **Step 3: Aggiorna la skill dell'agente**
+- [ ] **Step 3: Riporta le stesse modifiche in `README.it.md`**
 
-Aggiungi le stesse tre cose: `--id` fra i modi di indirizzare, `--id-prop` fra i ruoli di `init`, la chiave `id` nell'esempio JSON. Il testo deve dire **la stessa cosa** del README: una skill che descrive una superficie diversa da quella documentata è peggio di una skill non aggiornata, perché sembra autorevole.
+Le stesse sezioni, tradotte. `README.it.md` è speculare: se una sezione esiste in uno e non nell'altro, è già una divergenza da segnalare, non da allargare.
 
-- [ ] **Step 4: Rileggi le due modifiche fianco a fianco**
+- [ ] **Step 4: Aggiorna la skill**
+
+In `skills/notion-track/SKILL.md` (la sezione che documenta `--ticket`/`--page-id`) e in `skills/notion-track/README.md`: `--id` fra i modi di indirizzare, `--id-prop` fra i ruoli di `init`, la chiave `id` nell'esempio JSON. Il testo deve dire **la stessa cosa** dei README: una skill che descrive una superficie diversa da quella documentata è peggio di una skill non aggiornata, perché sembra autorevole.
+
+- [ ] **Step 5: Rileggi le quattro modifiche fianco a fianco**
 
 ```bash
-git diff README.md .claude/skills/
+git diff README.md README.it.md skills/notion-track/
 ```
 
-Verifica che non ci sia nessuna affermazione presente in uno e contraddetta nell'altro, e che ogni comando negli esempi sia eseguibile così com'è scritto.
+Verifica che non ci sia nessuna affermazione presente in uno e contraddetta in un altro, e che ogni comando negli esempi sia eseguibile così com'è scritto.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 gofmt -l . && go vet ./... && go build ./... && go test ./... -race
-git add README.md .claude/skills/
+git add README.md README.it.md skills/notion-track/
 git commit -m "docs: document addressing a row by its board id"
 ```
 
