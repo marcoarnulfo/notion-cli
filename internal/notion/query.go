@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 )
 
@@ -124,6 +125,10 @@ func decodePage(raw json.RawMessage) (Page, error) {
 				Start string `json:"start"`
 			} `json:"date"`
 			Checkbox bool `json:"checkbox"`
+			UniqueID *struct {
+				Prefix *string `json:"prefix"`
+				Number int64   `json:"number"`
+			} `json:"unique_id"`
 		} `json:"properties"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
@@ -155,6 +160,16 @@ func decodePage(raw json.RawMessage) (Page, error) {
 		case "date":
 			if v.Date != nil {
 				pv.Date = v.Date.Start
+			}
+		case "unique_id":
+			// Rendered the way the board renders it, so what the CLI prints and
+			// what the person sees in Notion are the same string. A prefixless
+			// column has no separator to invent.
+			if v.UniqueID != nil {
+				pv.Text = strconv.FormatInt(v.UniqueID.Number, 10)
+				if v.UniqueID.Prefix != nil && *v.UniqueID.Prefix != "" {
+					pv.Text = *v.UniqueID.Prefix + "-" + pv.Text
+				}
 			}
 		}
 		p.Properties[name] = pv
