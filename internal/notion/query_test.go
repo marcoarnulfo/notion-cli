@@ -203,3 +203,22 @@ func TestQueryPagesReadsUniqueIDInTheFormThePersonSees(t *testing.T) {
 		t.Errorf("ID.Type = %q, want %q", got, "unique_id")
 	}
 }
+
+func TestUniqueIDEqualsFilterCarriesANumber(t *testing.T) {
+	got := UniqueIDEqualsFilter("ID", 271)
+	want := Filter{"property": "ID", "unique_id": map[string]int64{"equals": 271}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("UniqueIDEqualsFilter = %#v, want %#v", got, want)
+	}
+	// The whole reason this is a separate constructor is the wire format:
+	// Notion rejects a quoted value here. DeepEqual above would still pass if
+	// someone switched int64 to string in both the code and the want, so the
+	// marshalled form is what actually pins the contract.
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if s := string(b); !strings.Contains(s, `"equals":271`) {
+		t.Errorf("marshalled to %s, want an unquoted 271", s)
+	}
+}

@@ -36,6 +36,24 @@ func IsEmptyFilter(property, propType string) Filter {
 	}
 }
 
+// UniqueIDEqualsFilter matches the row carrying one unique_id number.
+//
+// Separate from EqualsFilter, rather than another case inside it, because
+// unique_id is the one property notion-track matches on whose filter value is
+// a number instead of a string. EqualsFilter's signature says "string" on
+// purpose — its doc comment already warns that other types need a different
+// operator or a non-string value — and widening it to carry both would break
+// the promise that comment makes to every other caller.
+//
+// The number is the bare id: "BDF-271" is filtered as 271, with the prefix
+// stripped by tracker.ParseUniqueID before it reaches here.
+func UniqueIDEqualsFilter(property string, number int64) Filter {
+	return Filter{
+		"property":  property,
+		"unique_id": map[string]int64{"equals": number},
+	}
+}
+
 // AndFilter combines filters into a compound one, skipping the nil entries a
 // caller building a filter from optional flags naturally produces.
 //
