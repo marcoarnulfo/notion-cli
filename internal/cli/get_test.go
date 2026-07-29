@@ -817,7 +817,14 @@ func TestGetPrintsTheBoardIDForHumans(t *testing.T) {
 func TestGetHumanOutputIsUnchangedWithoutTheIDRole(t *testing.T) {
 	// The profile from withStubbedAPI maps no id role: the line must come out
 	// byte-identical to what it was before this feature existed, which is the
-	// rule the two suffixes in output.go already follow.
+	// rule the two suffixes in output.go already follow (see
+	// TestGetHumanOutputIsUnchangedWithoutTheRole above, pinned the same way
+	// for the assignee/priority suffixes when this feature predates them).
+	//
+	// An exact match, not just "no leading space": that weaker check would
+	// still pass if idPrefix ever emitted a non-empty prefix that happened
+	// not to start with a space (e.g. a stray "id:" with no padding), which
+	// is exactly the kind of regression this test exists to catch.
 	cfg := withStubbedAPI(t, stubbedRow)
 
 	out := captureStdout(t, func() {
@@ -825,7 +832,8 @@ func TestGetHumanOutputIsUnchangedWithoutTheIDRole(t *testing.T) {
 			t.Fatalf("exit code = %d", code)
 		}
 	})
-	if strings.HasPrefix(out, " ") {
-		t.Errorf("output = %q, want no leading padding when the id role is unmapped", out)
+	want := "BDF-231  Hardening  [Fatto]\n  https://notion.so/page1\n"
+	if out != want {
+		t.Errorf("output = %q, want %q", out, want)
 	}
 }

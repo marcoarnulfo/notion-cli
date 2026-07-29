@@ -172,7 +172,8 @@ const uniqueIDPageFixture = `{
   "last_edited_time": "2026-07-20T10:00:00.000Z",
   "properties": {
     "ID":  {"type":"unique_id","unique_id":{"prefix":"BDF","number":271}},
-    "Seq": {"type":"unique_id","unique_id":{"prefix":null,"number":8}}
+    "Seq": {"type":"unique_id","unique_id":{"prefix":null,"number":8}},
+    "Plain": {"type":"unique_id","unique_id":{"prefix":"","number":42}}
   }
 }`
 
@@ -198,6 +199,12 @@ func TestQueryPagesReadsUniqueIDInTheFormThePersonSees(t *testing.T) {
 	// Without a prefix there is no separator to invent: the number alone.
 	if got := pages[0].Properties["Seq"].Text; got != "8" {
 		t.Errorf("Seq = %q, want %q", got, "8")
+	}
+	// A prefix that is present but empty ("") is a distinct case from a null
+	// one: the code guards on *v.UniqueID.Prefix != "" specifically, so an
+	// empty string must also produce the bare number, with no leading dash.
+	if got := pages[0].Properties["Plain"].Text; got != "42" {
+		t.Errorf("Plain = %q, want %q", got, "42")
 	}
 	if got := pages[0].Properties["ID"].Type; got != "unique_id" {
 		t.Errorf("ID.Type = %q, want %q", got, "unique_id")
