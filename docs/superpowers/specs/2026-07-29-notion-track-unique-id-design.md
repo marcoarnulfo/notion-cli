@@ -661,7 +661,7 @@ In ciascuno: `--id` fra i modi di indirizzare una riga, `--id-prop` fra i ruoli 
 (`skills/notion-track/README.md` non entra in questo elenco: è una guida d'installazione
 — copiare `SKILL.md`, requisiti, dove personalizzarla — e non documenta né flag né output
 JSON per nessun ruolo, `id` incluso. Non c'è quindi contenuto suo da aggiornare per questa
-feature; un'earlier versione di questa sezione lo elencava per errore come quarto file.)
+feature; una versione precedente di questa sezione lo elencava per errore come quarto file.)
 
 Va corretta anche l'affermazione sbagliata di §1.1 ovunque compaia — l'API Notion filtra
 per `unique_id`, il limite era della CLI.
