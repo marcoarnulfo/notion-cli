@@ -503,7 +503,7 @@ Because the config file has no secret in it, the common pattern is to **commit i
     TICKET: ${{ github.event.inputs.ticket }}
 ```
 
-The action downloads the release archive for the runner it is on, checks it against the release's `checksums.txt`, and puts the binary on `PATH` — no Go toolchain, no compile. Linux and macOS runners, amd64 and arm64; it fails with a clear message anywhere else. It needs a published release to download, so until the first tag exists use `go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest` instead.
+The action downloads the release archive for the runner it is on, checks it against the release's `checksums.txt`, and puts the binary on `PATH` — no Go toolchain, no compile. Linux, macOS and Windows runners (Windows through Git Bash), amd64 and arm64; anywhere else it fails with a message that says so. It needs a published release to download, so until the first tag exists use `go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest` instead.
 
 `@main` is a moving reference: you get whatever is on the branch at the time. Pin it to a commit SHA if you want a workflow that cannot change under you — a `@v1` tag will exist once this project reaches 1.0.
 

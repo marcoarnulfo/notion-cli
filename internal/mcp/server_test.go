@@ -366,3 +366,34 @@ func TestGetToolExposesThePriority(t *testing.T) {
 		t.Errorf("Priority = %q, want %q", row.Priority, "ALTA")
 	}
 }
+
+// The handshake is how an agent tells one build from another: a bug report
+// saying "notion-track misbehaves" is worth much less than one naming the
+// version it misbehaved from. The CLI passes its own Version here, so this
+// pins the only half that can silently go wrong — the server reporting
+// something other than what it was handed.
+func TestTheHandshakeReportsTheVersionItWasGiven(t *testing.T) {
+	ctx := context.Background()
+	clientTransport, serverTransport := sdk.NewInMemoryTransports()
+
+	server := NewServer(&fakeTracker{}, "v1.2.3")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = server.Run(ctx, serverTransport)
+	}()
+
+	session, err := sdk.NewClient(&sdk.Implementation{Name: "test", Version: "test"}, nil).
+		Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() {
+		session.Close()
+		<-done
+	})
+
+	if got := session.InitializeResult().ServerInfo.Version; got != "v1.2.3" {
+		t.Errorf("handshake version = %q, want %q", got, "v1.2.3")
+	}
+}

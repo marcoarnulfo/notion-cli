@@ -503,7 +503,7 @@ Poiché il file di configurazione non contiene segreti, lo schema comune è **co
     TICKET: ${{ github.event.inputs.ticket }}
 ```
 
-La action scarica l'archivio della release adatto al runner su cui gira, lo verifica contro il `checksums.txt` della release e mette il binario nel `PATH` — niente toolchain Go, niente compilazione. Runner Linux e macOS, amd64 e arm64; altrove fallisce con un messaggio esplicito. Ha bisogno di una release pubblicata da scaricare, quindi finché non esiste il primo tag usa `go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest`.
+La action scarica l'archivio della release adatto al runner su cui gira, lo verifica contro il `checksums.txt` della release e mette il binario nel `PATH` — niente toolchain Go, niente compilazione. Runner Linux, macOS e Windows (su Windows via Git Bash), amd64 e arm64; altrove fallisce con un messaggio che lo dice. Ha bisogno di una release pubblicata da scaricare, quindi finché non esiste il primo tag usa `go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest`.
 
 `@main` è un riferimento mobile: ti ritrovi quello che c'è sul branch in quel momento. Pinnalo a uno SHA se vuoi un workflow che non possa cambiarti sotto i piedi — un tag `@v1` esisterà quando il progetto arriverà alla 1.0.
 

@@ -108,7 +108,22 @@ runs:
         binary=notion-track
         if [ "$os" = windows ]; then
           binary=notion-track.exe
-          unzip -q "$workdir/$archive" "$binary" -d "$workdir"
+          # Windows runners are reached through Git Bash, which bundles tar and
+          # coreutils but NOT unzip — that is a separate package most images do
+          # not carry. 7z is on the GitHub-hosted Windows images; bsdtar reads
+          # zip too and ships with Windows itself. Try them in that order and
+          # say so plainly if none is there, rather than dying on
+          # "unzip: command not found" three lines later.
+          if command -v unzip >/dev/null 2>&1; then
+            unzip -q "$workdir/$archive" "$binary" -d "$workdir"
+          elif command -v 7z >/dev/null 2>&1; then
+            7z x -y -o"$workdir" "$workdir/$archive" "$binary" >/dev/null
+          elif tar -xf "$workdir/$archive" -C "$workdir" "$binary" 2>/dev/null; then
+            : # bsdtar handled it
+          else
+            echo "::error::cannot unpack $archive: this runner has none of unzip, 7z, or a tar that reads zip"
+            exit 1
+          fi
         else
           tar -xzf "$workdir/$archive" -C "$workdir" "$binary"
         fi
