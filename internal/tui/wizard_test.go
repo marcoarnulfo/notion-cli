@@ -95,6 +95,16 @@ func ambiguousSchema() *notion.Schema {
 	}
 }
 
+// identitySchema is guessableSchema plus a select column of people. Its name
+// is not one GuessMapping recognises, so a test that wants the assignee role
+// mapped has to map it the way a user does — which is the only route to the
+// identity step.
+func identitySchema(options ...string) *notion.Schema {
+	s := guessableSchema()
+	s.Properties["Chi"] = notion.Property{Name: "Chi", Type: "select", Options: options}
+	return s
+}
+
 func wizardWith(schema *notion.Schema) Model {
 	return NewWizard(testSources, func(string) (*notion.Schema, error) { return schema, nil })
 }
@@ -407,6 +417,170 @@ func TestWizardPriorityRole(t *testing.T) {
 			t.Errorf("key %q is used by both %q and %q", r.key, other, r.name)
 		}
 		seen[r.key] = r.name
+	}
+}
+
+// withAssignee maps the assignee role onto "Chi": the picker offers
+// "— none —" first, then the only select column, so down-then-enter picks it.
+func withAssignee(t *testing.T, m Model) Model {
+	t.Helper()
+	m, _ = press(t, m, "a", "down", "enter")
+	if m.props.Assignee != "Chi" {
+		t.Fatalf("assignee = %q, want Chi", m.props.Assignee)
+	}
+	return m
+}
+
+// An identity resolves against the assignee column, so a board that tracks
+// nobody must never be asked for one — the question would have no answers.
+func TestWizardSkipsTheIdentityStepWhenAssigneeIsUnmapped(t *testing.T) {
+	m := atConfirm(t, identitySchema("Jordan Lee", "Sam Rivera"))
+	if m.props.Assignee != "" {
+		t.Fatalf("assignee = %q, want the guess to have declined", m.props.Assignee)
+	}
+
+	saved, cmd := press(t, m, "enter")
+
+	if saved.stage != stageDone || cmd == nil {
+		t.Fatalf("stage = %v, want enter to have saved straight away", saved.stage)
+	}
+	res := saved.Result()
+	if res.Cancelled || res.Err != nil {
+		t.Fatalf("result = %+v, want a saved mapping", res)
+	}
+	if res.Identity != "" {
+		t.Errorf("identity = %q, want none: the wizard never asked", res.Identity)
+	}
+}
+
+// A column with no options offers nothing to pick, so the step would be a
+// list holding only its own escape hatch.
+func TestWizardSkipsTheIdentityStepWhenTheAssigneeColumnHasNoOptions(t *testing.T) {
+	m := withAssignee(t, atConfirm(t, identitySchema()))
+
+	saved, cmd := press(t, m, "enter")
+
+	if saved.stage != stageDone || cmd == nil {
+		t.Fatalf("stage = %v, want enter to have saved straight away", saved.stage)
+	}
+	if got := saved.Result().Identity; got != "" {
+		t.Errorf("identity = %q, want none", got)
+	}
+}
+
+func TestWizardCollectsTheIdentityWhenAssigneeIsMapped(t *testing.T) {
+	m := withAssignee(t, atConfirm(t, identitySchema("Jordan Lee", "Sam Rivera")))
+
+	asking, cmd := press(t, m, "enter")
+
+	if asking.stage != stageIdentity {
+		t.Fatalf("stage = %v, want the identity picker", asking.stage)
+	}
+	if cmd != nil {
+		t.Fatal("the wizard quit instead of asking for an identity")
+	}
+	view := asking.View()
+	for _, want := range []string{"Chi", "Jordan Lee", "Sam Rivera"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("the identity screen does not show %q:\n%s", want, view)
+		}
+	}
+
+	// The list leads with the skip entry, so the first option is one down.
+	saved, cmd := press(t, asking, "down", "enter")
+
+	if saved.stage != stageDone || cmd == nil {
+		t.Fatalf("stage = %v, want the wizard finished", saved.stage)
+	}
+	res := saved.Result()
+	if res.Cancelled || res.Err != nil {
+		t.Fatalf("result = %+v, want a saved mapping", res)
+	}
+	if res.Identity != "Jordan Lee" {
+		t.Errorf("identity = %q, want Jordan Lee", res.Identity)
+	}
+	if res.Props.Assignee != "Chi" {
+		t.Errorf("assignee = %q, want the mapping to have survived the step", res.Props.Assignee)
+	}
+}
+
+// The picker only ever offers what the column holds, so a name that is not an
+// option of it cannot be produced at all.
+func TestTheIdentityPickerOffersOnlyTheColumnsOwnOptions(t *testing.T) {
+	m := withAssignee(t, atConfirm(t, identitySchema("Jordan Lee", "Sam Rivera")))
+	asking, _ := press(t, m, "enter")
+
+	var got []string
+	for _, item := range asking.identityList.Items() {
+		got = append(got, item.(identityItem).Title())
+	}
+	want := []string{"— skip —", "Jordan Lee", "Sam Rivera"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("picker offers %v, want %v", got, want)
+	}
+}
+
+// Having no identity is a normal setup — doctor reports it as ok — so
+// skipping has to finish the wizard, not cancel it.
+func TestWizardIdentityCanBeSkipped(t *testing.T) {
+	t.Run("by choosing the skip entry", func(t *testing.T) {
+		m := withAssignee(t, atConfirm(t, identitySchema("Jordan Lee", "Sam Rivera")))
+		asking, _ := press(t, m, "enter")
+
+		saved, cmd := press(t, asking, "enter")
+
+		if saved.stage != stageDone || cmd == nil {
+			t.Fatalf("stage = %v, want the wizard finished", saved.stage)
+		}
+		res := saved.Result()
+		if res.Cancelled || res.Err != nil {
+			t.Fatalf("result = %+v, want a saved mapping", res)
+		}
+		if res.Identity != "" {
+			t.Errorf("identity = %q, want none", res.Identity)
+		}
+	})
+
+	// esc goes back to the summary, as it does out of every other picker. The
+	// question must not come back on the next enter, or enter would be a loop
+	// only answering could break out of.
+	t.Run("by escaping back to the summary", func(t *testing.T) {
+		m := withAssignee(t, atConfirm(t, identitySchema("Jordan Lee", "Sam Rivera")))
+		asking, _ := press(t, m, "enter")
+
+		back, cmd := press(t, asking, "esc")
+		if back.stage != stageConfirm || cmd != nil {
+			t.Fatalf("stage = %v, want back at the summary without quitting", back.stage)
+		}
+
+		saved, cmd := press(t, back, "enter")
+
+		if saved.stage != stageDone || cmd == nil {
+			t.Fatalf("stage = %v, want enter to have saved this time", saved.stage)
+		}
+		if got := saved.Result().Identity; got != "" {
+			t.Errorf("identity = %q, want none", got)
+		}
+	})
+}
+
+// Ctrl-C means the same thing on every screen, and a cancelled run hands back
+// nothing a caller could mistake for an approved setup.
+func TestCancellingTheIdentityStepWritesNothing(t *testing.T) {
+	m := withAssignee(t, atConfirm(t, identitySchema("Jordan Lee", "Sam Rivera")))
+	asking, _ := press(t, m, "enter")
+
+	cancelled, cmd := press(t, asking, "ctrl+c")
+
+	if cmd == nil {
+		t.Fatal("ctrl+c did not quit")
+	}
+	res := cancelled.Result()
+	if !res.Cancelled {
+		t.Fatalf("result = %+v, want cancelled", res)
+	}
+	if res.Identity != "" || res.Props != (config.Properties{}) {
+		t.Errorf("cancelled result carries data: %+v", res)
 	}
 }
 
