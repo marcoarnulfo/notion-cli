@@ -344,22 +344,37 @@ func newInitCmd() *cobra.Command {
 				if err != nil {
 					return Errorf(ExitUsage, "%v", err)
 				}
-				// config.yml is meant to be committed and shared, so an identity
-				// written there is everyone's identity: say so at the one moment
-				// the user is choosing to write it.
-				cmd.PrintErrf(
-					"warning: %q is stored in the config file, which is meant to be shared.\n"+
-						"  For a personal identity, export %s instead.\n",
-					resolvedMe, config.MeEnv)
 			}
 
-			return saveInitProfile(cmd, config.Profile{
+			if err := saveInitProfile(cmd, config.Profile{
 				DatabaseID:   databaseID,
 				DataSourceID: dataSourceID,
 				StatusType:   statusType,
 				Properties:   props,
-				Me:           resolvedMe,
-			}, schema.Title)
+			}, schema.Title); err != nil {
+				return err
+			}
+
+			// The identity goes in credentials.yml, not in the profile above:
+			// config.yml is committed and shared, and an identity written
+			// there would be everyone's. Saved after the profile so that a
+			// failure to write it leaves a usable configuration behind rather
+			// than an identity pointing at a profile that does not exist.
+			if resolvedMe != "" {
+				name, _ := cmd.Flags().GetString("profile")
+				if name == "" {
+					name = "default"
+				}
+				if err := config.SaveIdentity(name, resolvedMe); err != nil {
+					return err
+				}
+				credPath, err := config.CredentialsPath()
+				if err != nil {
+					return err
+				}
+				cmd.Printf("identity %q saved to %s\n", resolvedMe, credPath)
+			}
+			return nil
 		},
 	}
 

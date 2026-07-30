@@ -576,19 +576,29 @@ func TestAssigneeFlagsAreConfigFlags(t *testing.T) {
 	}
 }
 
+// TestInitMeStoresTheCanonicalValue asserts the canonical-spelling guarantee
+// that used to live on the profile's Me field. The guarantee survives the
+// move to credentials.yml; only where it is read from changes.
 func TestInitMeStoresTheCanonicalValue(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaJSON))
 	})
 	withIsolatedUserConfigDir(t)
+	t.Setenv(config.MeEnv, "")
 	withInteractivePrompt(t, false, nil, nil)
 
 	code := executeArgs(initArgs(cfg, "--assignee-prop", "Referente", "--me", "mirko"))
 	if code != ExitOK {
 		t.Fatalf("exit code = %d", code)
 	}
-	if got := writtenProfile(t, cfg).Me; got != "Mirko Spinato" {
-		t.Errorf("me = %q, want the canonical option %q", got, "Mirko Spinato")
+	// initArgs always passes --profile work, so that is the key the identity
+	// must have landed under.
+	got, source, err := config.ResolveIdentity("work", config.Profile{})
+	if err != nil {
+		t.Fatalf("ResolveIdentity: %v", err)
+	}
+	if got != "Mirko Spinato" || source != "file" {
+		t.Errorf("identity = %q (source %q), want the canonical option %q from credentials.yml", got, source, "Mirko Spinato")
 	}
 }
 
@@ -604,18 +614,75 @@ func TestInitMeNeedsTheAssigneeColumn(t *testing.T) {
 	}
 }
 
-func TestInitMeWarnsThatTheConfigIsShared(t *testing.T) {
+// TestInitMeWritesToCredentialsNotConfig proves the identity landed in
+// credentials.yml and nowhere in config.yml. The raw-bytes check on top of
+// the struct-level one guards against a future rename of Profile.Me hiding a
+// regression that writes the value back under a different field name.
+func TestInitMeWritesToCredentialsNotConfig(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaJSON))
 	})
 	withIsolatedUserConfigDir(t)
+	t.Setenv(config.MeEnv, "")
 	withInteractivePrompt(t, false, nil, nil)
 
-	errOut := captureStderr(t, func() {
-		executeArgs(initArgs(cfg, "--assignee-prop", "Referente", "--me", "mirko"))
+	if code := executeArgs(initArgs(cfg, "--assignee-prop", "Referente", "--me", "mirko")); code != ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+
+	if got := writtenProfile(t, cfg).Me; got != "" {
+		t.Errorf("profile.Me = %q, want empty: the identity must not land in the shared config", got)
+	}
+	raw, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "me:") {
+		t.Errorf("config.yml contains \"me:\"; the identity must not be written there:\n%s", raw)
+	}
+
+	got, source, err := config.ResolveIdentity("work", config.Profile{})
+	if err != nil {
+		t.Fatalf("ResolveIdentity: %v", err)
+	}
+	if got != "Mirko Spinato" || source != "file" {
+		t.Errorf("identity = %q (source %q), want the canonical option %q from credentials.yml", got, source, "Mirko Spinato")
+	}
+}
+
+// TestInitMePrintsNoSharedConfigWarning proves the warning this task deletes
+// stays gone, and that the confirmation replacing it names the file the
+// identity actually landed in. Both are asserted on the right stream: the
+// confirmation goes through cmd.Printf, which the root command sends to
+// stdout (internal/cli/cli.go:74-75) the same way the token-save confirmation
+// does — asserting it on stderr would fail a correct implementation.
+func TestInitMePrintsNoSharedConfigWarning(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaJSON))
 	})
-	if !strings.Contains(errOut, config.MeEnv) {
-		t.Errorf("stderr = %q, want it to point at %s", errOut, config.MeEnv)
+	withIsolatedUserConfigDir(t)
+	t.Setenv(config.MeEnv, "")
+	withInteractivePrompt(t, false, nil, nil)
+
+	var code int
+	var errOut string
+	out := captureStdout(t, func() {
+		errOut = captureStderr(t, func() {
+			code = executeArgs(initArgs(cfg, "--assignee-prop", "Referente", "--me", "mirko"))
+		})
+	})
+	if code != ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+	if strings.Contains(errOut, "meant to be shared") {
+		t.Errorf("stderr = %q, want the deleted shared-config warning gone", errOut)
+	}
+	credPath, err := config.CredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, credPath) {
+		t.Errorf("stdout = %q, want it to name the credentials file %q", out, credPath)
 	}
 }
 
