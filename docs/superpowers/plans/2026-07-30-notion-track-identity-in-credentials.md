@@ -17,6 +17,8 @@
 - `Profile.Me` stays readable forever as the legacy source. Do not delete the field.
 - Writing an identity must not clobber the token, and writing a token must not clobber identities. Spec §7.
 - Every write to `credentials.yml` uses the existing atomic temp-file-then-rename mechanism and `0600`. Never add a second, weaker write path.
+- **Any test that reads or writes `credentials.yml` must isolate the real one first.** In `internal/cli` that is `withIsolatedUserConfigDir(t)` (`internal/cli/get_test.go:175`, which repoints `XDG_CONFIG_HOME`/`HOME`/`AppData` at a temp dir); in `internal/config` it is `withTempCredentials(t)`. Without it, `config.SaveIdentity` resolves `os.UserConfigDir()` and **writes into the developer's own `credentials.yml`**. Neither `stubForAssignee` (`internal/cli/upsert_test.go:151`) nor the wizard tests isolate today, because nothing they touched ever read that file — copying their shape without adding the helper is the mistake this constraint exists to prevent.
+- **Any test involving the identity must also do `t.Setenv(config.MeEnv, "")`.** Whoever runs the suite may well have `NOTION_TRACK_ME` exported — the current README tells them to. The package already guards this way at `internal/cli/upsert_test.go:146-150`, `internal/service/doctor_test.go:289-291` and `internal/config/config_test.go:453-456`; follow it.
 - Never echo a token in output or in an error. The existing comments at `internal/config/config.go:265-273` explain why `yaml` errors from this file must not be wrapped with `%w`.
 - Both READMEs (`README.md`, `README.it.md`) change together and must stay in step.
 - Run the full local gate before every push: `gofmt -l .` (must be empty), `go vet ./...`, `go build ./...`, `go test ./... -race`, `staticcheck ./...`. `gofmt` and `staticcheck` are NOT run by `go test`/`go vet`.
@@ -137,7 +139,9 @@ func TestIdentitiesAreIgnoredByAnOlderStruct(t *testing.T) {
 }
 ```
 
-If no `withTempCredentials` helper exists in the file, write one that sets the `credentialsPath` seam to `t.TempDir()` and restores it with `t.Cleanup`, and use it in all four tests.
+`withTempCredentials` already exists in `internal/config/config_test.go:126` and already clears `TokenEnv` — use it, do not write a second one.
+
+`TestIdentitiesAreIgnoredByAnOlderStruct` needs `gopkg.in/yaml.v3`, which `config_test.go` does not currently import. Add it.
 
 - [ ] **Step 2: Run the tests and watch them fail**
 
@@ -260,11 +264,33 @@ git commit -m "feat(config): store the personal identity in credentials.yml"
 
 **Interfaces:**
 - Consumes: `loadCredentials` from Task 1.
-- Produces: `config.ResolveIdentity(profileName string, p Profile) (value string, source string, err error)` where `source` is one of `"env"`, `"file"`, `"legacy"`, or `""` when nothing is set; `Profile.MeSource string` (not serialised).
+- Produces: `config.ResolveIdentity(profileName string, p Profile) (value string, source string, err error)` where `source` is one of `"env"`, `"file"`, `"legacy"`, or `""` when nothing is set; `Profile.MeSource string` (not serialised); `(*Config).ProfileName(requested string) string`.
+
+**`ProfileName` is not optional.** The identity is keyed by the profile name, and the name the caller passes is only the `--profile` flag: `NOTION_TRACK_PROFILE` and `default_profile` are applied *inside* `Resolve` (`internal/config/config.go:154-159`). Task 3 needs that resolved name, and must not recompute the chain. Extract it:
+
+```go
+// ProfileName applies the profile-selection precedence — the requested name,
+// then NOTION_TRACK_PROFILE, then default_profile — and returns the name that
+// wins. Resolve uses it, and so does anything else that needs to know which
+// profile a run is actually about (the identity is keyed by that name).
+func (c *Config) ProfileName(requested string) string {
+	if requested == "" {
+		requested = os.Getenv(ProfileEnv)
+	}
+	if requested == "" {
+		requested = c.DefaultProfile
+	}
+	return requested
+}
+```
+
+and make `Resolve` call it instead of repeating those two `if` blocks.
 
 **Why the override moves:** leaving `MeEnv` applied inside `Resolve` and adding a second source elsewhere puts the precedence chain in two files. The next person to add a source will update one of them.
 
 - [ ] **Step 1: Write the failing tests**
+
+Every one of these calls `withTempCredentials(t)`, and every one that is *not* about the environment must also do `t.Setenv(MeEnv, "")` — `withTempCredentials` clears only `TokenEnv`, so a developer with `NOTION_TRACK_ME` exported would otherwise see three of these four fail against a correct implementation.
 
 ```go
 func TestResolveIdentityPrefersTheEnvironment(t *testing.T) {
@@ -285,6 +311,7 @@ func TestResolveIdentityPrefersTheEnvironment(t *testing.T) {
 
 func TestResolveIdentityPrefersTheFileOverTheLegacyField(t *testing.T) {
 	withTempCredentials(t)
+	t.Setenv(MeEnv, "")
 	if err := SaveIdentity("default", "From File"); err != nil {
 		t.Fatalf("SaveIdentity: %v", err)
 	}
@@ -301,6 +328,7 @@ func TestResolveIdentityPrefersTheFileOverTheLegacyField(t *testing.T) {
 // The whole point of keeping Profile.Me: an existing config keeps working.
 func TestResolveIdentityFallsBackToTheLegacyField(t *testing.T) {
 	withTempCredentials(t)
+	t.Setenv(MeEnv, "")
 
 	got, source, err := ResolveIdentity("default", Profile{Me: "From Legacy"})
 	if err != nil {
@@ -313,6 +341,7 @@ func TestResolveIdentityFallsBackToTheLegacyField(t *testing.T) {
 
 func TestResolveIdentityIsKeyedByProfile(t *testing.T) {
 	withTempCredentials(t)
+	t.Setenv(MeEnv, "")
 	if err := SaveIdentity("work", "Jordan Lee"); err != nil {
 		t.Fatalf("SaveIdentity: %v", err)
 	}
@@ -396,7 +425,9 @@ Every non-test reader of `profile.Me` must now receive a profile whose `Me` was 
 - [ ] **Step 6: Run the package and commit**
 
 Run: `go test ./internal/config/ -race`
-Expected: PASS. Some existing test asserting that `Resolve` applies `NOTION_TRACK_ME` will now fail — that behaviour moved, so move the assertion to `ResolveIdentity` rather than deleting it.
+Expected: PASS. Any existing test asserting that `Resolve` applies `NOTION_TRACK_ME` will now fail — that behaviour moved, so move the assertion to `ResolveIdentity` rather than deleting it.
+
+One thing to know rather than fix: between this commit and Task 3's, `NOTION_TRACK_ME` does nothing for any command, because `Resolve` has stopped applying it and no caller resolves it yet. No test goes red in the gap (the CLI tests only ever *clear* that variable), so nothing will tell you. It is a bisect hazard, not a defect — do not "fix" it by leaving the override in `Resolve`, which would put the precedence back in two places.
 
 ```bash
 git add internal/config/config.go internal/config/config_test.go
@@ -408,7 +439,7 @@ git commit -m "feat(config): resolve the identity in one place, with a source"
 ### Task 3: Wire the resolved identity into every command
 
 **Files:**
-- Modify: the CLI seam that builds a service from a profile — find it with `grep -rn "config.Resolve(" --include="*.go" internal/cli/`
+- Modify: `internal/cli/context.go`, in `buildService` — the single seam every command goes through (`get`, `set`, `list`, `upsert`, `apply`, `browse`, `doctor`, `mcp`), at `internal/cli/context.go:44-45`
 - Test: `internal/cli/` (the package's existing command tests)
 
 **Interfaces:**
@@ -423,16 +454,26 @@ In the CLI package, using its existing stubbed-API helper. Assert the end-to-end
 
 ```go
 func TestAssigneeMeUsesTheIdentityFromCredentials(t *testing.T) {
-	// Follow the package's existing pattern for a stubbed API and a temp
-	// config; capture the PATCH body so the assertion is about what was sent.
-	// The profile written here must NOT carry me:.
-	// Save the identity with config.SaveIdentity(<the profile init wrote>, "Jordan Lee").
+	// withIsolatedUserConfigDir(t) FIRST — see the global constraint. Without
+	// it this test writes into the developer's own credentials.yml.
+	// t.Setenv(config.MeEnv, "") as well.
+	//
+	// Follow stubForAssignee (internal/cli/upsert_test.go:151) for the stubbed
+	// API and temp config; capture the PATCH body so the assertion is about
+	// what was actually sent.
+	//
+	// The written profile must NOT carry me:.
+	// Save the identity with config.SaveIdentity(<the profile the fixture
+	// uses>, "Jordan Lee") — the fixtures set default_profile to "work", so
+	// that is the key, and the command must be run WITHOUT --profile. That
+	// combination is the whole point: it is what proves the resolved name is
+	// used and not the raw flag.
 	// Then run: set --ticket TASK-1 --status Done --assignee me
 	// Assert the captured body assigns "Jordan Lee".
 }
 ```
 
-Write it out fully against the helpers that exist in the package. Read a neighbouring assignee test first and match its shape.
+Write it out fully against the helpers that exist in the package. Read `stubForAssignee` and a neighbouring `me` test (`TestSetMeUsesTheConfiguredIdentity`) first and match their shape.
 
 - [ ] **Step 2: Run and watch it fail**
 
@@ -445,20 +486,34 @@ Confirm the failure message is that one. A failure for any other reason means th
 
 Immediately after the profile is resolved, before the service is constructed:
 
+In `buildService`, replacing `internal/cli/context.go:44-45`:
+
 ```go
-	me, source, err := config.ResolveIdentity(profileName, profile)
+	requested, _ := cmd.Flags().GetString("profile")
+	// The resolved name, not the flag: NOTION_TRACK_PROFILE and
+	// default_profile are applied inside Resolve, and the identity is keyed
+	// by the profile the run is actually about.
+	name := cfg.ProfileName(requested)
+	profile, err := cfg.Resolve(name)
 	if err != nil {
-		return err
+		return nil, Errorf(ExitUsage, "%v", err)
+	}
+
+	me, source, err := config.ResolveIdentity(name, profile)
+	if err != nil {
+		return nil, err
 	}
 	profile.Me, profile.MeSource = me, source
 ```
 
-`profileName` must be the name that was actually resolved — the same string `config.Resolve` was given, after `--profile`/`NOTION_TRACK_PROFILE`/`default_profile` have been applied. If the seam does not already have that name in a variable, make it return one rather than recomputing the precedence a second time.
+Passing the already-resolved `name` back into `Resolve` is harmless — `ProfileName` is idempotent, and a non-empty name skips both fallbacks.
+
+**Do not** write `config.ResolveIdentity(requested, profile)`. `requested` is the flag value alone, so for every user who omits `--profile` — the common case — it looks up `identities[""]` and silently finds nothing.
 
 - [ ] **Step 4: Run the tests**
 
-Run: `go test ./internal/cli/ -run TestAssigneeMe -v`
-Expected: PASS, and the existing `--assignee me` tests still pass.
+Run: `go test ./internal/cli/ -run 'TestAssigneeMeUsesTheIdentityFromCredentials|TestSetMe|TestAssignee' -v`
+Expected: PASS. Check the output lists `--- PASS` lines for named tests: a `-run` regex that matches nothing makes `go test` print a bare `ok` having run zero tests, which reads exactly like success.
 
 - [ ] **Step 5: Run everything and commit**
 
@@ -488,6 +543,7 @@ git commit -m "feat(cli): resolve the identity for every command"
 
 ```go
 func TestInitMeWritesToCredentialsNotConfig(t *testing.T) {
+	// withIsolatedUserConfigDir(t) and t.Setenv(config.MeEnv, "") first.
 	// withStubbedAPI + initArgs, as the neighbouring init tests do.
 	// Run: init ... --assignee-prop Owner --me "jordan"
 	// Assert:
@@ -498,11 +554,20 @@ func TestInitMeWritesToCredentialsNotConfig(t *testing.T) {
 }
 
 func TestInitMePrintsNoSharedConfigWarning(t *testing.T) {
-	// Same run; capture stderr.
-	// Assert it does not contain "meant to be shared".
-	// Assert it does name the credentials file, so the user knows where it went.
+	// Same setup.
+	// Assert stderr does NOT contain "meant to be shared".
+	// Assert STDOUT names the credentials file. The confirmation is printed
+	// with cmd.Printf, and the root command sends Out to stdout
+	// (internal/cli/cli.go:74-75) — the token-save confirmation is asserted
+	// the same way, via captureStdout (internal/cli/init_test.go:102-137).
+	// Asserting the path on stderr fails a correct implementation.
 }
 ```
+
+**Two existing tests assert the behaviour this task removes, and both must be updated in this task — they are not regressions:**
+
+- `internal/cli/init_test.go:579` `TestInitMeStoresTheCanonicalValue` asserts `writtenProfile(t, cfg).Me` holds the canonical spelling. The canonical-spelling guarantee survives; its location moves. Rewrite the assertion to read `credentials.yml` instead of the profile.
+- `internal/cli/init_test.go:607` `TestInitMeWarnsThatTheConfigIsShared` asserts the deleted warning is printed. Delete it — `TestInitMePrintsNoSharedConfigWarning` above is its replacement, asserting the opposite.
 
 - [ ] **Step 2: Run and watch them fail**
 
@@ -563,7 +628,7 @@ Note `Me:` is gone from the profile literal, and the warning with it.
 - [ ] **Step 4: Run the tests**
 
 Run: `go test ./internal/cli/ -run 'TestInit' -v`
-Expected: PASS, including the pre-existing init tests.
+Expected: PASS — including `TestInitMeStoresTheCanonicalValue` after you rewrite it, and with `TestInitMeWarnsThatTheConfigIsShared` gone. If either still asserts the old location, fix the test: this task deliberately changes that behaviour.
 
 - [ ] **Step 5: Commit**
 
@@ -590,6 +655,12 @@ git commit -m "feat(init): save the identity to credentials.yml and drop the war
 
 The wizard is a state machine over `roles` with stages. Read `internal/tui/wizard.go` end to end before adding anything. An identity is **not** a role — roles map columns, and this maps a value. Do not add it to the `roles` slice; the `roleValue`/`setRole` switches are for columns, and the id role's own history (a `case` missing from both switches made its key a silent no-op) is the warning here.
 
+Three facts about this wizard that contradict the obvious approach:
+
+1. **There is no text input.** `wizard.go` imports `bubbles/list`, `tea` and `lipgloss` — nothing else. `textinput` exists only in `internal/tui/browse.go`. The identity step is a **picker over the assignee column's options**, which also makes the typo-cannot-reach-disk guarantee free (spec §3.5).
+2. **There is no gap between "role selection" and "confirmation".** Roles are chosen *from* the confirmation screen: `updateConfirm` (`internal/tui/wizard.go:238`) loops into `stageEditRole` and back. The only correct insertion point is inside `updateConfirm`'s `"enter"` case (`wizard.go:243-251`), where `m.stage = stageDone; return m, tea.Quit` runs today — divert to the identity stage there when the assignee role is mapped and the identity has not been asked yet, and let that stage's own completion set `stageDone`.
+3. The model must be able to reach the assignee column's options. Check what the model already holds; if it has the schema, read the options from it — do not thread a new parameter through if one is already there.
+
 - [ ] **Step 2: Write the failing tests**
 
 ```go
@@ -600,7 +671,8 @@ func TestWizardSkipsTheIdentityStepWhenAssigneeIsUnmapped(t *testing.T) {
 }
 
 func TestWizardCollectsTheIdentityWhenAssigneeIsMapped(t *testing.T) {
-	// Map the assignee role, type a name, confirm; assert Result carries it.
+	// Map the assignee role, press enter on the confirm screen, pick an
+	// option from the identity list; assert Result carries that option.
 }
 
 func TestWizardIdentityCanBeSkipped(t *testing.T) {
@@ -613,12 +685,17 @@ Match the existing tests' way of driving the model (they send `tea.KeyMsg` value
 
 - [ ] **Step 3: Run and watch them fail**
 
-Run: `go test ./internal/tui/ -run TestWizard.*Identity -v`
+Run: `go test ./internal/tui/ -run 'TestWizard.*Identity' -v`
+
+Quote the regex. Unquoted, zsh — this repo's shell — tries to glob `TestWizard.*Identity`, finds no matching file, and aborts before `go test` runs at all.
+
 Expected: FAIL. Verify the failure is an assertion, not a compile error from a helper you have not written yet.
 
 - [ ] **Step 4: Implement the step**
 
-Add a stage after role selection and before the confirmation screen, entered only when the assignee role is non-empty. Reuse the existing text-input component the wizard already uses; do not introduce a second input mechanism.
+Add a `stageIdentity`, entered from `updateConfirm`'s `"enter"` case when the assignee role is mapped and the identity has not been asked yet, and leaving to `stageDone` when the user picks or skips. Build its list with the same `newList` helper the role screens use — the wizard has no other input mechanism, and adding one would be the largest change in this plan for the smallest reason.
+
+Include an explicit skip entry in the list (or honour `esc`, if that reads better against the rest of the wizard's key handling): skipping must be reachable, and must complete the wizard rather than cancel it.
 
 - [ ] **Step 5: Run the tests**
 
@@ -649,9 +726,16 @@ git commit -m "feat(tui): ask for the identity when an assignee column is mapped
 
 ```go
 func TestInitWizardSavesTheIdentity(t *testing.T) {
-	// Replace runWizard with a stub returning a Result that maps an assignee
-	// column and carries an identity. Assert credentials.yml holds it under
-	// the profile the wizard branch writes, and config.yml does not.
+	// withIsolatedUserConfigDir(t) and t.Setenv(config.MeEnv, "") first — the
+	// existing wizard tests (internal/cli/init_test.go:314-402) do neither,
+	// because nothing they touched ever read credentials.yml. Copying them
+	// without adding these two lines writes into the developer's real
+	// credentials file.
+	//
+	// Replace runWizard (via the withFakeWizard helper) with a stub returning
+	// a Result that maps an assignee column and carries an identity. Assert
+	// credentials.yml holds it under the profile the wizard branch writes,
+	// and that config.yml does not.
 }
 ```
 
@@ -704,29 +788,38 @@ func TestDoctorIsQuietWhenTheIdentityComesFromTheEnvironment(t *testing.T) {
 }
 ```
 
+**Two existing tests build the profile directly and never set `MeSource`, so this task must update them:**
+
+- `internal/service/doctor_test.go:377` `TestDoctorWarnsWhenTheIdentityLivesOnlyInTheSharedConfig` expects a `warn`. With `MeSource` unset it now gets `ok`. Set `MeSource: "legacy"` on its profile — which is what that test was always about.
+- `internal/service/doctor_test.go:308` `TestDoctorAcceptsAnIdentityFromTheEnvironment` asserts the detail contains the **resolved canonical** option, not the raw configured value. Set `MeSource: "env"` on its profile, and keep the ok-message printing `resolved` (see Step 3) so the assertion stays true.
+
 - [ ] **Step 2: Run and watch them fail**
 
-Run: `go test ./internal/service/ -run TestDoctor.*Identity -v`
+Run: `go test ./internal/service/ -run 'TestDoctor' -v`
 
-If that regex matches nothing, `go test` prints `ok` having run zero tests — check the output says `--- PASS`/`--- FAIL` lines for your three tests, not a bare `ok`. Adjust the regex to your actual test names.
+Quote the regex — unquoted, zsh globs it and aborts before `go test` runs. And check the output lists `--- PASS`/`--- FAIL` lines for your three tests: a regex matching nothing makes `go test` print a bare `ok` having run zero tests.
 
-Expected: FAIL.
+Expected: FAIL — your three new tests, plus the two existing ones named below once you have updated them.
 
 - [ ] **Step 3: Rewrite the check's tail**
 
 Keep the resolution check exactly as it is — a renamed option must still warn. Replace only the source-related message. The old warning recommended `NOTION_TRACK_ME` for any file-based identity; the new one fires only for `"legacy"` and names the command that moves it:
 
+The current tail is at `internal/service/doctor.go:185-189`: a `warn` whenever the identity came from the file, then `Check{"assignee", "ok", "--assignee me resolves to " + resolved}`. Note it prints `resolved` — the canonical option — not `s.profile.Me`. Keep that: an existing test asserts it, and it is the more useful answer.
+
 ```go
-	if p.MeSource == "legacy" {
+	if s.profile.MeSource == "legacy" {
 		return Check{"assignee", "warn", fmt.Sprintf(
-			"the identity %q is still in the config file, which is meant to be shared\n"+
+			"--assignee me resolves to %s, from the config file, which is meant to be shared\n"+
 				"  fix: rerun 'notion-track init --me %s' to move it to your credentials file",
-			s.profile.Me, s.profile.Me)}
+			resolved, s.profile.Me)}
 	}
-	return Check{"assignee", "ok", fmt.Sprintf("mapped; identity %q from %s", s.profile.Me, sourceLabel)}
+	return Check{"assignee", "ok", "--assignee me resolves to " + resolved}
 ```
 
-Give `sourceLabel` a human name per source (`"the environment"`, `"your credentials file"`). Do not print the raw `"env"`/`"file"` tokens — `doctor`'s output is read by people.
+`s.profile.MeSource`, not `p.MeSource`: `checkAssignee` is a method on `*Service` (`internal/service/doctor.go:152`) and its `prop` variable is the column, not the profile.
+
+Leaving the `ok` line unchanged is deliberate. A `doctor` that recites which file an identity came from every time it is correct adds noise to the common case; the source only matters when something needs doing about it.
 
 - [ ] **Step 4: Run and commit**
 
@@ -804,7 +897,37 @@ git commit -m "docs(skill): teach the agent where the identity lives"
 
 ---
 
-### Task 10: Whole-branch verification
+### Task 10: The strings compiled into the binary
+
+**Files:**
+- Modify: `internal/service/service.go:55-57`, `internal/cli/upsert.go:37`, `internal/cli/list.go:88`
+- Test: whichever package tests already assert on these strings — find them with `grep -rn "NOTION_TRACK_ME\|MeEnv" --include="*_test.go" internal/`
+
+**Why this is a task and not a footnote:** these are what a user reads at the moment they get it wrong, which is more often than they read either README. They currently teach the old precedence.
+
+- [ ] **Step 1: `ErrNoIdentity`**
+
+`internal/service/service.go:55-57` currently offers `export NOTION_TRACK_ME=<name>` first and `notion-track init --me <name>` second. Swap the order and the emphasis: `init --me` is the fix, the environment variable is the override. Keep it a `var` built with `errors.New` — `internal/cli/output.go` maps it to `ExitUsage` with `errors.Is`, so it must stay a sentinel.
+
+- [ ] **Step 2: The two flag help strings**
+
+`internal/cli/upsert.go:37` and `internal/cli/list.go:88` both say `'me' stands for NOTION_TRACK_ME`. Flag help is one line and shares a screen with thirty others: say `'me' stands for your configured identity`, and let the error message and the READMEs carry the detail.
+
+- [ ] **Step 3: Update any test asserting the old strings, then run**
+
+Run: `go test ./... -race`
+Expected: PASS.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add internal/service/service.go internal/cli/upsert.go internal/cli/list.go
+git commit -m "docs(cli): the error and flag help name init --me, not the override"
+```
+
+---
+
+### Task 11: Whole-branch verification
 
 **Files:** none — this task changes nothing unless it finds something.
 
@@ -822,13 +945,16 @@ Expected: `gofmt -l .` prints nothing; everything else passes.
 
 - [ ] **Step 2: The spec's verifiable requirements**
 
-Work through spec §6 one by one and record the evidence for each in the task report. Requirement 6 is a grep:
+Work through spec §6 one by one and record the evidence for each in the task report. Two of them are greps:
 
 ```bash
 grep -rn "meant to be shared" internal/
+grep -rn "NOTION_TRACK_ME" internal/
 ```
 
-Expected: no hits in `internal/cli/init.go`. A hit in `doctor.go` is correct — that is Task 7's legacy warning.
+For the first: no hits in `internal/cli/init.go`. A hit in `doctor.go` is correct — that is Task 7's legacy warning.
+
+For the second (spec §6.9): the only acceptable hits are the `MeEnv` constant's own definition and doc comment, `ResolveIdentity`, and tests. A hit in a user-facing string means Task 10 missed one.
 
 - [ ] **Step 3: An end-to-end read of the diff**
 

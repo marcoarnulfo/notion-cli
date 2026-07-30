@@ -82,12 +82,14 @@ the other optional fields are.
 `internal/config` sets `KnownFields`), so a `credentials.yml` carrying
 `identities` is readable by a v0.6.1 binary — it simply ignores it.
 
-Bumping would be actively harmful: `migrate` (`internal/config/migrate.go:17`)
-rejects a file whose version exceeds the binary's, and `CurrentSchemaVersion`
-is shared with `config.yml`. Bumping it would make every config written by a
-new binary unreadable to a teammate still on the old one, for a change that
-needs no migration at all. This follows the precedent set when
-`Properties.ID` was added: additive field, no bump.
+Bumping would also be gratuitously noisy. `CurrentSchemaVersion` is shared
+with `config.yml`, and `migrate` (`internal/config/migrate.go:17-21`) prints a
+warning — it does not reject — for a file whose version exceeds the binary's;
+`TestLoadAcceptsAFutureSchemaVersion` pins that tolerance deliberately. So a
+bump would not break a teammate still on an older binary, it would nag them on
+every single command, for a change that needs no migration at all. This
+follows the precedent set when `Properties.ID` was added: additive field, no
+bump.
 
 ### 3.3 Precedence, in exactly one place
 
@@ -135,8 +137,13 @@ mapped** — an identity is meaningless without a column to resolve it against.
 Skipping it is a first-class outcome, not a failure: identity is optional and
 `doctor` already reports its absence as `ok`.
 
-The value is validated against the mapped column's options exactly as `--me`
-is, so the two entry points cannot disagree about what a valid identity is.
+**It is a picker over the mapped column's options, not a free-text field.**
+`--me` validates typed input with `tracker.ResolveOption` so a typo cannot
+reach disk; a list makes the same guarantee by construction, with nothing to
+validate and no second spelling rule to keep in step. It also fits the wizard
+as it exists: the model is built on `bubbles/list` and has no text input
+anywhere (`textinput` appears only in `internal/tui/browse.go`), so a picker
+adds a screen of the kind already there rather than a new input mechanism.
 
 ### 3.6 `doctor` reports the source, and flags the legacy one
 
@@ -198,6 +205,16 @@ change; it is most of its user-visible value.
   most for the user's actual workflow: it is what an agent reads.
 - **`skills/notion-track/README.md`** — checked and updated if it repeats the
   claim.
+- **Strings compiled into the binary**, which no documentation task would
+  catch and which reach users more often than any README:
+  - `internal/service/service.go:55-57` — `ErrNoIdentity` tells the user to
+    `export NOTION_TRACK_ME` first and mentions `init --me` second. That order
+    inverts after this change.
+  - `internal/cli/upsert.go:37` and `internal/cli/list.go:88` — the `--assignee`
+    flag help says `'me' stands for NOTION_TRACK_ME`.
+
+  These are the message a user actually hits at the moment they get it wrong,
+  so they matter more than the paragraph they will never read.
 
 **Out of reach:** this repository has no `CLAUDE.md`. The one the user's
 other agent edited belongs to the project where notion-track is *used*, which
@@ -224,6 +241,10 @@ Each of these is a statement a test or a `grep` can settle:
    in §3.2, testable by decoding into the old shape).
 8. The wizard's identity step does not appear when the assignee role is
    unmapped.
+9. `grep -rn "NOTION_TRACK_ME" internal/` returns only the constant's own
+   definition and places where it is correctly described as an override —
+   no user-facing string still presents it as the way to configure an
+   identity.
 
 ## 7. Risks
 
