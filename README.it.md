@@ -113,10 +113,10 @@ Nota: `go install` qui sopra non richiede nessuna release — compila direttamen
    notion-track upsert --ticket TASK-231 --title "Hardening" --status "In corso"
    notion-track upsert --ticket TASK-231 --status "Fatto"  # aggiorna la stessa riga, nessun duplicato
    ```
-8. **(Facoltativo) Traccia chi possiede ogni riga.** Mappa una colonna `select` con `--assignee-prop` (vedi [Uso](#uso) più sotto), esporta la tua identità una volta sola, e `me` funziona ovunque sia accettato `--assignee`:
+8. **(Facoltativo) Traccia chi possiede ogni riga.** Mappa una colonna `select` con `--assignee-prop`, e salva la tua identità insieme ad essa con `--me` (vedi [Uso](#uso) più sotto), e `me` funziona ovunque sia accettato `--assignee`:
    ```bash
-   # una volta sola, nel tuo shell profile
-   export NOTION_TRACK_ME="Jordan Lee"
+   notion-track init --data-source-id <id> --ticket-prop Ticket --status-prop Stato --title-prop Name \
+     --assignee-prop Referente --me "Jordan Lee"
 
    notion-track set --ticket TASK-231 --status "In corso" --assignee me
    notion-track list --assignee me --status "Da fare"
@@ -184,7 +184,7 @@ notion-track init --data-source-id <id> --ticket-prop <nome> --status-prop <nome
 
 Ogni proprietà mappata viene verificata contro lo schema live della data source; `init` rifiuta di scrivere un profilo che si romperebbe al primo uso (tipo sbagliato, o proprietà inesistente). `--ticket-prop`, `--status-prop` e `--title-prop` sono di fatto obbligatori — `init` restituisce un errore di uso indicando quale manca — anche se `--due-prop`, `--assignee-prop` e `--priority-prop` sono opzionali. Il profilo viene scritto con il nome passato tramite `--profile` (default `"default"`); se è il primo profilo nel file diventa anche `default_profile`. Rilanciare `init` con lo stesso nome di `--profile` sovrascrive quel profilo senza toccare gli altri.
 
-`--assignee-prop` si comporta come `--due-prop`: una board che non traccia referenti in particolare lo lascia semplicemente non mappato, e ogni comando si comporta esattamente come prima di questa funzionalità. `--me` risolve il proprio valore contro le opzioni di `--assignee-prop` nello stesso modo di `--assignee me`, così un refuso non può finire nel file, e salva il nome canonico — ma poiché `config.yml` è pensato per essere committato e condiviso, `init --me` stampa un avviso che raccomanda `NOTION_TRACK_ME` invece di affidarsi al valore appena scritto (vedi [Variabili d'ambiente](#variabili-dambiente)).
+`--assignee-prop` si comporta come `--due-prop`: una board che non traccia referenti in particolare lo lascia semplicemente non mappato, e ogni comando si comporta esattamente come prima di questa funzionalità. `--me` risolve il proprio valore contro le opzioni di `--assignee-prop` nello stesso modo di `--assignee me`, così un refuso non può finire nel file, e salva il nome canonico — in `credentials.yml`, non in `config.yml`, perché l'identità è personale e `config.yml` è pensato per essere committato e condiviso (vedi [Variabili d'ambiente](#variabili-dambiente)).
 
 `--priority-prop` si comporta come `--due-prop` a sua volta: una board senza nessuna nozione di urgenza lo lascia semplicemente non mappato, e ogni comando si comporta esattamente come prima di questa funzionalità. A differenza di `--assignee-prop`, non esiste un equivalente `--priority-me`: una priorità non appartiene a nessuno, quindi non c'è nessuna identità da risolvere.
 
@@ -224,13 +224,13 @@ notion-track set --id TASK-271 --status "Fatto"
 ```bash
 notion-track set --ticket TASK-231 --assignee "Sam Rivera"
 notion-track set --ticket TASK-231 --assignee sam     # un nome parziale basta se non è ambiguo
-notion-track set --ticket TASK-231 --assignee me       # NOTION_TRACK_ME, o il `me:` del profilo — vedi sotto
+notion-track set --ticket TASK-231 --assignee me       # risolve alla tua identità configurata — vedi sotto
 notion-track set --ticket TASK-231 --unassign           # svuota la colonna
 ```
 
 Disponibile su `upsert` e `set`. `--assignee` risolve ciò che digiti contro le opzioni della colonna mappata, provando un match esatto, poi un match esatto case-insensitive, poi un match per sottostringa case-insensitive, e si ferma al primo passaggio che trova esattamente un candidato — così `sam` arriva a Notion come `Sam Rivera`. Zero corrispondenze e più di una sono entrambi errori d'uso (exit code 2): il primo indica i valori che la colonna offre davvero, il secondo indica quali sono le corrispondenze trovate e chiede più caratteri del nome.
 
-`me` è un valore riservato: prima che la risoluzione avvenga, viene sostituito da `NOTION_TRACK_ME` (o, in mancanza, dal campo `me:` del profilo — vedi [Variabili d'ambiente](#variabili-dambiente) per capire perché la variabile d'ambiente è quella da usare davvero), così `NOTION_TRACK_ME=jordan` funziona esattamente come digitare il nome per intero. Usare `me` senza che nessuno dei due sia configurato è un errore d'uso che indica il fix.
+`me` è un valore riservato: prima che la risoluzione avvenga, viene sostituito dall'identità configurata — `NOTION_TRACK_ME`, se impostata, altrimenti il valore che `notion-track init --me <nome>` (o la procedura guidata) ha salvato in `credentials.yml`, altrimenti il campo legacy `me:` del profilo (vedi [Variabili d'ambiente](#variabili-dambiente) per la precedenza completa). `NOTION_TRACK_ME=jordan` sovrascrive quindi qualunque cosa sia su file, il che è esattamente ciò che serve alla CI e alle esecuzioni una tantum. Usare `me` senza nessuna identità configurata da nessuna parte è un errore d'uso che indica il fix.
 
 Non passare `--assignee` lascia la colonna intatta — la stessa regola "vuoto significa lascia stare" che segue ogni altro campo. `--assignee ""` è quindi un errore d'uso, non un modo per svuotare la colonna; usa `--unassign` per quello. `--assignee` e `--unassign` sono mutuamente esclusivi, e una colonna select tiene un valore solo, quindi `--assignee` non è ripetibile.
 
@@ -381,7 +381,7 @@ notion-track doctor [--json]
 
 Esegue cinque controlli — `token`, `data_source`, `properties`, `duplicates`, `secrets` — più un sesto, `assignee`, fra `properties` e `duplicates`, quando il ruolo è mappato; ciascuno viene stampato come `ok`, `warn` o `fail` con un messaggio di dettaglio azionabile. Un `warn` (ad es. il tipo della proprietà stato è cambiato da quando `init` è stato eseguito) non fa fallire il comando; qualsiasi `fail` lo fa uscire con codice diverso da zero. Fra i controlli che parlano con Notion, solo `duplicates` viene eseguito anche quando `data_source` fallisce — non ha bisogno dello schema, quindi una configurazione rotta ottiene comunque una scansione dei ticket duplicati invece di fermarsi lì; `properties` e `assignee` hanno entrambi bisogno dello schema live, quindi un fallimento di `data_source` li salta finché non viene risolto. (Anche `secrets` continua a essere eseguito, ma non parla mai con Notion — vedi sotto.)
 
-`assignee` verifica che l'identità configurata (`me:`, o `NOTION_TRACK_ME`) risolva ancora a un'opzione che la colonna mappata offre — un'opzione rinominata in Notion trasformerebbe altrimenti ogni `--assignee me` in un fallimento a runtime scoperto solo al momento di una scrittura. Riporta solo `ok` o `warn`, mai `fail`, e avvisa anche quando l'identità proviene dal `me:` nel file di configurazione invece che da `NOTION_TRACK_ME` — vedi [Variabili d'ambiente](#variabili-dambiente) per capire perché questa distinzione conta.
+`assignee` verifica che l'identità configurata risolva ancora a un'opzione che la colonna mappata offre — un'opzione rinominata in Notion trasformerebbe altrimenti ogni `--assignee me` in un fallimento a runtime scoperto solo al momento di una scrittura. Riporta solo `ok` o `warn`, mai `fail`; l'unica cosa di cui avvisa, oltre a un'identità che non risolve più, è un'identità ancora proveniente dal campo legacy `me:` di `config.yml` invece che da `credentials.yml` o da `NOTION_TRACK_ME` — vedi [Variabili d'ambiente](#variabili-dambiente) per capire perché vale la pena spostarla.
 
 `secrets` è l'unico controllo che guarda la tua macchina invece che Notion: scansiona i file **tracciati** dal repository git corrente cercando qualcosa che abbia la forma di un token di integrazione, e avvisa indicando file e numero di riga — mai il testo trovato, che equivarrebbe a far trapelare il segreto una seconda volta, in scrollback e log di CI. I file non tracciati vengono lasciati stare: un token in un `.env` ignorato non è l'errore che questo controllo cerca. Fuori da un repository, o senza git installato, riporta `ok` con la motivazione invece di un avviso su cui nessuno può agire.
 
@@ -421,13 +421,14 @@ profiles:
       assignee: Referente   # opzionale: proprietà select che indica chi possiede la riga
       priority: Urgenza     # opzionale: proprietà select che indica quanto è urgente la riga
       id: ID                # opzionale: proprietà unique_id che contiene l'id di board della riga
-    me: Jordan Lee          # opzionale: il valore a cui risolve `--assignee me`; NOTION_TRACK_ME lo sovrascrive
 ```
 
 ```yaml
 # credentials.yml — non committare mai questo file
 schema_version: 1
 token: ntn_...
+identities:
+  work: Jordan Lee   # a cosa risolve `--assignee me` per il profilo "work"; scritto da `init --me`
 ```
 
 Entrambi i file sono sostituiti in modo atomico (un file temporaneo nella stessa directory, poi un rename), ma solo `credentials.yml` è garantito a `0600`: il suo file temporaneo ha un suffisso casuale e i permessi vengono impostati esplicitamente, immune a qualunque cosa sia già presente a un percorso temporaneo prevedibile. Il file temporaneo di `config.yml` ha invece un nome fisso e i suoi permessi non vengono forzati su un file già esistente in quel punto, quindi un `config.yml.tmp` residuo di un'esecuzione precedente può lasciarlo con qualunque permesso avesse quel residuo (es. `0644`) — accettabile solo perché, a differenza di `credentials.yml`, non contiene segreti propri.
@@ -442,13 +443,13 @@ Entrambi i file sono sostituiti in modo atomico (un file temporaneo nella stessa
 | `NOTION_TRACK_PROFILE` | quale profilo risolvere, a meno che `--profile` non sia anch'esso specificato |
 | `NOTION_TRACK_DB` | sovrascrive il `database_id` del profilo risolto |
 | `NOTION_TRACK_DATA_SOURCE` | sovrascrive il `data_source_id` del profilo risolto |
-| `NOTION_TRACK_ME` | sovrascrive il `me:` del profilo risolto — il valore a cui risolve `--assignee me` |
+| `NOTION_TRACK_ME` | sovrascrive l'identità configurata — il valore a cui risolve `--assignee me` |
 
 Precedenza:
 
 - **Selezione del profilo:** flag `--profile` → `NOTION_TRACK_PROFILE` → `default_profile` nel file di configurazione.
 - **`database_id` / `data_source_id`:** le variabili d'ambiente sopra sovrascrivono sempre ciò che il profilo risolto ha su file, indipendentemente da come quel profilo è stato scelto — è ciò che permette a un job CI di puntare un profilo esistente verso un'altra data source senza toccare il file committato.
-- **Identità (`--assignee me`):** `NOTION_TRACK_ME` → il campo `me:` del profilo, stesso meccanismo di override di `database_id`/`data_source_id` sopra. La variabile d'ambiente è quella da usare davvero: `config.yml` è pensato per essere committato e condiviso (vedi [Configurazione](#configurazione)), quindi un `me:` scritto lì è l'identità di *tutti* — un collega che non esporta mai `NOTION_TRACK_ME` risolve `me` in chiunque abbia committato il file, assegnando in silenzio il lavoro alla persona sbagliata. `init --me` stampa un avviso in tal senso nel momento stesso in cui ne scrive uno, e `doctor` avvisa se un profilo ha `me:` impostato ma `NOTION_TRACK_ME` non lo è.
+- **Identità (`--assignee me`):** `NOTION_TRACK_ME` → la mappa `identities` di `credentials.yml` per il profilo risolto → il campo `me:` del profilo in `config.yml` (legacy). `notion-track init --me <nome>` (o la procedura guidata, offerta ogni volta che una colonna assignee è mappata) è il modo predefinito per configurarla, e scrive in `credentials.yml` — il file per-utente — mai in `config.yml`, che è pensato per essere committato e condiviso (vedi [Configurazione](#configurazione)). `NOTION_TRACK_ME` è l'override sopra a questo, per la CI e le esecuzioni una tantum. Il campo `me:` del profilo continua a funzionare per sempre, per le configurazioni scritte prima che l'identità si spostasse — ma un `me:` in un `config.yml` committato è l'identità di *tutti*, quindi `doctor` avvisa quando l'identità di un profilo proviene ancora da lì, indicando `init --me` come fix.
 - **Token:** `NOTION_TOKEN` → `credentials.yml`. Un token letto dall'ambiente non viene mai riscritto in `credentials.yml` — un secret della CI non può mai trapelare su disco durante un'esecuzione normale. Esegui `notion-track doctor` se hai bisogno di vedere quale fonte ha effettivamente vinto.
 - **Percorso del file di configurazione:** flag `--config` → il percorso predefinito del sistema operativo sopra. Non esiste una variabile d'ambiente per il percorso stesso, né un flag equivalente per `credentials.yml`.
 
