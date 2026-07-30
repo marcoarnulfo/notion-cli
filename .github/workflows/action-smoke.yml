@@ -1,0 +1,158 @@
+name: Action smoke
+
+# The composite action in action/ is the one thing in this repository no test
+# reaches. It is bash inside YAML; it depends on tools the runner happens to
+# ship (gh, sha256sum, 7z); and it rebuilds release archive names that only
+# .goreleaser.yaml knows the truth about. A Go test can check none of that.
+# This workflow is that check: it installs from a real release on every runner
+# OS and confirms the binary lands on PATH reporting the tag it was asked for.
+on:
+  # Only when the action or this workflow changes. It deliberately does not run
+  # on every push: it tests the published release, not the commit under test,
+  # so gating unrelated PRs on it would report on something they never touched.
+  push:
+    paths:
+      - 'action/**'
+      - '.github/workflows/action-smoke.yml'
+  pull_request:
+    paths:
+      - 'action/**'
+      - '.github/workflows/action-smoke.yml'
+  # The other way this breaks: archive names are GoReleaser's output and the
+  # action's guess, and publishing a release without checking one installs is
+  # how the two drift apart unnoticed.
+  release:
+    types: [published]
+  schedule:
+    # This action's real dependencies are the runner images, which change
+    # underneath us. Weekly is enough to find out before a user does.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag to install, or "latest"'
+        required: false
+        default: ''
+
+# Downloading a release asset is all this needs. Stated rather than inherited,
+# for the reason ci.yml gives at more length.
+permissions:
+  contents: read
+
+concurrency:
+  group: action-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install:
+    # Four runners cover every branch of the action's OS and architecture
+    # mapping: both uname -m spellings that mean 64-bit Intel and ARM
+    # (x86_64 and aarch64), the Darwin branch, and Windows with its separate
+    # zip-unpacking path through Git Bash.
+    #
+    # Two published archives have no row here, and it is worth saying which:
+    # windows/arm64, because no GitHub-hosted label offers it; and
+    # darwin/amd64, whose two case arms (Darwin, x86_64) are each already
+    # exercised by another row. Neither gap hides an untested line of the
+    # action — but neither is a platform this workflow has actually run on.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-latest      # linux/amd64
+          - ubuntu-24.04-arm   # linux/arm64  (uname -m: aarch64)
+          - macos-latest       # darwin/arm64
+          - windows-latest     # windows/amd64, via Git Bash and 7z
+    runs-on: ${{ matrix.runner }}
+    steps:
+      # Pinned to a commit SHA with the version in the comment for Dependabot,
+      # on the same discipline as the other two workflows.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # "latest" as a caller would write it — except right after publishing a
+      # release, where the tag itself is used so that a prerelease, which
+      # "latest" skips by design, still gets checked.
+      - id: install
+        uses: ./action
+        with:
+          # github.event.inputs, not the inputs context: the latter is defined
+          # only for workflow_dispatch and workflow_call, and this expression
+          # has to evaluate on a push and a schedule too.
+          version: ${{ github.event.inputs.version || github.event.release.tag_name || 'latest' }}
+
+      # A separate step on purpose. The action's own last line runs the binary
+      # by absolute path, which proves it executes but not that it can be
+      # found: only a later step sees the GITHUB_PATH export, and being on
+      # PATH is the whole reason a caller uses this action.
+      - name: The binary is on PATH and agrees with the tag installed
+        shell: bash
+        env:
+          EXPECTED: ${{ steps.install.outputs.version }}
+        run: |
+          set -euo pipefail
+          test -n "$EXPECTED" || {
+            echo "::error::the action installed something but reported no version"
+            exit 1
+          }
+          got="$(notion-track --version)"
+          # Exact equality, not a substring: the version template prints the
+          # version alone, and the point of this assertion is that the tag the
+          # action resolved is the build that ended up on PATH.
+          [ "$got" = "$EXPECTED" ] || {
+            echo "::error::installed $EXPECTED but the binary reports $got"
+            exit 1
+          }
+          echo "notion-track $got is on PATH"
+
+      # Installing the tag the step above resolved exercises the other half of
+      # the version input — an explicit tag instead of "latest" — without
+      # writing a version number into this file, which would be one more
+      # thing to remember at every release and would silently go stale.
+      - id: pinned
+        uses: ./action
+        with:
+          version: ${{ steps.install.outputs.version }}
+
+      - name: A pinned tag installs that tag
+        shell: bash
+        env:
+          PINNED: ${{ steps.pinned.outputs.version }}
+        run: |
+          set -euo pipefail
+          got="$(notion-track --version)"
+          [ "$got" = "$PINNED" ] || {
+            echo "::error::pinned $PINNED but the binary reports $got"
+            exit 1
+          }
+          echo "pinning $PINNED installed $got"
+
+  documented-reference:
+    # The README tells users to write `uses: marcoarnulfo/notion-cli/action@main`.
+    # The job above uses `./action`, which proves the action's code but not
+    # that line: a remote reference resolves through a different path — the
+    # repository, the ref, and an action.yml at exactly that subdirectory —
+    # and nothing else here would notice if it stopped resolving.
+    #
+    # No checkout step, deliberately: a caller has no copy of this repository,
+    # and the action must not need one.
+    #
+    # This tests main rather than the current commit. On a pull request that is
+    # the point, and also the caveat: a failure here is about the reference,
+    # not about the diff.
+    runs-on: ubuntu-latest
+    steps:
+      - id: install
+        uses: marcoarnulfo/notion-cli/action@main
+
+      - name: The reference the README documents installs a working binary
+        shell: bash
+        env:
+          EXPECTED: ${{ steps.install.outputs.version }}
+        run: |
+          set -euo pipefail
+          got="$(notion-track --version)"
+          [ "$got" = "$EXPECTED" ] || {
+            echo "::error::installed $EXPECTED but the binary reports $got"
+            exit 1
+          }
+          echo "the documented @main reference installed $got"
