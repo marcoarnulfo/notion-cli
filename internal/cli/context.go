@@ -41,11 +41,22 @@ func buildService(cmd *cobra.Command) (*service.Service, error) {
 		return nil, err
 	}
 
-	profileName, _ := cmd.Flags().GetString("profile")
-	profile, err := cfg.Resolve(profileName)
+	requested, _ := cmd.Flags().GetString("profile")
+	// The resolved name, not the flag: NOTION_TRACK_PROFILE and
+	// default_profile are applied inside Resolve, and the identity is keyed
+	// by the profile the run is actually about.
+	name := cfg.ProfileName(requested)
+	profile, err := cfg.Resolve(name)
 	if err != nil {
 		return nil, Errorf(ExitUsage, "%v", err)
 	}
+
+	me, source, err := config.ResolveIdentity(name, profile)
+	if err != nil {
+		return nil, err
+	}
+	profile.Me, profile.MeSource = me, source
+
 	if profile.DataSourceID == "" {
 		return nil, Errorf(ExitUsage,
 			"profile has no data_source_id; run 'notion-track init' to configure it")

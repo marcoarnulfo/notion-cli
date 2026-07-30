@@ -216,6 +216,40 @@ func TestSetMeUsesTheConfiguredIdentity(t *testing.T) {
 	}
 }
 
+// TestAssigneeMeUsesTheIdentityFromCredentials proves the identity comes from
+// credentials.yml, and that it is looked up under the *resolved* profile
+// name rather than the raw --profile flag: the fixture's config.yml names
+// "work" as default_profile, the identity is saved under "work", and the
+// command below never passes --profile at all. If buildService looked up
+// identities[""] (the flag's zero value) instead of identities[name], this
+// would find nothing and fail with ErrNoIdentity.
+func TestAssigneeMeUsesTheIdentityFromCredentials(t *testing.T) {
+	// withIsolatedUserConfigDir(t) FIRST — see the global constraint. Without
+	// it this test writes into the developer's own credentials.yml.
+	withIsolatedUserConfigDir(t)
+	t.Setenv(config.MeEnv, "")
+
+	var written map[string]any
+	// assigneeProfileNoIdentity carries no legacy me:, so the only possible
+	// source for a resolved value here is credentials.yml.
+	cfg := stubForAssignee(t, assigneeProfileNoIdentity, &written)
+
+	if err := config.SaveIdentity("work", "Andrea Ghidara"); err != nil {
+		t.Fatalf("SaveIdentity: %v", err)
+	}
+
+	if code := executeArgs([]string{
+		"set", "--ticket", "BDF-231", "--assignee", "me", "--config", cfg,
+	}); code != ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+
+	got, _ := json.Marshal(written["Referente"])
+	if want := `{"select":{"name":"Andrea Ghidara"}}`; string(got) != want {
+		t.Errorf("Referente = %s, want %s", got, want)
+	}
+}
+
 func TestAssigneeUsageErrorsAllExitTwo(t *testing.T) {
 	tests := []struct {
 		name    string
