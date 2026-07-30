@@ -405,6 +405,16 @@ func SaveIdentity(profile, name string) error {
 	return writeCredentials(creds)
 }
 
+// MeSourceUnreadable is the MeSource of a run whose credentials file could not
+// be read at all. ResolveIdentity never returns it — it reports that as an
+// error — so it is the caller that turns the failure into this source, which
+// is what lets the two places that actually need an identity tell "nobody
+// configured one" from "one may well be on file, but nothing could read it".
+// Naming it here rather than spelling the string twice keeps the writer
+// (internal/cli.buildService) and the readers (service.resolveAssignee,
+// doctor's assignee check) from drifting apart.
+const MeSourceUnreadable = "unreadable"
+
 // ResolveIdentity answers who "--assignee me" means, in one place:
 //
 //	NOTION_TRACK_ME  →  credentials.yml identities[profile]  →  the profile's me:

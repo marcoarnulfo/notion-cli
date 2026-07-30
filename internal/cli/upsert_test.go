@@ -246,6 +246,44 @@ func TestAssigneeMeUsesTheIdentityFromCredentials(t *testing.T) {
 	}
 }
 
+// An unreadable credentials.yml used to take down every command, because
+// buildService resolved the identity eagerly and failed hard. It no longer
+// does — but it must not silently fall back to the profile's legacy me:
+// either, which is someone else's identity. `--assignee me` is one of the two
+// places that has to say so, and it says it with ExitAuth, like every other
+// failure to read that file.
+func TestAssigneeMeWithUnreadableCredentialsExitsAuth(t *testing.T) {
+	var written map[string]any
+	// assigneeProfile carries a legacy me: — the value the old fallback would
+	// have quietly assigned the row to.
+	cfg := stubForAssignee(t, assigneeProfile, &written)
+	unreadableCredentials(t)
+
+	if code := executeArgs([]string{
+		"set", "--ticket", "BDF-231", "--assignee", "me", "--config", cfg,
+	}); code != ExitAuth {
+		t.Fatalf("exit code = %d, want %d (ExitAuth)", code, ExitAuth)
+	}
+	if written != nil {
+		t.Errorf("the write went through with an identity nothing could confirm: %v", written)
+	}
+}
+
+// The other half: a command that never asks who "me" is must keep working
+// with the same broken file. Before this, resolving the identity eagerly for
+// every command made an unreadable credentials.yml fatal to `list` too.
+func TestListStillWorksWithUnreadableCredentials(t *testing.T) {
+	var written map[string]any
+	cfg := stubForAssignee(t, assigneeProfile, &written)
+	unreadableCredentials(t)
+
+	captureStdout(t, func() {
+		if code := executeArgs([]string{"list", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d, want %d (ExitOK)", code, ExitOK)
+		}
+	})
+}
+
 func TestAssigneeUsageErrorsAllExitTwo(t *testing.T) {
 	tests := []struct {
 		name    string

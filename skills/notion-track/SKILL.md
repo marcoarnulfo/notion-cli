@@ -151,6 +151,16 @@ don't tell the user to export a variable — tell them to run `notion-track init
 --me "<name>"` (or run `doctor` first, to see what identity, if any, is set
 up).
 
+That command takes no other flags: `notion-track init --me "<name>"` on its
+own writes only the identity, for the profile already in use, and never
+touches `config.yml`. It needs a profile that already maps an assignee column
+— if it exits 2 saying otherwise, the board has no referente column and there
+is no identity to configure.
+
+Exit 5 from `--assignee me` means something different again: the credentials
+file exists but couldn't be read. Don't retry with a name — say the file is
+unreadable, since an identity may well be in it.
+
 If this board doesn't map an assignee column at all, `--assignee`/`--unassign`
 fail (exit 1, not 2) telling you so — that's your cue to say the board has no
 referente column, not to retry with a different flag.
@@ -326,7 +336,7 @@ reporting to the user but does not block anything.
 | 2 | bad usage (missing/invalid flag, unknown status, a malformed `--page-id` or `--id`, an `--assignee` value that's unknown or ambiguous, an empty `--assignee`, `--assignee me` with no identity configured, `--assignee` combined with `--unassign`/`--unassigned`, a `--priority` value that's unknown or ambiguous, or `--id` used on a board with no id column mapped) | fix the invocation; a rejected status, assignee or priority means the value isn't one the board allows — read the error's list of valid options rather than guessing again. **An unmapped id role is exit 2, not 1** — the one role that differs from the row below |
 | 3 | task not found | with `set`/`get`: the ticket, board id, or page id doesn't match a row — don't retry as `upsert` without checking with the user |
 | 4 | duplicate key | more than one row has that ticket key; the tool refuses to guess. Surface it and run `doctor` to list the duplicates |
-| 5 | auth failure | the token is missing or invalid; tell the user to run `notion-track init` |
+| 5 | auth failure | the token is missing or invalid; tell the user to run `notion-track init`. Also what `--assignee me` gives when the credentials file can't be read — there the fix is repairing that file, not configuring an identity |
 | 1 | other error, including an `--assignee`, `--priority` or `--due` role that simply isn't mapped on this board | report it; for one of these unmapped roles, say so and point at `init` rather than retrying. (Unmapped **id** is the exception — see exit 2 above.) |
 
 `apply` reports the exit code of the entry that stopped it, so the same table

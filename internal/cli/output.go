@@ -163,8 +163,12 @@ func exitCodeFor(err error) int {
 	// is the same problem by the same reasoning — there may still be a
 	// token in there, just not one anything can prove exists — so it must
 	// exit the same way rather than falling through to the generic
-	// ExitError below.
-	case errors.Is(err, config.ErrCredentialsUnreadable), errors.Is(err, config.ErrInvalidCredentials):
+	// ExitError below. ErrIdentityUnreadable is the third face of the same
+	// file: buildService swallows the read failure so that commands needing
+	// no identity keep working, and "--assignee me" raises it again here.
+	case errors.Is(err, config.ErrCredentialsUnreadable),
+		errors.Is(err, config.ErrInvalidCredentials),
+		errors.Is(err, service.ErrIdentityUnreadable):
 		return ExitAuth
 	}
 	var coded *codedError

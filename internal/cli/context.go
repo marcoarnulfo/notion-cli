@@ -48,7 +48,17 @@ func buildService(cmd *cobra.Command) (*service.Service, error) {
 
 	me, source, err := config.ResolveIdentity(name, profile)
 	if err != nil {
-		return nil, err
+		// Not fatal, and deliberately not a fallback either. This runs for
+		// every command, but almost none of them need an identity: failing
+		// here would let an unreadable credentials.yml take down `list` and
+		// `get`, which never ask who "me" is. Falling through to the profile's
+		// legacy me: would be worse still — that value is whoever ran init,
+		// and silently assigning work to the wrong person is the exact failure
+		// the identity moved out of the shared file to prevent. So the
+		// identity stays empty and the source records why, leaving the two
+		// places that do need one — `--assignee me` and doctor's assignee
+		// check — free to report it instead of guessing.
+		me, source = "", config.MeSourceUnreadable
 	}
 	profile.Me, profile.MeSource = me, source
 
