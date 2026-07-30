@@ -69,3 +69,57 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Install what was just published, with the composite action, on every runner
+  # OS — the only check that the archive names GoReleaser writes are the ones
+  # the action reconstructs, against the real release rather than a snapshot.
+  #
+  # It lives here, in the release workflow, rather than in action-smoke.yml
+  # behind a `release: [published]` trigger. That trigger cannot work: GoReleaser
+  # publishes with the default GITHUB_TOKEN, and GitHub does not start workflow
+  # runs from events raised by that token. A job that `needs` the one above runs
+  # in the same workflow, so it cannot silently fail to fire.
+  #
+  # This verifies, it does not gate: by the time it runs the release is already
+  # public. A failure here means the archives are up but unusable — which is
+  # exactly when someone needs to be told, loudly, rather than finding out from
+  # a colleague.
+  smoke:
+    needs: goreleaser
+    permissions:
+      # Downloading the release this workflow just published. The write
+      # permission above belongs to GoReleaser alone.
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-latest      # linux/amd64
+          - ubuntu-24.04-arm   # linux/arm64  (uname -m: aarch64)
+          - macos-latest       # darwin/arm64
+          - windows-latest     # windows/amd64, via Git Bash and 7z
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The tag being released, never "latest": a prerelease is not what
+      # "latest" resolves to, and even for a normal release, asking for
+      # "latest" here would verify whatever is newest rather than what this
+      # run just built.
+      - id: install
+        uses: ./action
+        with:
+          version: ${{ github.ref_name }}
+
+      - name: The release that was just published installs and runs
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          got="$(notion-track --version)"
+          [ "$got" = "$TAG" ] || {
+            echo "::error::published $TAG but the installed binary reports $got"
+            exit 1
+          }
+          echo "notion-track $got installs from the release just published"

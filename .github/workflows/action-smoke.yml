@@ -10,7 +10,15 @@ on:
   # Only when the action or this workflow changes. It deliberately does not run
   # on every push: it tests the published release, not the commit under test,
   # so gating unrelated PRs on it would report on something they never touched.
+  #
+  # branches, not just paths: without it a TAG push matches too, and the run
+  # that appears next to a new release is the one that installed the PREVIOUS
+  # one — it races the release workflow, resolves "latest" to the old tag, and
+  # goes green having verified nothing about the release it sits beside. That
+  # happened, once, and it is the most convincing kind of false green.
   push:
+    branches:
+      - main
     paths:
       - 'action/**'
       - '.github/workflows/action-smoke.yml'
@@ -18,11 +26,12 @@ on:
     paths:
       - 'action/**'
       - '.github/workflows/action-smoke.yml'
-  # The other way this breaks: archive names are GoReleaser's output and the
-  # action's guess, and publishing a release without checking one installs is
-  # how the two drift apart unnoticed.
-  release:
-    types: [published]
+  # There is deliberately no `release: [published]` trigger here. GoReleaser
+  # publishes with the default GITHUB_TOKEN, and GitHub does not start new
+  # workflow runs from events raised by that token — so such a trigger is dead
+  # code that reads like coverage. A release is verified by the smoke job
+  # inside .github/workflows/release.yml, which runs in the same workflow and
+  # therefore cannot silently not fire.
   schedule:
     # This action's real dependencies are the runner images, which change
     # underneath us. Weekly is enough to find out before a user does.
@@ -72,16 +81,16 @@ jobs:
       # on the same discipline as the other two workflows.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # "latest" as a caller would write it — except right after publishing a
-      # release, where the tag itself is used so that a prerelease, which
-      # "latest" skips by design, still gets checked.
+      # "latest", as a caller would write it. Verifying a specific new release
+      # is release.yml's job; here the point is that the ordinary spelling
+      # keeps working.
       - id: install
         uses: ./action
         with:
           # github.event.inputs, not the inputs context: the latter is defined
           # only for workflow_dispatch and workflow_call, and this expression
           # has to evaluate on a push and a schedule too.
-          version: ${{ github.event.inputs.version || github.event.release.tag_name || 'latest' }}
+          version: ${{ github.event.inputs.version || 'latest' }}
 
       # A separate step on purpose. The action's own last line runs the binary
       # by absolute path, which proves it executes but not that a caller can

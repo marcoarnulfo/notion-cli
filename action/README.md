@@ -38,7 +38,10 @@ What this proves is that the bytes match what the release published. It does not
 
 ## What is tested
 
-The `action-smoke` workflow in this repository installs a published release with this action on Linux (amd64 and arm64), macOS (arm64) and Windows (amd64), and checks in a **later step** that `notion-track` is on `PATH` reporting the tag that was asked for. It runs whenever the action changes, whenever a release is published, and weekly — the runner images this action leans on change underneath it.
+Two workflows in this repository install a published release with this action on Linux (amd64 and arm64), macOS (arm64) and Windows (amd64), and check in a **later step** that `notion-track` is on `PATH` reporting the tag that was asked for:
+
+- the release workflow's `smoke` job, on every release, against the tag it has just published;
+- `action-smoke`, whenever the action changes and weekly — the runner images this action leans on change underneath it.
 
 The `windows/arm64` and `darwin/amd64` archives are published but have never been installed by this action on a real runner.
 
