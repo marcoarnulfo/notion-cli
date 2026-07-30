@@ -203,6 +203,12 @@ func Token() (string, bool) {
 type Credentials struct {
 	SchemaVersion int    `yaml:"schema_version"`
 	Token         string `yaml:"token"`
+	// Identities maps a profile name to the value "--assignee me" resolves
+	// to for this user. It lives here rather than in config.yml for the same
+	// reason the token does: it is personal, and config.yml is meant to be
+	// committed. Keyed by profile because two profiles can point at
+	// workspaces that spell the same person differently.
+	Identities map[string]string `yaml:"identities,omitempty"`
 }
 
 // credentialsPath is a seam: tests point it at t.TempDir().
@@ -243,13 +249,27 @@ func LoadToken() (token string, source string, err error) {
 		return v, "env", nil
 	}
 
-	path, err := credentialsPath()
+	creds, err := loadCredentials()
 	if err != nil {
 		return "", "", err
 	}
+	if creds.Token == "" {
+		return "", "", nil
+	}
+	return creds.Token, "file", nil
+}
+
+// loadCredentials reads credentials.yml whole. A missing file is not an
+// error: it is the ordinary state before init has ever run, and both callers
+// treat it as an empty set.
+func loadCredentials() (Credentials, error) {
+	path, err := credentialsPath()
+	if err != nil {
+		return Credentials{}, err
+	}
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return "", "", nil
+		return Credentials{}, nil
 	}
 	if err != nil {
 		// err is already a *fs.PathError that names path itself (e.g. "open
@@ -258,7 +278,7 @@ func LoadToken() (token string, source string, err error) {
 		// time. %v here keeps the underlying reason once; %w on
 		// ErrCredentialsUnreadable is what lets callers map this to
 		// ExitAuth via errors.Is.
-		return "", "", fmt.Errorf("config: %w: %v", ErrCredentialsUnreadable, err)
+		return Credentials{}, fmt.Errorf("config: %w: %v", ErrCredentialsUnreadable, err)
 	}
 
 	var creds Credentials
@@ -270,18 +290,15 @@ func LoadToken() (token string, source string, err error) {
 		// yaml error must never be wrapped with %w. ErrInvalidCredentials is
 		// a fixed message a caller can still key on with errors.Is; it
 		// carries nothing of what was actually read.
-		return "", "", fmt.Errorf("config: %s: %w", path, ErrInvalidCredentials)
+		return Credentials{}, fmt.Errorf("config: %s: %w", path, ErrInvalidCredentials)
 	}
-	if creds.Token == "" {
-		return "", "", nil
-	}
-	return creds.Token, "file", nil
+	return creds, nil
 }
 
-// SaveToken writes the token to credentials.yml, atomically (a temp file in
-// the same directory, then rename) and with restrictive permissions.
-// Called only from init, and only after an interactive user has explicitly
-// opted in.
+// writeCredentials writes creds to credentials.yml, atomically (a temp file
+// in the same directory, then rename) and with restrictive permissions.
+// Both SaveToken and SaveIdentity funnel through here so there is exactly
+// one place on disk this file is ever written.
 //
 // The temp file is created with os.CreateTemp rather than a fixed name plus
 // os.WriteFile: WriteFile does not apply its mode to a file that already
@@ -294,7 +311,7 @@ func LoadToken() (token string, source string, err error) {
 // Chmod after that closes the umask gap CreateTemp's own 0600 default still
 // leaves (belt and suspenders, not strictly required, but the cost of
 // skipping it is a leaked secret).
-func SaveToken(token string) error {
+func writeCredentials(creds Credentials) error {
 	path, err := credentialsPath()
 	if err != nil {
 		return err
@@ -304,7 +321,6 @@ func SaveToken(token string) error {
 		return fmt.Errorf("config: creating config dir: %w", err)
 	}
 
-	creds := Credentials{SchemaVersion: CurrentSchemaVersion, Token: token}
 	raw, err := yaml.Marshal(&creds)
 	if err != nil {
 		return fmt.Errorf("config: encoding credentials: %w", err)
@@ -344,4 +360,35 @@ func SaveToken(token string) error {
 		return fmt.Errorf("config: replacing %s: %w", path, err)
 	}
 	return nil
+}
+
+// SaveToken writes the token to credentials.yml. Called only from init, and
+// only after an interactive user has explicitly opted in. It reads the file
+// first so that saving a token cannot discard the identities sitting next to
+// it — see SaveIdentity, which faces the same hazard in the other direction.
+func SaveToken(token string) error {
+	creds, err := loadCredentials()
+	if err != nil {
+		return err
+	}
+	creds.SchemaVersion = CurrentSchemaVersion
+	creds.Token = token
+	return writeCredentials(creds)
+}
+
+// SaveIdentity records the value "--assignee me" resolves to for one profile.
+// It reads the file first so that saving an identity cannot discard the token
+// sitting next to it — the two are written by different commands at different
+// times, and a blind write would destroy a working setup.
+func SaveIdentity(profile, name string) error {
+	creds, err := loadCredentials()
+	if err != nil {
+		return err
+	}
+	creds.SchemaVersion = CurrentSchemaVersion
+	if creds.Identities == nil {
+		creds.Identities = map[string]string{}
+	}
+	creds.Identities[profile] = name
+	return writeCredentials(creds)
 }

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func withTempConfig(t *testing.T) string {
@@ -357,6 +359,101 @@ func TestSaveTokenThenLoadTokenRoundTrips(t *testing.T) {
 	}
 	if tok != "ntn_secret" || source != "file" {
 		t.Fatalf("LoadToken() = %q, %q, want ntn_secret, file", tok, source)
+	}
+}
+
+func TestSaveIdentityKeepsTheToken(t *testing.T) {
+	withTempCredentials(t)
+
+	if err := SaveToken("secret_abc"); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+	if err := SaveIdentity("default", "Jordan Lee"); err != nil {
+		t.Fatalf("SaveIdentity: %v", err)
+	}
+
+	token, source, err := LoadToken()
+	if err != nil {
+		t.Fatalf("LoadToken: %v", err)
+	}
+	if token != "secret_abc" || source != "file" {
+		t.Errorf("LoadToken() = %q, %q; want the token saved before the identity", token, source)
+	}
+}
+
+func TestSaveTokenKeepsIdentities(t *testing.T) {
+	withTempCredentials(t)
+
+	if err := SaveIdentity("work", "Jordan Lee"); err != nil {
+		t.Fatalf("SaveIdentity: %v", err)
+	}
+	if err := SaveToken("secret_abc"); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+
+	creds, err := loadCredentials()
+	if err != nil {
+		t.Fatalf("loadCredentials: %v", err)
+	}
+	if got := creds.Identities["work"]; got != "Jordan Lee" {
+		t.Errorf("identities[work] = %q after SaveToken; want it preserved", got)
+	}
+}
+
+func TestSaveIdentityOverwritesTheSameProfileOnly(t *testing.T) {
+	withTempCredentials(t)
+
+	if err := SaveIdentity("default", "Old Name"); err != nil {
+		t.Fatalf("SaveIdentity: %v", err)
+	}
+	if err := SaveIdentity("work", "Jordan Lee"); err != nil {
+		t.Fatalf("SaveIdentity: %v", err)
+	}
+	if err := SaveIdentity("default", "New Name"); err != nil {
+		t.Fatalf("SaveIdentity: %v", err)
+	}
+
+	creds, err := loadCredentials()
+	if err != nil {
+		t.Fatalf("loadCredentials: %v", err)
+	}
+	if creds.Identities["default"] != "New Name" || creds.Identities["work"] != "Jordan Lee" {
+		t.Errorf("identities = %v; want default replaced and work untouched", creds.Identities)
+	}
+}
+
+// A credentials.yml written by this binary must stay readable by one built
+// before Identities existed. This is the compatibility claim in spec §3.2,
+// and the reason CurrentSchemaVersion is not bumped.
+func TestIdentitiesAreIgnoredByAnOlderStruct(t *testing.T) {
+	withTempCredentials(t)
+
+	if err := SaveToken("secret_abc"); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+	if err := SaveIdentity("default", "Jordan Lee"); err != nil {
+		t.Fatalf("SaveIdentity: %v", err)
+	}
+
+	path, err := credentialsPath()
+	if err != nil {
+		t.Fatalf("credentialsPath: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading credentials: %v", err)
+	}
+
+	// The shape as it was before this change.
+	var old struct {
+		SchemaVersion int    `yaml:"schema_version"`
+		Token         string `yaml:"token"`
+	}
+	if err := yaml.Unmarshal(raw, &old); err != nil {
+		t.Fatalf("an older binary cannot read this file: %v", err)
+	}
+	if old.Token != "secret_abc" {
+		t.Errorf("old.Token = %q; want the token still readable", old.Token)
 	}
 }
 
