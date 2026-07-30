@@ -57,6 +57,10 @@ func withStubbedAPIProfile(t *testing.T, handler http.HandlerFunc, configYAML st
 	withIsolatedUserConfigDir(t)
 	t.Setenv(config.TokenEnv, "ntn_test")
 	t.Setenv(config.MeEnv, "")
+	// The same reasoning one line up, for the variable that decides WHICH
+	// profile a fixture resolves to. A developer with this exported would send
+	// several tests looking for a profile their fixture never defines.
+	t.Setenv(config.ProfileEnv, "")
 
 	path := filepath.Join(t.TempDir(), "config.yml")
 	os.WriteFile(path, []byte(configYAML), 0o600)

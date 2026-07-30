@@ -157,9 +157,11 @@ touches `config.yml`. It needs a profile that already maps an assignee column
 — if it exits 2 saying otherwise, the board has no referente column and there
 is no identity to configure.
 
-Exit 5 from `--assignee me` means something different again: the credentials
-file exists but couldn't be read. Don't retry with a name — say the file is
-unreadable, since an identity may well be in it.
+Exit 5 from `--assignee me` has two causes, and the error text tells them
+apart. If it says the credentials file couldn't be read, don't retry with a
+name — say the file is unreadable, since an identity may well be in it. If it
+says no integration token was found, that is the ordinary auth failure every
+command gives, and has nothing to do with the identity.
 
 If this board doesn't map an assignee column at all, `--assignee`/`--unassign`
 fail (exit 1, not 2) telling you so — that's your cue to say the board has no
