@@ -55,6 +55,9 @@ jobs:
     # darwin/amd64, whose two case arms (Darwin, x86_64) are each already
     # exercised by another row. Neither gap hides an untested line of the
     # action — but neither is a platform this workflow has actually run on.
+    #
+    # Before trimming this list: the Windows row is the only one that tests
+    # the GITHUB_PATH export at all. See the PATH assertion below.
     strategy:
       fail-fast: false
       matrix:
@@ -81,9 +84,16 @@ jobs:
           version: ${{ github.event.inputs.version || github.event.release.tag_name || 'latest' }}
 
       # A separate step on purpose. The action's own last line runs the binary
-      # by absolute path, which proves it executes but not that it can be
-      # found: only a later step sees the GITHUB_PATH export, and being on
-      # PATH is the whole reason a caller uses this action.
+      # by absolute path, which proves it executes but not that a caller can
+      # find it — and being found is the whole reason a caller uses this
+      # action rather than four lines of curl.
+      #
+      # Only the Windows row actually tests the GITHUB_PATH export, which was
+      # measured rather than assumed: deleting that line from the action still
+      # passed on both Linux images and on macOS, because those images already
+      # carry $HOME/.local/bin on PATH, and failed only under Git Bash. So
+      # dropping the Windows row to save a minute would silently stop testing
+      # the export everywhere.
       - name: The binary is on PATH and agrees with the tag installed
         shell: bash
         env:

@@ -36,6 +36,12 @@ The archive is checked against its own line in the release's `checksums.txt`, an
 
 What this proves is that the bytes match what the release published. It does not prove who published them; signing and provenance attestation would, and are not in place yet.
 
+## What is tested
+
+The `action-smoke` workflow in this repository installs a published release with this action on Linux (amd64 and arm64), macOS (arm64) and Windows (amd64), and checks in a **later step** that `notion-track` is on `PATH` reporting the tag that was asked for. It runs whenever the action changes, whenever a release is published, and weekly — the runner images this action leans on change underneath it.
+
+The `windows/arm64` and `darwin/amd64` archives are published but have never been installed by this action on a real runner.
+
 ## Requirements
 
 - **Linux, macOS or Windows runners**, amd64 or arm64. Windows goes through Git Bash, and unpacking the `.zip` needs one of `unzip`, `7z` or a `tar` that reads zip — the GitHub-hosted images have `7z`. Anything else fails with an explicit message rather than installing something wrong.
