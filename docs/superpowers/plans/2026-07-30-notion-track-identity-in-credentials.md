@@ -819,6 +819,8 @@ The current tail is at `internal/service/doctor.go:185-189`: a `warn` whenever t
 
 `s.profile.MeSource`, not `p.MeSource`: `checkAssignee` is a method on `*Service` (`internal/service/doctor.go:152`) and its `prop` variable is the column, not the profile.
 
+**Delete the `os.Getenv(config.MeEnv)` check at `internal/service/doctor.go:183`.** It is a second copy of the precedence rule, living in a package that should not be reading the environment at all — `MeSource` now carries that answer, computed once. Leaving it would mean two places decide what "the identity came from the environment" means, and they would eventually disagree. Remove the `os` and `config` imports from the file if nothing else in it uses them.
+
 Leaving the `ok` line unchanged is deliberate. A `doctor` that recites which file an identity came from every time it is correct adds noise to the common case; the source only matters when something needs doing about it.
 
 - [ ] **Step 4: Run and commit**
