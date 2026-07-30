@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
@@ -175,16 +174,16 @@ func (s *Service) checkAssignee(schema *notion.Schema) Check {
 	}
 
 	// The identity resolves — but where did it come from? config.yml is meant
-	// to be committed and shared, so an identity that lives only in the file is
+	// to be committed and shared, so an identity that still lives there is
 	// every teammate's identity: theirs resolves to whoever ran init, and their
-	// "--assignee me" quietly assigns work to that person. os.Getenv rather
-	// than the profile field, because Resolve has already folded the override
-	// in and the two are indistinguishable by then.
-	if os.Getenv(config.MeEnv) == "" {
+	// "--assignee me" quietly assigns work to that person. Identities read from
+	// the environment or the per-user credentials file are exactly as intended,
+	// so only "legacy" is worth a warning.
+	if s.profile.MeSource == "legacy" {
 		return Check{"assignee", "warn", fmt.Sprintf(
-			"--assignee me resolves to %s, from the config file rather than the environment\n"+
-				"  fix: export %s=<name>; a shared config gives everyone the same identity",
-			resolved, config.MeEnv)}
+			"--assignee me resolves to %s, from the config file, which is meant to be shared\n"+
+				"  fix: rerun 'notion-track init --me %s' to move it to your credentials file",
+			resolved, s.profile.Me)}
 	}
 	return Check{"assignee", "ok", "--assignee me resolves to " + resolved}
 }

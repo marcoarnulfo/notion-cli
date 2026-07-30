@@ -310,7 +310,9 @@ func TestDoctorAcceptsAnIdentityFromTheEnvironment(t *testing.T) {
 	defer srv.Close()
 	t.Setenv(config.MeEnv, "mirko")
 
-	checks := New(notion.New("t", notion.WithBaseURL(srv.URL)), assigneeProfile("mirko")).
+	profile := assigneeProfile("mirko")
+	profile.MeSource = "env"
+	checks := New(notion.New("t", notion.WithBaseURL(srv.URL)), profile).
 		Doctor(context.Background())
 
 	check, ok := findCheck(checks, "assignee")
@@ -381,7 +383,9 @@ func TestDoctorWarnsWhenTheIdentityLivesOnlyInTheSharedConfig(t *testing.T) {
 	defer srv.Close()
 	t.Setenv(config.MeEnv, "")
 
-	checks := New(notion.New("t", notion.WithBaseURL(srv.URL)), assigneeProfile("mirko")).
+	profile := assigneeProfile("mirko")
+	profile.MeSource = "legacy"
+	checks := New(notion.New("t", notion.WithBaseURL(srv.URL)), profile).
 		Doctor(context.Background())
 
 	check, ok := findCheck(checks, "assignee")
@@ -391,8 +395,74 @@ func TestDoctorWarnsWhenTheIdentityLivesOnlyInTheSharedConfig(t *testing.T) {
 	if check.Status != "warn" {
 		t.Errorf("assignee = %s (%s), want warn", check.Status, check.Detail)
 	}
-	if !strings.Contains(check.Detail, config.MeEnv) {
-		t.Errorf("detail = %q, want it to point at the environment variable", check.Detail)
+	if !strings.Contains(check.Detail, "notion-track init --me") {
+		t.Errorf("detail = %q, want it to name the command that moves the identity out of config.yml", check.Detail)
+	}
+}
+
+func TestDoctorWarnsWhenTheIdentityIsStillInTheConfigFile(t *testing.T) {
+	srv := doctorRoutes(t)
+	defer srv.Close()
+	t.Setenv(config.MeEnv, "")
+
+	profile := assigneeProfile("mirko")
+	profile.MeSource = "legacy"
+	checks := New(notion.New("t", notion.WithBaseURL(srv.URL)), profile).
+		Doctor(context.Background())
+
+	check, ok := findCheck(checks, "assignee")
+	if !ok {
+		t.Fatal("no assignee check")
+	}
+	if check.Status != "warn" {
+		t.Errorf("assignee = %s (%s), want warn", check.Status, check.Detail)
+	}
+	if !strings.Contains(check.Detail, "notion-track init --me") {
+		t.Errorf("detail = %q, want it to name the command that moves the identity to credentials.yml", check.Detail)
+	}
+}
+
+func TestDoctorIsQuietWhenTheIdentityComesFromCredentials(t *testing.T) {
+	srv := doctorRoutes(t)
+	defer srv.Close()
+	t.Setenv(config.MeEnv, "")
+
+	profile := assigneeProfile("mirko")
+	profile.MeSource = "file"
+	checks := New(notion.New("t", notion.WithBaseURL(srv.URL)), profile).
+		Doctor(context.Background())
+
+	check, ok := findCheck(checks, "assignee")
+	if !ok {
+		t.Fatal("no assignee check")
+	}
+	if check.Status != "ok" {
+		t.Errorf("assignee = %s (%s), want ok", check.Status, check.Detail)
+	}
+	if strings.Contains(check.Detail, "init --me") {
+		t.Errorf("detail = %q, want no recommendation for an identity already in credentials.yml", check.Detail)
+	}
+}
+
+func TestDoctorIsQuietWhenTheIdentityComesFromTheEnvironment(t *testing.T) {
+	srv := doctorRoutes(t)
+	defer srv.Close()
+	t.Setenv(config.MeEnv, "mirko")
+
+	profile := assigneeProfile("mirko")
+	profile.MeSource = "env"
+	checks := New(notion.New("t", notion.WithBaseURL(srv.URL)), profile).
+		Doctor(context.Background())
+
+	check, ok := findCheck(checks, "assignee")
+	if !ok {
+		t.Fatal("no assignee check")
+	}
+	if check.Status != "ok" {
+		t.Errorf("assignee = %s (%s), want ok", check.Status, check.Detail)
+	}
+	if strings.Contains(check.Detail, "init --me") {
+		t.Errorf("detail = %q, want no recommendation for an identity already resolved from the environment", check.Detail)
 	}
 }
 
