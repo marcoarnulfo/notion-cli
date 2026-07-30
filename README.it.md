@@ -122,7 +122,7 @@ Nota: `go install` qui sopra non richiede nessuna release — compila direttamen
    notion-track list --assignee me --status "Da fare"
    notion-track list --unassigned
    ```
-9. **(Facoltativo) Traccia quanto è urgente ogni riga.** Mappa una colonna `select` con `--priority-prop` (vedi [Uso](#uso) più sotto); qui non c'è nessuna identità da esportare, quindi è pronta all'uso non appena è mappata:
+9. **(Facoltativo) Traccia quanto è urgente ogni riga.** Mappa una colonna `select` con `--priority-prop` (vedi [Uso](#uso) più sotto); qui non c'è nessuna identità da configurare, quindi è pronta all'uso non appena è mappata:
    ```bash
    notion-track list --priority ALTA --status "Da fare"
    notion-track list --priority ALTA --assignee me

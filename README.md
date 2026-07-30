@@ -122,7 +122,7 @@ Note: `go install` above needs no release at all — it builds straight from sou
    notion-track list --assignee me --status "To do"
    notion-track list --unassigned
    ```
-9. **(Optional) Track how urgent each row is.** Map a `select` column with `--priority-prop` (see [Usage](#usage) below); there's no identity to export for this one, so it's ready to use as soon as it's mapped:
+9. **(Optional) Track how urgent each row is.** Map a `select` column with `--priority-prop` (see [Usage](#usage) below); there's no identity to configure for this one, so it's ready to use as soon as it's mapped:
    ```bash
    notion-track list --priority ALTA --status "To do"
    notion-track list --priority ALTA --assignee me
