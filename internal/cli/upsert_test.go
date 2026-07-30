@@ -143,14 +143,15 @@ func TestSetExitsNotFoundInsteadOfCreating(t *testing.T) {
 // stubForAssignee answers schema, query and write, keeping the properties
 // payload of the write so a test can assert on what reached Notion.
 //
-// NOTION_TRACK_ME is cleared deliberately: config.Resolve lets it override the
-// profile, so a developer who followed the README and exported it would
-// otherwise have their own identity leak into every test here — and the one
-// test that asserts "me" is *not* configured would silently pass for the wrong
-// reason.
+// It clears no environment of its own: withStubbedAPIProfile already isolates
+// the user config dir and NOTION_TRACK_ME for every test, which is what these
+// tests need — buildService resolves the identity through
+// config.ResolveIdentity on every command, so a developer who exported
+// NOTION_TRACK_ME, or simply has a credentials.yml, would otherwise have their
+// own identity leak in here — and the one test that asserts "me" is *not*
+// configured would silently pass for the wrong reason.
 func stubForAssignee(t *testing.T, profile string, written *map[string]any) string {
 	t.Helper()
-	t.Setenv(config.MeEnv, "")
 	return withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/v1/data_sources/ds1":
@@ -224,11 +225,6 @@ func TestSetMeUsesTheConfiguredIdentity(t *testing.T) {
 // identities[""] (the flag's zero value) instead of identities[name], this
 // would find nothing and fail with ErrNoIdentity.
 func TestAssigneeMeUsesTheIdentityFromCredentials(t *testing.T) {
-	// withIsolatedUserConfigDir(t) FIRST — see the global constraint. Without
-	// it this test writes into the developer's own credentials.yml.
-	withIsolatedUserConfigDir(t)
-	t.Setenv(config.MeEnv, "")
-
 	var written map[string]any
 	// assigneeProfileNoIdentity carries no legacy me:, so the only possible
 	// source for a resolved value here is credentials.yml.
@@ -284,7 +280,6 @@ func TestAssigneeOnAnUnmappedRoleExitsOne(t *testing.T) {
 	// other four roles have always produced, and typing it for assignee alone
 	// would either change --due's exit code too or treat one role differently
 	// from the rest for the identical condition. Both are worse than a 1.
-	t.Setenv(config.MeEnv, "")
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/data_sources/ds1" {
 			w.Write([]byte(cliSchemaJSON))
@@ -376,7 +371,6 @@ func TestPriorityOnAnUnmappedRoleExitsOne(t *testing.T) {
 	// so it stays a choice rather than turning into a surprise.
 	// withStubbedAPI's default profile maps no priority — the same fixture the
 	// assignee's twin test uses for this case.
-	t.Setenv(config.MeEnv, "")
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/data_sources/ds1" {
 			w.Write([]byte(cliSchemaJSON))

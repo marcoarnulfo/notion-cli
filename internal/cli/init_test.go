@@ -40,7 +40,6 @@ func TestInitNonInteractiveNeverPrompts(t *testing.T) {
 		w.Write([]byte(cliSchemaJSON))
 	})
 	t.Setenv(config.TokenEnv, "")
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, false,
 		func() (string, error) { t.Fatal("readToken called in a non-interactive run"); return "", nil },
 		func() (string, error) { t.Fatal("readLine called in a non-interactive run"); return "", nil },
@@ -63,7 +62,6 @@ func TestInitSkipsPromptWhenATokenIsAlreadyAvailable(t *testing.T) {
 		w.Write([]byte(cliSchemaJSON))
 	})
 	// withStubbedAPI already exported NOTION_TOKEN; leave it set.
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, true,
 		func() (string, error) {
 			t.Fatal("readToken called though a token was already available")
@@ -92,7 +90,6 @@ func TestInitInteractivePromptsAndSavesTokenByDefault(t *testing.T) {
 		w.Write([]byte(cliSchemaJSON))
 	})
 	t.Setenv(config.TokenEnv, "")
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, true,
 		func() (string, error) { return "ntn_typed", nil },
 		func() (string, error) { return "", nil }, // bare Enter accepts the recommended default
@@ -144,7 +141,6 @@ func TestInitInteractiveDeclinesSave(t *testing.T) {
 		w.Write([]byte(cliSchemaJSON))
 	})
 	t.Setenv(config.TokenEnv, "")
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, true,
 		func() (string, error) { return "ntn_typed", nil },
 		func() (string, error) { return "n", nil },
@@ -188,7 +184,6 @@ func TestInitValidatesFlagsBeforePromptingForAToken(t *testing.T) {
 		w.Write([]byte(cliSchemaJSON))
 	})
 	t.Setenv(config.TokenEnv, "")
-	withIsolatedUserConfigDir(t)
 	// readTokenInterruptible calls readToken from its own goroutine, where
 	// t.Fatal is unsafe to call directly (it must run on the test's own
 	// goroutine) — record the call instead and assert on it afterwards.
@@ -233,7 +228,6 @@ func TestInitInteractiveDeclineAcceptsAnyAnswerStartingWithN(t *testing.T) {
 				w.Write([]byte(cliSchemaJSON))
 			})
 			t.Setenv(config.TokenEnv, "")
-			withIsolatedUserConfigDir(t)
 			withInteractivePrompt(t, true,
 				func() (string, error) { return "ntn_typed", nil },
 				func() (string, error) { return answer, nil },
@@ -266,7 +260,6 @@ func TestInitInteractiveEmptyTokenExitsAuth(t *testing.T) {
 		w.Write([]byte(cliSchemaJSON))
 	})
 	t.Setenv(config.TokenEnv, "")
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, true,
 		func() (string, error) { return "", nil },
 		nil,
@@ -472,9 +465,11 @@ func initArgs(cfg string, extra ...string) []string {
 
 // writtenProfile reads back the profile init just wrote.
 //
-// The env is cleared first: Resolve applies NOTION_TRACK_ME over whatever the
-// file says, so without this the assertion on Me would read the developer's
-// shell instead of the file under test.
+// The env is cleared first as a guard, not because Resolve reads it: the whole
+// identity precedence moved to config.ResolveIdentity, which buildService — not
+// this helper — calls. What it protects is the next assertion someone adds
+// here on the identity rather than on the profile, which would otherwise read
+// the developer's shell instead of the file under test.
 func writtenProfile(t *testing.T, path string) config.Profile {
 	t.Helper()
 	t.Setenv(config.MeEnv, "")
@@ -493,7 +488,6 @@ func TestInitMapsTheAssigneeColumn(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaJSON))
 	})
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, false, nil, nil)
 
 	if code := executeArgs(initArgs(cfg, "--assignee-prop", "Referente")); code != ExitOK {
@@ -508,7 +502,6 @@ func TestInitRejectsAnAssigneeColumnOfTheWrongType(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaJSON))
 	})
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, false, nil, nil)
 
 	// Name is the title column: usable as a title, never as an assignee.
@@ -521,7 +514,6 @@ func TestInitMapsThePriorityColumn(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaJSON))
 	})
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, false, nil, nil)
 
 	if code := executeArgs(initArgs(cfg, "--priority-prop", "Urgenza")); code != ExitOK {
@@ -536,7 +528,6 @@ func TestInitRejectsAPriorityColumnOfTheWrongType(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaJSON))
 	})
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, false, nil, nil)
 
 	// Name is the title column: never usable as a priority.
@@ -583,8 +574,6 @@ func TestInitMeStoresTheCanonicalValue(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaJSON))
 	})
-	withIsolatedUserConfigDir(t)
-	t.Setenv(config.MeEnv, "")
 	withInteractivePrompt(t, false, nil, nil)
 
 	code := executeArgs(initArgs(cfg, "--assignee-prop", "Referente", "--me", "mirko"))
@@ -606,7 +595,6 @@ func TestInitMeNeedsTheAssigneeColumn(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaJSON))
 	})
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, false, nil, nil)
 
 	if code := executeArgs(initArgs(cfg, "--me", "mirko")); code != ExitUsage {
@@ -622,8 +610,6 @@ func TestInitMeWritesToCredentialsNotConfig(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaJSON))
 	})
-	withIsolatedUserConfigDir(t)
-	t.Setenv(config.MeEnv, "")
 	withInteractivePrompt(t, false, nil, nil)
 
 	if code := executeArgs(initArgs(cfg, "--assignee-prop", "Referente", "--me", "mirko")); code != ExitOK {
@@ -660,8 +646,6 @@ func TestInitMePrintsNoSharedConfigWarning(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaJSON))
 	})
-	withIsolatedUserConfigDir(t)
-	t.Setenv(config.MeEnv, "")
 	withInteractivePrompt(t, false, nil, nil)
 
 	var code int
@@ -699,7 +683,6 @@ func TestInitMapsTheIDColumn(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaWithIDJSON))
 	})
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, false, nil, nil)
 
 	if code := executeArgs(initArgs(cfg, "--id-prop", "ID")); code != ExitOK {
@@ -714,7 +697,6 @@ func TestInitRejectsAnIDColumnOfTheWrongType(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaWithIDJSON))
 	})
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, false, nil, nil)
 
 	// A rich_text column cannot carry Notion's own row id.
@@ -728,15 +710,13 @@ func TestInitRejectsAnIDColumnOfTheWrongType(t *testing.T) {
 // branch actually writes to (no --profile flag here, so "default" — the same
 // rule saveInitProfile itself uses).
 //
-// withIsolatedUserConfigDir and the cleared MeEnv matter here in a way they
-// don't for the older wizard tests above: this is the first wizard test
-// whose Result carries a non-empty Identity, so it is the first one that
-// touches credentials.yml at all. Skipping either would read or write the
-// developer's real file.
+// The isolation withStubbedAPI applies — a temp user config dir, a cleared
+// NOTION_TRACK_ME — matters here in a way it does not for the older wizard
+// tests above: this is the first wizard test whose Result carries a non-empty
+// Identity, so it is the first one that touches credentials.yml at all.
+// Without it, this would read and write the developer's real file.
 func TestInitWizardSavesTheIdentity(t *testing.T) {
 	cfg := withStubbedAPI(t, stubbedWizardAPI)
-	withIsolatedUserConfigDir(t)
-	t.Setenv(config.MeEnv, "")
 	withInteractivePrompt(t, true, nil, nil)
 	withFakeWizard(t, tui.Result{
 		Ref: notion.DataSourceRef{ID: "ds1", Title: "Tasks", DatabaseID: "db1"},
@@ -778,8 +758,6 @@ func TestInitWizardSavesTheIdentity(t *testing.T) {
 // the profile.
 func TestInitWizardWritesNoIdentityWhenNoneCollected(t *testing.T) {
 	cfg := withStubbedAPI(t, stubbedWizardAPI)
-	withIsolatedUserConfigDir(t)
-	t.Setenv(config.MeEnv, "")
 	withInteractivePrompt(t, true, nil, nil)
 	withFakeWizard(t, tui.Result{
 		Ref: notion.DataSourceRef{ID: "ds1", Title: "Tasks", DatabaseID: "db1"},

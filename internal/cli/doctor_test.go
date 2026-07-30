@@ -63,7 +63,6 @@ func TestDoctorReportsTokenSourceFromFile(t *testing.T) {
 		}
 	})
 	t.Setenv(config.TokenEnv, "")
-	withIsolatedUserConfigDir(t)
 	if err := config.SaveToken("ntn_from_file"); err != nil {
 		t.Fatalf("SaveToken: %v", err)
 	}
