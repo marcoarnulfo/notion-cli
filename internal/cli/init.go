@@ -217,15 +217,53 @@ func runInitWizard(cmd *cobra.Command) error {
 		return Errorf(ExitUsage, "%v", err)
 	}
 
-	return saveInitProfile(cmd, config.Profile{
+	if err := saveInitProfile(cmd, config.Profile{
 		DatabaseID:   res.Ref.DatabaseID,
 		DataSourceID: res.Ref.ID,
 		StatusType:   statusType,
 		Properties:   res.Props,
-		// The wizard has no equivalent of --me yet: an identity here would come
-		// from typing, and the wizard is not wired to collect it.
+		// The identity the wizard collected goes to credentials.yml via
+		// saveInitIdentity below, never here: config.yml is shared, and Me
+		// on the profile is the legacy field that lives there for
+		// configurations written before the identity moved.
 		Me: "",
-	}, res.Schema.Title)
+	}, res.Schema.Title); err != nil {
+		return err
+	}
+	return saveInitIdentity(cmd, res.Identity)
+}
+
+// saveInitIdentity writes the identity both paths through init collect, so
+// they cannot drift into disagreeing about which profile it belongs to.
+//
+// It goes in credentials.yml, not the profile saveInitProfile just wrote:
+// config.yml is committed and shared, and an identity written there would be
+// everyone's. Called after the profile so that a failure to write it leaves
+// a usable configuration behind rather than an identity pointing at a
+// profile that does not exist.
+//
+// The profile name follows the same rule saveInitProfile uses — --profile,
+// else the literal "default" — not cfg.DefaultProfile: an identity is
+// per-profile, and resolving through the default here would save it under
+// the wrong key the moment --profile is set without --config pointing at a
+// fresh file.
+func saveInitIdentity(cmd *cobra.Command, identity string) error {
+	if identity == "" {
+		return nil
+	}
+	name, _ := cmd.Flags().GetString("profile")
+	if name == "" {
+		name = "default"
+	}
+	if err := config.SaveIdentity(name, identity); err != nil {
+		return err
+	}
+	credPath, err := config.CredentialsPath()
+	if err != nil {
+		return err
+	}
+	cmd.Printf("identity %q saved to %s\n", identity, credPath)
+	return nil
 }
 
 // saveInitProfile writes the profile both paths through init produce, so the
@@ -355,26 +393,7 @@ func newInitCmd() *cobra.Command {
 				return err
 			}
 
-			// The identity goes in credentials.yml, not in the profile above:
-			// config.yml is committed and shared, and an identity written
-			// there would be everyone's. Saved after the profile so that a
-			// failure to write it leaves a usable configuration behind rather
-			// than an identity pointing at a profile that does not exist.
-			if resolvedMe != "" {
-				name, _ := cmd.Flags().GetString("profile")
-				if name == "" {
-					name = "default"
-				}
-				if err := config.SaveIdentity(name, resolvedMe); err != nil {
-					return err
-				}
-				credPath, err := config.CredentialsPath()
-				if err != nil {
-					return err
-				}
-				cmd.Printf("identity %q saved to %s\n", resolvedMe, credPath)
-			}
-			return nil
+			return saveInitIdentity(cmd, resolvedMe)
 		},
 	}
 

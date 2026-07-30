@@ -722,3 +722,85 @@ func TestInitRejectsAnIDColumnOfTheWrongType(t *testing.T) {
 		t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
 	}
 }
+
+// TestInitWizardSavesTheIdentity proves the wizard's identity reaches
+// credentials.yml the same way --me does, under the profile name the wizard
+// branch actually writes to (no --profile flag here, so "default" — the same
+// rule saveInitProfile itself uses).
+//
+// withIsolatedUserConfigDir and the cleared MeEnv matter here in a way they
+// don't for the older wizard tests above: this is the first wizard test
+// whose Result carries a non-empty Identity, so it is the first one that
+// touches credentials.yml at all. Skipping either would read or write the
+// developer's real file.
+func TestInitWizardSavesTheIdentity(t *testing.T) {
+	cfg := withStubbedAPI(t, stubbedWizardAPI)
+	withIsolatedUserConfigDir(t)
+	t.Setenv(config.MeEnv, "")
+	withInteractivePrompt(t, true, nil, nil)
+	withFakeWizard(t, tui.Result{
+		Ref: notion.DataSourceRef{ID: "ds1", Title: "Tasks", DatabaseID: "db1"},
+		Schema: &notion.Schema{DataSourceID: "ds1", Title: "Tasks", Properties: map[string]notion.Property{
+			"Name":      {Name: "Name", Type: "title"},
+			"Ticket":    {Name: "Ticket", Type: "rich_text"},
+			"Stato":     {Name: "Stato", Type: "status"},
+			"Referente": {Name: "Referente", Type: "select"},
+		}},
+		Props:    config.Properties{Ticket: "Ticket", Status: "Stato", Title: "Name", Assignee: "Referente"},
+		Identity: "Mirko Spinato",
+	}, nil)
+
+	if code := executeArgs([]string{"init", "--config", cfg}); code != ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+
+	got, source, err := config.ResolveIdentity("default", config.Profile{})
+	if err != nil {
+		t.Fatalf("ResolveIdentity: %v", err)
+	}
+	if got != "Mirko Spinato" || source != "file" {
+		t.Errorf("identity = %q (source %q), want %q from credentials.yml", got, source, "Mirko Spinato")
+	}
+
+	raw, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "me:") {
+		t.Errorf("config.yml contains \"me:\"; the wizard's identity must not be written there:\n%s", raw)
+	}
+}
+
+// TestInitWizardWritesNoIdentityWhenNoneCollected covers the other half of
+// the Result.Identity contract: empty is a complete answer (no assignee
+// column mapped, or the user skipped the step), and saveInitIdentity must
+// leave credentials.yml untouched rather than record an empty string under
+// the profile.
+func TestInitWizardWritesNoIdentityWhenNoneCollected(t *testing.T) {
+	cfg := withStubbedAPI(t, stubbedWizardAPI)
+	withIsolatedUserConfigDir(t)
+	t.Setenv(config.MeEnv, "")
+	withInteractivePrompt(t, true, nil, nil)
+	withFakeWizard(t, tui.Result{
+		Ref: notion.DataSourceRef{ID: "ds1", Title: "Tasks", DatabaseID: "db1"},
+		Schema: &notion.Schema{DataSourceID: "ds1", Title: "Tasks", Properties: map[string]notion.Property{
+			"Name":   {Name: "Name", Type: "title"},
+			"Ticket": {Name: "Ticket", Type: "rich_text"},
+			"Stato":  {Name: "Stato", Type: "status"},
+		}},
+		Props: config.Properties{Ticket: "Ticket", Status: "Stato", Title: "Name"},
+		// Identity left at its zero value: no assignee column was mapped.
+	}, nil)
+
+	if code := executeArgs([]string{"init", "--config", cfg}); code != ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+
+	credPath, err := config.CredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(credPath); !os.IsNotExist(err) {
+		t.Errorf("credentials.yml exists after a wizard run with no identity: %v", err)
+	}
+}
