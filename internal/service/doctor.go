@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/marcoarnulfo/notion-cli/internal/config"
 	"github.com/marcoarnulfo/notion-cli/internal/notion"
 	"github.com/marcoarnulfo/notion-cli/internal/tracker"
 )
@@ -169,8 +168,8 @@ func (s *Service) checkAssignee(schema *notion.Schema) Check {
 	if err != nil {
 		return Check{"assignee", "warn", fmt.Sprintf(
 			"the configured identity %q no longer resolves: %v\n"+
-				"  fix: export %s=<name>, or rerun 'notion-track init --me <name>'",
-			s.profile.Me, err, config.MeEnv)}
+				"  fix: rerun 'notion-track init --me <name>' with a name the column still offers",
+			s.profile.Me, err)}
 	}
 
 	// The identity resolves — but where did it come from? config.yml is meant
