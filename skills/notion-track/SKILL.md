@@ -140,12 +140,16 @@ error message lists the real options, which is more reliable than guessing
 yourself. `--assignee` and `--unassign` are mutually exclusive, and `--assignee
 ""` is a usage error, not a way to clear — use `--unassign`.
 
-`me` is a reserved value standing for the configured identity
-(`NOTION_TRACK_ME`, or the profile's `me:`) — it's what "prendi in carico" /
-"cosa devo fare io" / "take ownership" resolve to when the user means
-themselves. If nothing is configured, `--assignee me` fails with a clear
-message (exit 2); don't substitute a guessed name instead, ask the user or run
-`doctor` to see what identity, if any, is set up.
+`me` is a reserved value standing for the configured identity. Precedence:
+`NOTION_TRACK_ME` (an override, for CI and one-off runs) → the profile's entry
+in `credentials.yml`'s `identities` map (what `notion-track init --me
+"<name>"`, or the wizard, writes) → the profile's legacy `me:` in `config.yml`.
+It's what "prendi in carico" / "cosa devo fare io" / "take ownership" resolve
+to when the user means themselves. If nothing is configured, `--assignee me`
+fails with a clear message (exit 2); don't substitute a guessed name, and
+don't tell the user to export a variable — tell them to run `notion-track init
+--me "<name>"` (or run `doctor` first, to see what identity, if any, is set
+up).
 
 If this board doesn't map an assignee column at all, `--assignee`/`--unassign`
 fail (exit 1, not 2) telling you so — that's your cue to say the board has no
@@ -308,8 +312,9 @@ the token, database access, the property mapping, duplicate keys, and whether a
 git-tracked file in the current repository looks like it carries the user's
 integration token — and prints what's wrong and how to fix it. When an
 assignee column is mapped, it also checks that the configured `me` identity
-still resolves to a real option, and warns if that identity only lives in the
-committed config rather than `NOTION_TRACK_ME`. Only a `fail` makes it exit
+still resolves to a real option, and warns if that identity is still coming
+from `config.yml`'s legacy `me:` field rather than `credentials.yml` or
+`NOTION_TRACK_ME`. Only a `fail` makes it exit
 non-zero; a `warn` (including the token scan and the identity check) is worth
 reporting to the user but does not block anything.
 
@@ -428,9 +433,11 @@ address and create tasks:
   unmapped `id` role is; the only signal is `--assignee`/`--unassign` failing
   with exit 1. When it *is* mapped, `doctor` runs a dedicated `assignee` check
   (absent from the output otherwise) that says whether `me` resolves to a real
-  identity, and whether that identity comes from `NOTION_TRACK_ME` or only
-  from the committed config; if it doesn't resolve, "prendi in carico"/"assign
-  it to me" needs the user to set `NOTION_TRACK_ME` first, not a guessed name.
+  identity, and warns if that identity is still coming from `config.yml`'s
+  legacy `me:` field rather than `credentials.yml` or `NOTION_TRACK_ME`. If it
+  doesn't resolve at all, "prendi in carico"/"assign it to me" needs the user
+  to run `notion-track init --me "<name>"` — not a guessed name, and not
+  "export a variable".
 - **Is there a priority column?** Not every board ranks urgency, and here too
   `doctor` stays silent when it's unmapped — `--priority` failing with exit 1
   is the only signal. Unlike assignee, priority never gets a dedicated check
