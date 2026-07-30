@@ -85,7 +85,7 @@ func newListCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&status, "status", "", "filter by status value")
 	cmd.Flags().StringVar(&assignee, "assignee", "",
-		"only rows assigned to this person; a partial name is enough, and 'me' stands for NOTION_TRACK_ME")
+		"only rows assigned to this person; a partial name is enough, and 'me' stands for your configured identity")
 	cmd.Flags().BoolVar(&unassigned, "unassigned", false, "only rows with no assignee")
 	cmd.MarkFlagsMutuallyExclusive("assignee", "unassigned")
 	cmd.Flags().StringVar(&priority, "priority", "",

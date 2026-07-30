@@ -54,7 +54,7 @@ var ErrPageOutsideProfile = errors.New("page belongs to a different data source 
 // "me" is.
 var ErrNoIdentity = errors.New(
 	"--assignee me needs to know who you are\n" +
-		"  fix: export NOTION_TRACK_ME=<name>, or run 'notion-track init --me <name>'")
+		"  fix: run 'notion-track init --me <name>' (or export NOTION_TRACK_ME=<name> to override it)")
 
 // ErrEmptyAssignee mirrors ErrEmptyTicket: cobra reports that a flag was
 // passed, never that it carries a value, so `--assignee ""` would otherwise
