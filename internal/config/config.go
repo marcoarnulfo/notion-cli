@@ -28,11 +28,9 @@ const (
 	ProfileEnv    = "NOTION_TRACK_PROFILE"
 	DatabaseEnv   = "NOTION_TRACK_DB"
 	DataSourceEnv = "NOTION_TRACK_DATA_SOURCE"
-	// MeEnv names the person "--assignee me" stands for. It is an environment
-	// variable first and a profile field second on purpose: config.yml is meant
-	// to be committed and shared (see Credentials), so an identity stored there
-	// would be everyone's identity — and would silently assign tasks to whoever
-	// committed the file.
+	// MeEnv is the environment override for "--assignee me": it wins over
+	// both credentials.yml and the profile's legacy me: field. See
+	// ResolveIdentity for the full precedence.
 	MeEnv = "NOTION_TRACK_ME"
 )
 
@@ -65,9 +63,17 @@ type Profile struct {
 	// more importantly, how strict validation has to be: a select silently
 	// creates unknown options, a status rejects them.
 	StatusType string `yaml:"status_type"`
-	// Me is the assignee value "--assignee me" resolves to, overridden by
-	// MeEnv. Optional.
+	// Me is the legacy location for the assignee value "--assignee me"
+	// resolves to: the last resort in ResolveIdentity's precedence, kept
+	// readable forever so a config written before the identity moved to
+	// credentials.yml keeps working. Optional.
 	Me string `yaml:"me,omitempty"`
+	// MeSource records where the effective identity came from: "env",
+	// "file", "legacy", or "" when there is none. Populated by
+	// ResolveIdentity and never persisted — it describes this run, not the
+	// configuration. doctor reads it to tell a user whose identity is still
+	// in the shared config file how to move it.
+	MeSource string `yaml:"-"`
 }
 
 // Config is the whole file.
@@ -147,16 +153,25 @@ func (c *Config) Save() error {
 	return c.SaveTo(path)
 }
 
+// ProfileName applies the profile-selection precedence — the requested name,
+// then NOTION_TRACK_PROFILE, then default_profile — and returns the name that
+// wins. Resolve uses it, and so does anything else that needs to know which
+// profile a run is actually about (the identity is keyed by that name).
+func (c *Config) ProfileName(requested string) string {
+	if requested == "" {
+		requested = os.Getenv(ProfileEnv)
+	}
+	if requested == "" {
+		requested = c.DefaultProfile
+	}
+	return requested
+}
+
 // Resolve returns a profile by name, falling back to NOTION_TRACK_PROFILE and
 // then to default_profile. Environment overrides are applied last so that CI
 // can point an existing profile at another data source.
 func (c *Config) Resolve(name string) (Profile, error) {
-	if name == "" {
-		name = os.Getenv(ProfileEnv)
-	}
-	if name == "" {
-		name = c.DefaultProfile
-	}
+	name = c.ProfileName(name)
 
 	p, ok := c.Profiles[name]
 	if !ok {
@@ -174,9 +189,6 @@ func (c *Config) Resolve(name string) (Profile, error) {
 	}
 	if v := os.Getenv(DataSourceEnv); v != "" {
 		p.DataSourceID = v
-	}
-	if v := os.Getenv(MeEnv); v != "" {
-		p.Me = v
 	}
 	return p, nil
 }
@@ -391,4 +403,29 @@ func SaveIdentity(profile, name string) error {
 	}
 	creds.Identities[profile] = name
 	return writeCredentials(creds)
+}
+
+// ResolveIdentity answers who "--assignee me" means, in one place:
+//
+//	NOTION_TRACK_ME  →  credentials.yml identities[profile]  →  the profile's me:
+//
+// The environment wins because CI passes an identity that must never be read
+// off disk. credentials.yml comes next because it is per-user. The profile's
+// me: is last and exists only so that configurations written before the
+// identity moved keep working — source "legacy" is what lets doctor say so.
+func ResolveIdentity(profileName string, p Profile) (value string, source string, err error) {
+	if v := os.Getenv(MeEnv); v != "" {
+		return v, "env", nil
+	}
+	creds, err := loadCredentials()
+	if err != nil {
+		return "", "", err
+	}
+	if v := creds.Identities[profileName]; v != "" {
+		return v, "file", nil
+	}
+	if p.Me != "" {
+		return p.Me, "legacy", nil
+	}
+	return "", "", nil
 }
