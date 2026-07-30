@@ -376,8 +376,12 @@ func writeCredentials(creds Credentials) error {
 
 // SaveToken writes the token to credentials.yml. Called only from init, and
 // only after an interactive user has explicitly opted in. It reads the file
-// first so that saving a token cannot discard the identities sitting next to
-// it — see SaveIdentity, which faces the same hazard in the other direction.
+// first, and writes back what it read, so that saving a token preserves the
+// identities sitting next to it — see SaveIdentity, which faces the same
+// hazard in the other direction. Read-then-replace is not a lock: two
+// processes saving at once still race, and the later rename wins whole. That
+// is acceptable here because both writers are init, run by hand, one at a
+// time.
 func SaveToken(token string) error {
 	creds, err := loadCredentials()
 	if err != nil {
@@ -389,9 +393,12 @@ func SaveToken(token string) error {
 }
 
 // SaveIdentity records the value "--assignee me" resolves to for one profile.
-// It reads the file first so that saving an identity cannot discard the token
-// sitting next to it — the two are written by different commands at different
-// times, and a blind write would destroy a working setup.
+// It reads the file first, and writes back what it read, so that saving an
+// identity preserves the token sitting next to it — the two are written by
+// different commands at different times, and a blind write would destroy a
+// working setup. As in SaveToken, that is a merge and not a lock: nothing
+// serializes two concurrent writers, and the last rename replaces the file
+// whole.
 func SaveIdentity(profile, name string) error {
 	creds, err := loadCredentials()
 	if err != nil {
