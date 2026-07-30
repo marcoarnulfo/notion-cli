@@ -54,7 +54,19 @@ var ErrPageOutsideProfile = errors.New("page belongs to a different data source 
 // "me" is.
 var ErrNoIdentity = errors.New(
 	"--assignee me needs to know who you are\n" +
-		"  fix: export NOTION_TRACK_ME=<name>, or run 'notion-track init --me <name>'")
+		"  fix: run 'notion-track init --me <name>' (or export NOTION_TRACK_ME=<name> to override it)")
+
+// ErrIdentityUnreadable means "--assignee me" was used on a run whose
+// credentials file could not be read, so nothing can say who "me" is.
+//
+// Distinct from ErrNoIdentity on purpose: an identity may well be configured
+// in there, and telling that user to configure one would send them to fix
+// something that is not broken. The file is what needs repairing, and until
+// it is, the environment override is the way through.
+var ErrIdentityUnreadable = errors.New(
+	"--assignee me cannot be resolved: your credentials file could not be read\n" +
+		"  fix: repair or delete it and rerun 'notion-track init --me <name>'\n" +
+		"       (or export NOTION_TRACK_ME=<name> to get through this run)")
 
 // ErrEmptyAssignee mirrors ErrEmptyTicket: cobra reports that a flag was
 // passed, never that it carries a value, so `--assignee ""` would otherwise
@@ -368,6 +380,12 @@ func (s *Service) resolveAssignee(ctx context.Context, f tracker.Fields) (tracke
 
 	query := f.Assignee
 	if query == "me" {
+		// MeSource before Me: an unreadable credentials file leaves Me empty
+		// too, and ErrNoIdentity's "configure one" is the wrong instruction
+		// for a user who may already have.
+		if s.profile.MeSource == config.MeSourceUnreadable {
+			return f, ErrIdentityUnreadable
+		}
 		if s.profile.Me == "" {
 			return f, ErrNoIdentity
 		}

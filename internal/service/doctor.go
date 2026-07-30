@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
@@ -150,6 +149,18 @@ func (s *Service) checkProperties(schema *notion.Schema) Check {
 // column offers. An option renamed in Notion turns every "--assignee me" into a
 // runtime failure, and this is the place to find that out first.
 func (s *Service) checkAssignee(schema *notion.Schema) Check {
+	// Before the "no identity" case below, because an unreadable credentials
+	// file produces an empty identity too: reporting "none configured" there
+	// would tell a user whose file is broken that nothing is wrong with it.
+	if s.profile.MeSource == config.MeSourceUnreadable {
+		where := "your credentials file"
+		if path, err := config.CredentialsPath(); err == nil {
+			where = path
+		}
+		return Check{"assignee", "warn", fmt.Sprintf(
+			"cannot tell who '--assignee me' is: %s could not be read\n"+
+				"  fix: repair or delete it, then rerun 'notion-track init --me <name>'", where)}
+	}
 	if s.profile.Me == "" {
 		return Check{"assignee", "ok", "mapped; no identity configured (--assignee me is unavailable)"}
 	}
@@ -170,21 +181,25 @@ func (s *Service) checkAssignee(schema *notion.Schema) Check {
 	if err != nil {
 		return Check{"assignee", "warn", fmt.Sprintf(
 			"the configured identity %q no longer resolves: %v\n"+
-				"  fix: export %s=<name>, or rerun 'notion-track init --me <name>'",
-			s.profile.Me, err, config.MeEnv)}
+				"  fix: rerun 'notion-track init --me <name>' with a name the column still offers",
+			s.profile.Me, err)}
 	}
 
 	// The identity resolves — but where did it come from? config.yml is meant
-	// to be committed and shared, so an identity that lives only in the file is
+	// to be committed and shared, so an identity that still lives there is
 	// every teammate's identity: theirs resolves to whoever ran init, and their
-	// "--assignee me" quietly assigns work to that person. os.Getenv rather
-	// than the profile field, because Resolve has already folded the override
-	// in and the two are indistinguishable by then.
-	if os.Getenv(config.MeEnv) == "" {
+	// "--assignee me" quietly assigns work to that person. Identities read from
+	// the environment or the per-user credentials file are exactly as intended,
+	// so only "legacy" is worth a warning.
+	if s.profile.MeSource == "legacy" {
+		// %q, not %s: an identity is usually two words, and an unquoted one
+		// makes the fix line say `init --me Marco Arnulfo`, which cobra parses
+		// as a stray argument and rejects. A message that names a command the
+		// user cannot run is worse than no message.
 		return Check{"assignee", "warn", fmt.Sprintf(
-			"--assignee me resolves to %s, from the config file rather than the environment\n"+
-				"  fix: export %s=<name>; a shared config gives everyone the same identity",
-			resolved, config.MeEnv)}
+			"--assignee me resolves to %s, from the config file, which is meant to be shared\n"+
+				"  fix: rerun 'notion-track init --me %q' to move it to your credentials file",
+			resolved, s.profile.Me)}
 	}
 	return Check{"assignee", "ok", "--assignee me resolves to " + resolved}
 }

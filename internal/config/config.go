@@ -28,11 +28,9 @@ const (
 	ProfileEnv    = "NOTION_TRACK_PROFILE"
 	DatabaseEnv   = "NOTION_TRACK_DB"
 	DataSourceEnv = "NOTION_TRACK_DATA_SOURCE"
-	// MeEnv names the person "--assignee me" stands for. It is an environment
-	// variable first and a profile field second on purpose: config.yml is meant
-	// to be committed and shared (see Credentials), so an identity stored there
-	// would be everyone's identity — and would silently assign tasks to whoever
-	// committed the file.
+	// MeEnv is the environment override for "--assignee me": it wins over
+	// both credentials.yml and the profile's legacy me: field. See
+	// ResolveIdentity for the full precedence.
 	MeEnv = "NOTION_TRACK_ME"
 )
 
@@ -65,9 +63,17 @@ type Profile struct {
 	// more importantly, how strict validation has to be: a select silently
 	// creates unknown options, a status rejects them.
 	StatusType string `yaml:"status_type"`
-	// Me is the assignee value "--assignee me" resolves to, overridden by
-	// MeEnv. Optional.
+	// Me is the legacy location for the assignee value "--assignee me"
+	// resolves to: the last resort in ResolveIdentity's precedence, kept
+	// readable forever so a config written before the identity moved to
+	// credentials.yml keeps working. Optional.
 	Me string `yaml:"me,omitempty"`
+	// MeSource records where the effective identity came from: "env",
+	// "file", "legacy", or "" when there is none. Populated by
+	// ResolveIdentity and never persisted — it describes this run, not the
+	// configuration. doctor reads it to tell a user whose identity is still
+	// in the shared config file how to move it.
+	MeSource string `yaml:"-"`
 }
 
 // Config is the whole file.
@@ -147,16 +153,25 @@ func (c *Config) Save() error {
 	return c.SaveTo(path)
 }
 
+// ProfileName applies the profile-selection precedence — the requested name,
+// then NOTION_TRACK_PROFILE, then default_profile — and returns the name that
+// wins. Resolve uses it, and so does anything else that needs to know which
+// profile a run is actually about (the identity is keyed by that name).
+func (c *Config) ProfileName(requested string) string {
+	if requested == "" {
+		requested = os.Getenv(ProfileEnv)
+	}
+	if requested == "" {
+		requested = c.DefaultProfile
+	}
+	return requested
+}
+
 // Resolve returns a profile by name, falling back to NOTION_TRACK_PROFILE and
 // then to default_profile. Environment overrides are applied last so that CI
 // can point an existing profile at another data source.
 func (c *Config) Resolve(name string) (Profile, error) {
-	if name == "" {
-		name = os.Getenv(ProfileEnv)
-	}
-	if name == "" {
-		name = c.DefaultProfile
-	}
+	name = c.ProfileName(name)
 
 	p, ok := c.Profiles[name]
 	if !ok {
@@ -174,9 +189,6 @@ func (c *Config) Resolve(name string) (Profile, error) {
 	}
 	if v := os.Getenv(DataSourceEnv); v != "" {
 		p.DataSourceID = v
-	}
-	if v := os.Getenv(MeEnv); v != "" {
-		p.Me = v
 	}
 	return p, nil
 }
@@ -203,6 +215,12 @@ func Token() (string, bool) {
 type Credentials struct {
 	SchemaVersion int    `yaml:"schema_version"`
 	Token         string `yaml:"token"`
+	// Identities maps a profile name to the value "--assignee me" resolves
+	// to for this user. It lives here rather than in config.yml for the same
+	// reason the token does: it is personal, and config.yml is meant to be
+	// committed. Keyed by profile because two profiles can point at
+	// workspaces that spell the same person differently.
+	Identities map[string]string `yaml:"identities,omitempty"`
 }
 
 // credentialsPath is a seam: tests point it at t.TempDir().
@@ -243,13 +261,27 @@ func LoadToken() (token string, source string, err error) {
 		return v, "env", nil
 	}
 
-	path, err := credentialsPath()
+	creds, err := loadCredentials()
 	if err != nil {
 		return "", "", err
 	}
+	if creds.Token == "" {
+		return "", "", nil
+	}
+	return creds.Token, "file", nil
+}
+
+// loadCredentials reads credentials.yml whole. A missing file is not an
+// error: it is the ordinary state before init has ever run, and both callers
+// treat it as an empty set.
+func loadCredentials() (Credentials, error) {
+	path, err := credentialsPath()
+	if err != nil {
+		return Credentials{}, err
+	}
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return "", "", nil
+		return Credentials{}, nil
 	}
 	if err != nil {
 		// err is already a *fs.PathError that names path itself (e.g. "open
@@ -258,7 +290,7 @@ func LoadToken() (token string, source string, err error) {
 		// time. %v here keeps the underlying reason once; %w on
 		// ErrCredentialsUnreadable is what lets callers map this to
 		// ExitAuth via errors.Is.
-		return "", "", fmt.Errorf("config: %w: %v", ErrCredentialsUnreadable, err)
+		return Credentials{}, fmt.Errorf("config: %w: %v", ErrCredentialsUnreadable, err)
 	}
 
 	var creds Credentials
@@ -270,18 +302,15 @@ func LoadToken() (token string, source string, err error) {
 		// yaml error must never be wrapped with %w. ErrInvalidCredentials is
 		// a fixed message a caller can still key on with errors.Is; it
 		// carries nothing of what was actually read.
-		return "", "", fmt.Errorf("config: %s: %w", path, ErrInvalidCredentials)
+		return Credentials{}, fmt.Errorf("config: %s: %w", path, ErrInvalidCredentials)
 	}
-	if creds.Token == "" {
-		return "", "", nil
-	}
-	return creds.Token, "file", nil
+	return creds, nil
 }
 
-// SaveToken writes the token to credentials.yml, atomically (a temp file in
-// the same directory, then rename) and with restrictive permissions.
-// Called only from init, and only after an interactive user has explicitly
-// opted in.
+// writeCredentials writes creds to credentials.yml, atomically (a temp file
+// in the same directory, then rename) and with restrictive permissions.
+// Both SaveToken and SaveIdentity funnel through here so there is exactly
+// one place on disk this file is ever written.
 //
 // The temp file is created with os.CreateTemp rather than a fixed name plus
 // os.WriteFile: WriteFile does not apply its mode to a file that already
@@ -294,7 +323,7 @@ func LoadToken() (token string, source string, err error) {
 // Chmod after that closes the umask gap CreateTemp's own 0600 default still
 // leaves (belt and suspenders, not strictly required, but the cost of
 // skipping it is a leaked secret).
-func SaveToken(token string) error {
+func writeCredentials(creds Credentials) error {
 	path, err := credentialsPath()
 	if err != nil {
 		return err
@@ -304,7 +333,6 @@ func SaveToken(token string) error {
 		return fmt.Errorf("config: creating config dir: %w", err)
 	}
 
-	creds := Credentials{SchemaVersion: CurrentSchemaVersion, Token: token}
 	raw, err := yaml.Marshal(&creds)
 	if err != nil {
 		return fmt.Errorf("config: encoding credentials: %w", err)
@@ -344,4 +372,77 @@ func SaveToken(token string) error {
 		return fmt.Errorf("config: replacing %s: %w", path, err)
 	}
 	return nil
+}
+
+// SaveToken writes the token to credentials.yml. Called only from init, and
+// only after an interactive user has explicitly opted in. It reads the file
+// first, and writes back what it read, so that saving a token preserves the
+// identities sitting next to it — see SaveIdentity, which faces the same
+// hazard in the other direction. Read-then-replace is not a lock: two
+// processes saving at once still race, and the later rename wins whole. That
+// is acceptable here because both writers are init, run by hand, one at a
+// time.
+func SaveToken(token string) error {
+	creds, err := loadCredentials()
+	if err != nil {
+		return err
+	}
+	creds.SchemaVersion = CurrentSchemaVersion
+	creds.Token = token
+	return writeCredentials(creds)
+}
+
+// SaveIdentity records the value "--assignee me" resolves to for one profile.
+// It reads the file first, and writes back what it read, so that saving an
+// identity preserves the token sitting next to it — the two are written by
+// different commands at different times, and a blind write would destroy a
+// working setup. As in SaveToken, that is a merge and not a lock: nothing
+// serializes two concurrent writers, and the last rename replaces the file
+// whole.
+func SaveIdentity(profile, name string) error {
+	creds, err := loadCredentials()
+	if err != nil {
+		return err
+	}
+	creds.SchemaVersion = CurrentSchemaVersion
+	if creds.Identities == nil {
+		creds.Identities = map[string]string{}
+	}
+	creds.Identities[profile] = name
+	return writeCredentials(creds)
+}
+
+// MeSourceUnreadable is the MeSource of a run whose credentials file could not
+// be read at all. ResolveIdentity never returns it — it reports that as an
+// error — so it is the caller that turns the failure into this source, which
+// is what lets the two places that actually need an identity tell "nobody
+// configured one" from "one may well be on file, but nothing could read it".
+// Naming it here rather than spelling the string twice keeps the writer
+// (internal/cli.buildService) and the readers (service.resolveAssignee,
+// doctor's assignee check) from drifting apart.
+const MeSourceUnreadable = "unreadable"
+
+// ResolveIdentity answers who "--assignee me" means, in one place:
+//
+//	NOTION_TRACK_ME  →  credentials.yml identities[profile]  →  the profile's me:
+//
+// The environment wins because CI passes an identity that must never be read
+// off disk. credentials.yml comes next because it is per-user. The profile's
+// me: is last and exists only so that configurations written before the
+// identity moved keep working — source "legacy" is what lets doctor say so.
+func ResolveIdentity(profileName string, p Profile) (value string, source string, err error) {
+	if v := os.Getenv(MeEnv); v != "" {
+		return v, "env", nil
+	}
+	creds, err := loadCredentials()
+	if err != nil {
+		return "", "", err
+	}
+	if v := creds.Identities[profileName]; v != "" {
+		return v, "file", nil
+	}
+	if p.Me != "" {
+		return p.Me, "legacy", nil
+	}
+	return "", "", nil
 }

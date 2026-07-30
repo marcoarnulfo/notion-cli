@@ -40,7 +40,6 @@ func TestInitNonInteractiveNeverPrompts(t *testing.T) {
 		w.Write([]byte(cliSchemaJSON))
 	})
 	t.Setenv(config.TokenEnv, "")
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, false,
 		func() (string, error) { t.Fatal("readToken called in a non-interactive run"); return "", nil },
 		func() (string, error) { t.Fatal("readLine called in a non-interactive run"); return "", nil },
@@ -63,7 +62,6 @@ func TestInitSkipsPromptWhenATokenIsAlreadyAvailable(t *testing.T) {
 		w.Write([]byte(cliSchemaJSON))
 	})
 	// withStubbedAPI already exported NOTION_TOKEN; leave it set.
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, true,
 		func() (string, error) {
 			t.Fatal("readToken called though a token was already available")
@@ -92,7 +90,6 @@ func TestInitInteractivePromptsAndSavesTokenByDefault(t *testing.T) {
 		w.Write([]byte(cliSchemaJSON))
 	})
 	t.Setenv(config.TokenEnv, "")
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, true,
 		func() (string, error) { return "ntn_typed", nil },
 		func() (string, error) { return "", nil }, // bare Enter accepts the recommended default
@@ -144,7 +141,6 @@ func TestInitInteractiveDeclinesSave(t *testing.T) {
 		w.Write([]byte(cliSchemaJSON))
 	})
 	t.Setenv(config.TokenEnv, "")
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, true,
 		func() (string, error) { return "ntn_typed", nil },
 		func() (string, error) { return "n", nil },
@@ -188,7 +184,6 @@ func TestInitValidatesFlagsBeforePromptingForAToken(t *testing.T) {
 		w.Write([]byte(cliSchemaJSON))
 	})
 	t.Setenv(config.TokenEnv, "")
-	withIsolatedUserConfigDir(t)
 	// readTokenInterruptible calls readToken from its own goroutine, where
 	// t.Fatal is unsafe to call directly (it must run on the test's own
 	// goroutine) — record the call instead and assert on it afterwards.
@@ -233,7 +228,6 @@ func TestInitInteractiveDeclineAcceptsAnyAnswerStartingWithN(t *testing.T) {
 				w.Write([]byte(cliSchemaJSON))
 			})
 			t.Setenv(config.TokenEnv, "")
-			withIsolatedUserConfigDir(t)
 			withInteractivePrompt(t, true,
 				func() (string, error) { return "ntn_typed", nil },
 				func() (string, error) { return answer, nil },
@@ -266,7 +260,6 @@ func TestInitInteractiveEmptyTokenExitsAuth(t *testing.T) {
 		w.Write([]byte(cliSchemaJSON))
 	})
 	t.Setenv(config.TokenEnv, "")
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, true,
 		func() (string, error) { return "", nil },
 		nil,
@@ -472,9 +465,11 @@ func initArgs(cfg string, extra ...string) []string {
 
 // writtenProfile reads back the profile init just wrote.
 //
-// The env is cleared first: Resolve applies NOTION_TRACK_ME over whatever the
-// file says, so without this the assertion on Me would read the developer's
-// shell instead of the file under test.
+// The env is cleared first as a guard, not because Resolve reads it: the whole
+// identity precedence moved to config.ResolveIdentity, which buildService — not
+// this helper — calls. What it protects is the next assertion someone adds
+// here on the identity rather than on the profile, which would otherwise read
+// the developer's shell instead of the file under test.
 func writtenProfile(t *testing.T, path string) config.Profile {
 	t.Helper()
 	t.Setenv(config.MeEnv, "")
@@ -493,7 +488,6 @@ func TestInitMapsTheAssigneeColumn(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaJSON))
 	})
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, false, nil, nil)
 
 	if code := executeArgs(initArgs(cfg, "--assignee-prop", "Referente")); code != ExitOK {
@@ -508,7 +502,6 @@ func TestInitRejectsAnAssigneeColumnOfTheWrongType(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaJSON))
 	})
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, false, nil, nil)
 
 	// Name is the title column: usable as a title, never as an assignee.
@@ -521,7 +514,6 @@ func TestInitMapsThePriorityColumn(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaJSON))
 	})
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, false, nil, nil)
 
 	if code := executeArgs(initArgs(cfg, "--priority-prop", "Urgenza")); code != ExitOK {
@@ -536,7 +528,6 @@ func TestInitRejectsAPriorityColumnOfTheWrongType(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaJSON))
 	})
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, false, nil, nil)
 
 	// Name is the title column: never usable as a priority.
@@ -576,19 +567,27 @@ func TestAssigneeFlagsAreConfigFlags(t *testing.T) {
 	}
 }
 
+// TestInitMeStoresTheCanonicalValue asserts the canonical-spelling guarantee
+// that used to live on the profile's Me field. The guarantee survives the
+// move to credentials.yml; only where it is read from changes.
 func TestInitMeStoresTheCanonicalValue(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaJSON))
 	})
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, false, nil, nil)
 
 	code := executeArgs(initArgs(cfg, "--assignee-prop", "Referente", "--me", "mirko"))
 	if code != ExitOK {
 		t.Fatalf("exit code = %d", code)
 	}
-	if got := writtenProfile(t, cfg).Me; got != "Mirko Spinato" {
-		t.Errorf("me = %q, want the canonical option %q", got, "Mirko Spinato")
+	// initArgs always passes --profile work, so that is the key the identity
+	// must have landed under.
+	got, source, err := config.ResolveIdentity("work", config.Profile{})
+	if err != nil {
+		t.Fatalf("ResolveIdentity: %v", err)
+	}
+	if got != "Mirko Spinato" || source != "file" {
+		t.Errorf("identity = %q (source %q), want the canonical option %q from credentials.yml", got, source, "Mirko Spinato")
 	}
 }
 
@@ -596,7 +595,6 @@ func TestInitMeNeedsTheAssigneeColumn(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaJSON))
 	})
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, false, nil, nil)
 
 	if code := executeArgs(initArgs(cfg, "--me", "mirko")); code != ExitUsage {
@@ -604,18 +602,196 @@ func TestInitMeNeedsTheAssigneeColumn(t *testing.T) {
 	}
 }
 
-func TestInitMeWarnsThatTheConfigIsShared(t *testing.T) {
+// `notion-track init --me "<name>"` is the command doctor's legacy warning,
+// service.ErrNoIdentity and the agent skill all tell users to run. It used to
+// exit 2 with "--data-source-id is required", because --me is a config flag
+// and so took the branch that writes a profile — making every one of those
+// remediation messages a dead end.
+func TestInitMeAloneSavesTheIdentityForTheProfileInUse(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaJSON))
+	}, assigneeProfileNoIdentity)
+	withInteractivePrompt(t, false, nil, nil)
+
+	var code int
+	out := captureStdout(t, func() {
+		code = executeArgs([]string{"init", "--me", "marco", "--config", cfg})
+	})
+	if code != ExitOK {
+		t.Fatalf("exit code = %d, want %d (ExitOK): %s", code, ExitOK, out)
+	}
+
+	// "work", not "default": no --profile was given, so the identity belongs
+	// to the profile the run is actually about — the fixture's
+	// default_profile — which is the key every other command reads it under.
+	got, source, err := config.ResolveIdentity("work", config.Profile{})
+	if err != nil {
+		t.Fatalf("ResolveIdentity: %v", err)
+	}
+	if got != "Marco Arnulfo" || source != "file" {
+		t.Errorf("identity = %q (source %q), want the canonical option %q from credentials.yml", got, source, "Marco Arnulfo")
+	}
+	if !strings.Contains(out, `"work"`) {
+		t.Errorf("output = %q, want it to name the profile the identity was saved for", out)
+	}
+}
+
+// Setting only an identity must leave config.yml byte-for-byte alone: it is
+// the file meant to be committed, and an unexplained diff in someone's
+// `git status` is exactly what §3.7 of the design forbids.
+func TestInitMeAloneWritesNoProfile(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaJSON))
+	}, assigneeProfileNoIdentity)
+	withInteractivePrompt(t, false, nil, nil)
+
+	before, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	captureStdout(t, func() {
+		if code := executeArgs([]string{"init", "--me", "marco", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+	after, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("init --me rewrote the shared config:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// --me on its own reads the profile in use instead of writing one, so the two
+// ways that reading can fail have to say so rather than falling through to a
+// schema fetch or an empty option list.
+func TestInitMeAloneUsageErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		profile string
+	}{
+		// A config whose profiles map is empty: nothing to attach an identity
+		// to yet.
+		{"no profile configured", "schema_version: 1\nprofiles: {}\n"},
+		// A profile that exists but maps no assignee column: there is nothing
+		// to resolve the name against.
+		{"no assignee column mapped", titleKeyedProfile},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Write([]byte(cliSchemaJSON))
+			}, tt.profile)
+			withInteractivePrompt(t, false, nil, nil)
+
+			if code := executeArgs([]string{"init", "--me", "marco", "--config", cfg}); code != ExitUsage {
+				t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+			}
+			credPath, err := config.CredentialsPath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(credPath); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("an identity was written despite the usage error (stat err = %v)", err)
+			}
+		})
+	}
+}
+
+// A name the column does not offer must fail here rather than reaching disk,
+// exactly as it does on the profile-writing path.
+func TestInitMeAloneRejectsAnUnknownName(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaJSON))
+	}, assigneeProfileNoIdentity)
+	withInteractivePrompt(t, false, nil, nil)
+
+	if code := executeArgs([]string{"init", "--me", "Nobody At All", "--config", cfg}); code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+	}
+}
+
+// --me alongside a flag that does describe a data source is still the
+// profile-writing path, unchanged: the identity-only branch must not swallow
+// an invocation that was meant to configure something.
+func TestInitMeWithAnotherConfigFlagStillRequiresADataSource(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaJSON))
+	}, assigneeProfileNoIdentity)
+	withInteractivePrompt(t, false, nil, nil)
+
+	code := executeArgs([]string{"init", "--me", "marco", "--assignee-prop", "Referente", "--config", cfg})
+	if code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+	}
+}
+
+// TestInitMeWritesToCredentialsNotConfig proves the identity landed in
+// credentials.yml and nowhere in config.yml. The raw-bytes check on top of
+// the struct-level one guards against a future rename of Profile.Me hiding a
+// regression that writes the value back under a different field name.
+func TestInitMeWritesToCredentialsNotConfig(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaJSON))
 	})
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, false, nil, nil)
 
-	errOut := captureStderr(t, func() {
-		executeArgs(initArgs(cfg, "--assignee-prop", "Referente", "--me", "mirko"))
+	if code := executeArgs(initArgs(cfg, "--assignee-prop", "Referente", "--me", "mirko")); code != ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+
+	if got := writtenProfile(t, cfg).Me; got != "" {
+		t.Errorf("profile.Me = %q, want empty: the identity must not land in the shared config", got)
+	}
+	raw, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "me:") {
+		t.Errorf("config.yml contains \"me:\"; the identity must not be written there:\n%s", raw)
+	}
+
+	got, source, err := config.ResolveIdentity("work", config.Profile{})
+	if err != nil {
+		t.Fatalf("ResolveIdentity: %v", err)
+	}
+	if got != "Mirko Spinato" || source != "file" {
+		t.Errorf("identity = %q (source %q), want the canonical option %q from credentials.yml", got, source, "Mirko Spinato")
+	}
+}
+
+// TestInitMePrintsNoSharedConfigWarning proves the warning this task deletes
+// stays gone, and that the confirmation replacing it names the file the
+// identity actually landed in. Both are asserted on the right stream: the
+// confirmation goes through cmd.Printf, which the root command sends to
+// stdout (internal/cli/cli.go:74-75) the same way the token-save confirmation
+// does — asserting it on stderr would fail a correct implementation.
+func TestInitMePrintsNoSharedConfigWarning(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaJSON))
 	})
-	if !strings.Contains(errOut, config.MeEnv) {
-		t.Errorf("stderr = %q, want it to point at %s", errOut, config.MeEnv)
+	withInteractivePrompt(t, false, nil, nil)
+
+	var code int
+	var errOut string
+	out := captureStdout(t, func() {
+		errOut = captureStderr(t, func() {
+			code = executeArgs(initArgs(cfg, "--assignee-prop", "Referente", "--me", "mirko"))
+		})
+	})
+	if code != ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+	if strings.Contains(errOut, "meant to be shared") {
+		t.Errorf("stderr = %q, want the deleted shared-config warning gone", errOut)
+	}
+	credPath, err := config.CredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, credPath) {
+		t.Errorf("stdout = %q, want it to name the credentials file %q", out, credPath)
 	}
 }
 
@@ -632,7 +808,6 @@ func TestInitMapsTheIDColumn(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaWithIDJSON))
 	})
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, false, nil, nil)
 
 	if code := executeArgs(initArgs(cfg, "--id-prop", "ID")); code != ExitOK {
@@ -647,11 +822,88 @@ func TestInitRejectsAnIDColumnOfTheWrongType(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cliSchemaWithIDJSON))
 	})
-	withIsolatedUserConfigDir(t)
 	withInteractivePrompt(t, false, nil, nil)
 
 	// A rich_text column cannot carry Notion's own row id.
 	if code := executeArgs(initArgs(cfg, "--id-prop", "Ticket")); code != ExitUsage {
 		t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+	}
+}
+
+// TestInitWizardSavesTheIdentity proves the wizard's identity reaches
+// credentials.yml the same way --me does, under the profile name the wizard
+// branch actually writes to (no --profile flag here, so "default" — the same
+// rule saveInitProfile itself uses).
+//
+// The isolation withStubbedAPI applies — a temp user config dir, a cleared
+// NOTION_TRACK_ME — matters here in a way it does not for the older wizard
+// tests above: this is the first wizard test whose Result carries a non-empty
+// Identity, so it is the first one that touches credentials.yml at all.
+// Without it, this would read and write the developer's real file.
+func TestInitWizardSavesTheIdentity(t *testing.T) {
+	cfg := withStubbedAPI(t, stubbedWizardAPI)
+	withInteractivePrompt(t, true, nil, nil)
+	withFakeWizard(t, tui.Result{
+		Ref: notion.DataSourceRef{ID: "ds1", Title: "Tasks", DatabaseID: "db1"},
+		Schema: &notion.Schema{DataSourceID: "ds1", Title: "Tasks", Properties: map[string]notion.Property{
+			"Name":      {Name: "Name", Type: "title"},
+			"Ticket":    {Name: "Ticket", Type: "rich_text"},
+			"Stato":     {Name: "Stato", Type: "status"},
+			"Referente": {Name: "Referente", Type: "select"},
+		}},
+		Props:    config.Properties{Ticket: "Ticket", Status: "Stato", Title: "Name", Assignee: "Referente"},
+		Identity: "Mirko Spinato",
+	}, nil)
+
+	if code := executeArgs([]string{"init", "--config", cfg}); code != ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+
+	got, source, err := config.ResolveIdentity("default", config.Profile{})
+	if err != nil {
+		t.Fatalf("ResolveIdentity: %v", err)
+	}
+	if got != "Mirko Spinato" || source != "file" {
+		t.Errorf("identity = %q (source %q), want %q from credentials.yml", got, source, "Mirko Spinato")
+	}
+
+	raw, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "me:") {
+		t.Errorf("config.yml contains \"me:\"; the wizard's identity must not be written there:\n%s", raw)
+	}
+}
+
+// TestInitWizardWritesNoIdentityWhenNoneCollected covers the other half of
+// the Result.Identity contract: empty is a complete answer (no assignee
+// column mapped, or the user skipped the step), and saveInitIdentity must
+// leave credentials.yml untouched rather than record an empty string under
+// the profile.
+func TestInitWizardWritesNoIdentityWhenNoneCollected(t *testing.T) {
+	cfg := withStubbedAPI(t, stubbedWizardAPI)
+	withInteractivePrompt(t, true, nil, nil)
+	withFakeWizard(t, tui.Result{
+		Ref: notion.DataSourceRef{ID: "ds1", Title: "Tasks", DatabaseID: "db1"},
+		Schema: &notion.Schema{DataSourceID: "ds1", Title: "Tasks", Properties: map[string]notion.Property{
+			"Name":   {Name: "Name", Type: "title"},
+			"Ticket": {Name: "Ticket", Type: "rich_text"},
+			"Stato":  {Name: "Stato", Type: "status"},
+		}},
+		Props: config.Properties{Ticket: "Ticket", Status: "Stato", Title: "Name"},
+		// Identity left at its zero value: no assignee column was mapped.
+	}, nil)
+
+	if code := executeArgs([]string{"init", "--config", cfg}); code != ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+
+	credPath, err := config.CredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(credPath); !os.IsNotExist(err) {
+		t.Errorf("credentials.yml exists after a wizard run with no identity: %v", err)
 	}
 }

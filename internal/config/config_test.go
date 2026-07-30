@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func withTempConfig(t *testing.T) string {
@@ -360,6 +362,163 @@ func TestSaveTokenThenLoadTokenRoundTrips(t *testing.T) {
 	}
 }
 
+func TestSaveIdentityKeepsTheToken(t *testing.T) {
+	withTempCredentials(t)
+
+	if err := SaveToken("secret_abc"); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+	if err := SaveIdentity("default", "Jordan Lee"); err != nil {
+		t.Fatalf("SaveIdentity: %v", err)
+	}
+
+	token, source, err := LoadToken()
+	if err != nil {
+		t.Fatalf("LoadToken: %v", err)
+	}
+	if token != "secret_abc" || source != "file" {
+		t.Errorf("LoadToken() = %q, %q; want the token saved before the identity", token, source)
+	}
+}
+
+func TestSaveTokenKeepsIdentities(t *testing.T) {
+	withTempCredentials(t)
+
+	if err := SaveIdentity("work", "Jordan Lee"); err != nil {
+		t.Fatalf("SaveIdentity: %v", err)
+	}
+	if err := SaveToken("secret_abc"); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+
+	creds, err := loadCredentials()
+	if err != nil {
+		t.Fatalf("loadCredentials: %v", err)
+	}
+	if got := creds.Identities["work"]; got != "Jordan Lee" {
+		t.Errorf("identities[work] = %q after SaveToken; want it preserved", got)
+	}
+}
+
+func TestSaveIdentityOverwritesTheSameProfileOnly(t *testing.T) {
+	withTempCredentials(t)
+
+	if err := SaveIdentity("default", "Old Name"); err != nil {
+		t.Fatalf("SaveIdentity: %v", err)
+	}
+	if err := SaveIdentity("work", "Jordan Lee"); err != nil {
+		t.Fatalf("SaveIdentity: %v", err)
+	}
+	if err := SaveIdentity("default", "New Name"); err != nil {
+		t.Fatalf("SaveIdentity: %v", err)
+	}
+
+	creds, err := loadCredentials()
+	if err != nil {
+		t.Fatalf("loadCredentials: %v", err)
+	}
+	if creds.Identities["default"] != "New Name" || creds.Identities["work"] != "Jordan Lee" {
+		t.Errorf("identities = %v; want default replaced and work untouched", creds.Identities)
+	}
+}
+
+// A credentials.yml written by this binary must stay readable by one built
+// before Identities existed. This is the compatibility claim in spec §3.2,
+// and the reason CurrentSchemaVersion is not bumped.
+func TestIdentitiesAreIgnoredByAnOlderStruct(t *testing.T) {
+	withTempCredentials(t)
+
+	if err := SaveToken("secret_abc"); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+	if err := SaveIdentity("default", "Jordan Lee"); err != nil {
+		t.Fatalf("SaveIdentity: %v", err)
+	}
+
+	path, err := credentialsPath()
+	if err != nil {
+		t.Fatalf("credentialsPath: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading credentials: %v", err)
+	}
+
+	// The shape as it was before this change.
+	var old struct {
+		SchemaVersion int    `yaml:"schema_version"`
+		Token         string `yaml:"token"`
+	}
+	if err := yaml.Unmarshal(raw, &old); err != nil {
+		t.Fatalf("an older binary cannot read this file: %v", err)
+	}
+	if old.Token != "secret_abc" {
+		t.Errorf("old.Token = %q; want the token still readable", old.Token)
+	}
+}
+
+func TestResolveIdentityPrefersTheEnvironment(t *testing.T) {
+	withTempCredentials(t)
+	if err := SaveIdentity("default", "From File"); err != nil {
+		t.Fatalf("SaveIdentity: %v", err)
+	}
+	t.Setenv(MeEnv, "From Env")
+
+	got, source, err := ResolveIdentity("default", Profile{Me: "From Legacy"})
+	if err != nil {
+		t.Fatalf("ResolveIdentity: %v", err)
+	}
+	if got != "From Env" || source != "env" {
+		t.Errorf("ResolveIdentity() = %q, %q; want the environment to win", got, source)
+	}
+}
+
+func TestResolveIdentityPrefersTheFileOverTheLegacyField(t *testing.T) {
+	withTempCredentials(t)
+	t.Setenv(MeEnv, "")
+	if err := SaveIdentity("default", "From File"); err != nil {
+		t.Fatalf("SaveIdentity: %v", err)
+	}
+
+	got, source, err := ResolveIdentity("default", Profile{Me: "From Legacy"})
+	if err != nil {
+		t.Fatalf("ResolveIdentity: %v", err)
+	}
+	if got != "From File" || source != "file" {
+		t.Errorf("ResolveIdentity() = %q, %q; want credentials.yml to win over me:", got, source)
+	}
+}
+
+// The whole point of keeping Profile.Me: an existing config keeps working.
+func TestResolveIdentityFallsBackToTheLegacyField(t *testing.T) {
+	withTempCredentials(t)
+	t.Setenv(MeEnv, "")
+
+	got, source, err := ResolveIdentity("default", Profile{Me: "From Legacy"})
+	if err != nil {
+		t.Fatalf("ResolveIdentity: %v", err)
+	}
+	if got != "From Legacy" || source != "legacy" {
+		t.Errorf("ResolveIdentity() = %q, %q; want the config field as the last resort", got, source)
+	}
+}
+
+func TestResolveIdentityIsKeyedByProfile(t *testing.T) {
+	withTempCredentials(t)
+	t.Setenv(MeEnv, "")
+	if err := SaveIdentity("work", "Jordan Lee"); err != nil {
+		t.Fatalf("SaveIdentity: %v", err)
+	}
+
+	got, source, err := ResolveIdentity("default", Profile{})
+	if err != nil {
+		t.Fatalf("ResolveIdentity: %v", err)
+	}
+	if got != "" || source != "" {
+		t.Errorf("ResolveIdentity(default) = %q, %q; want nothing — the identity belongs to another profile", got, source)
+	}
+}
+
 // migrate had no test at all: emptying it left the whole suite green.
 func TestLoadNormalisesAMissingSchemaVersion(t *testing.T) {
 	path := withTempConfig(t)
@@ -438,7 +597,12 @@ func TestResolvePrecedence(t *testing.T) {
 	})
 }
 
-func TestResolveMeFromEnv(t *testing.T) {
+// Resolve itself no longer touches Me at all — that precedence moved to
+// ResolveIdentity (see TestResolveIdentityPrefersTheEnvironment and its
+// neighbours) so there is exactly one place deciding it. This test is what is
+// left once that assertion moved: Resolve must hand back the profile's Me
+// unchanged, env set or not.
+func TestResolveLeavesMeForResolveIdentityToHandle(t *testing.T) {
 	cfg := &Config{
 		DefaultProfile: "default",
 		Profiles: map[string]Profile{
@@ -450,7 +614,7 @@ func TestResolveMeFromEnv(t *testing.T) {
 		},
 	}
 
-	t.Run("the file value is used when the env is unset", func(t *testing.T) {
+	t.Run("the profile value survives when the env is unset", func(t *testing.T) {
 		// Explicitly unset, not merely "not set here": whoever runs the suite
 		// may well have exported it — the README tells them to.
 		t.Setenv(MeEnv, "")
@@ -466,25 +630,14 @@ func TestResolveMeFromEnv(t *testing.T) {
 		}
 	})
 
-	t.Run("the env wins over the file", func(t *testing.T) {
+	t.Run("the profile value survives even when the env is set", func(t *testing.T) {
 		t.Setenv(MeEnv, "Mirko Spinato")
 		p, err := cfg.Resolve("")
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
 		}
-		if p.Me != "Mirko Spinato" {
-			t.Errorf("Me = %q, want the env value", p.Me)
-		}
-	})
-
-	t.Run("an empty env does not blank the file value", func(t *testing.T) {
-		t.Setenv(MeEnv, "")
-		p, err := cfg.Resolve("")
-		if err != nil {
-			t.Fatalf("Resolve: %v", err)
-		}
 		if p.Me != "Marco Arnulfo" {
-			t.Errorf("Me = %q, want the file value to survive an empty env", p.Me)
+			t.Errorf("Me = %q, want the profile's own value; the env override now belongs to ResolveIdentity", p.Me)
 		}
 	})
 }

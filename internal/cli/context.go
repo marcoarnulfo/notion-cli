@@ -31,21 +31,37 @@ func buildService(cmd *cobra.Command) (*service.Service, error) {
 	}
 
 	path, _ := cmd.Flags().GetString("config")
-	var cfg *config.Config
-	if path != "" {
-		cfg, err = loadConfigFrom(path)
-	} else {
-		cfg, err = loadConfig()
-	}
+	cfg, err := loadConfigForFlag(path)
 	if err != nil {
 		return nil, err
 	}
 
-	profileName, _ := cmd.Flags().GetString("profile")
-	profile, err := cfg.Resolve(profileName)
+	requested, _ := cmd.Flags().GetString("profile")
+	// The resolved name, not the flag: NOTION_TRACK_PROFILE and
+	// default_profile are applied inside Resolve, and the identity is keyed
+	// by the profile the run is actually about.
+	name := cfg.ProfileName(requested)
+	profile, err := cfg.Resolve(name)
 	if err != nil {
 		return nil, Errorf(ExitUsage, "%v", err)
 	}
+
+	me, source, err := config.ResolveIdentity(name, profile)
+	if err != nil {
+		// Not fatal, and deliberately not a fallback either. This runs for
+		// every command, but almost none of them need an identity: failing
+		// here would let an unreadable credentials.yml take down `list` and
+		// `get`, which never ask who "me" is. Falling through to the profile's
+		// legacy me: would be worse still — that value is whoever ran init,
+		// and silently assigning work to the wrong person is the exact failure
+		// the identity moved out of the shared file to prevent. So the
+		// identity stays empty and the source records why, leaving the two
+		// places that do need one — `--assignee me` and doctor's assignee
+		// check — free to report it instead of guessing.
+		me, source = "", config.MeSourceUnreadable
+	}
+	profile.Me, profile.MeSource = me, source
+
 	if profile.DataSourceID == "" {
 		return nil, Errorf(ExitUsage,
 			"profile has no data_source_id; run 'notion-track init' to configure it")
@@ -53,17 +69,20 @@ func buildService(cmd *cobra.Command) (*service.Service, error) {
 	return service.New(newClient(token), profile), nil
 }
 
+// loadConfigForFlag reads the config --config points at, or the default
+// location when the flag was not given. Unlike loadExistingOrNew below it lets
+// ErrNotConfigured through: its callers are the ones that need an existing
+// profile to read, not to write one.
+func loadConfigForFlag(path string) (*config.Config, error) {
+	if path != "" {
+		return loadConfigFrom(path)
+	}
+	return loadConfig()
+}
+
 // loadExistingOrNew returns the config at path, or an empty one if absent.
 func loadExistingOrNew(path string) (*config.Config, error) {
-	var (
-		cfg *config.Config
-		err error
-	)
-	if path != "" {
-		cfg, err = loadConfigFrom(path)
-	} else {
-		cfg, err = loadConfig()
-	}
+	cfg, err := loadConfigForFlag(path)
 	if errors.Is(err, config.ErrNotConfigured) {
 		return &config.Config{
 			SchemaVersion: config.CurrentSchemaVersion,

@@ -35,6 +35,14 @@ profiles:
 
 // withStubbedAPIProfile is withStubbedAPI with the profile spelled out, for the
 // tests that need a mapping other than the default one.
+//
+// It isolates the whole machine-dependent environment, not just the HTTP
+// endpoint, because buildService reads the identity on every command: without
+// withIsolatedUserConfigDir and a cleared NOTION_TRACK_ME, any test that goes
+// through it would resolve the identity of whoever is running the suite —
+// passing or failing on a developer's own credentials.yml and shell rather
+// than on the fixture under test. Done here, once, so no future test has to
+// remember it.
 func withStubbedAPIProfile(t *testing.T, handler http.HandlerFunc, configYAML string) string {
 	t.Helper()
 	srv := httptest.NewServer(handler)
@@ -46,7 +54,13 @@ func withStubbedAPIProfile(t *testing.T, handler http.HandlerFunc, configYAML st
 	}
 	t.Cleanup(func() { newClient = oldClient })
 
+	withIsolatedUserConfigDir(t)
 	t.Setenv(config.TokenEnv, "ntn_test")
+	t.Setenv(config.MeEnv, "")
+	// The same reasoning one line up, for the variable that decides WHICH
+	// profile a fixture resolves to. A developer with this exported would send
+	// several tests looking for a profile their fixture never defines.
+	t.Setenv(config.ProfileEnv, "")
 
 	path := filepath.Join(t.TempDir(), "config.yml")
 	os.WriteFile(path, []byte(configYAML), 0o600)
@@ -161,7 +175,6 @@ func TestGetMissingTicketExitsNotFound(t *testing.T) {
 func TestGetWithoutTokenExitsAuth(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {})
 	t.Setenv(config.TokenEnv, "")
-	withIsolatedUserConfigDir(t)
 
 	if code := executeArgs([]string{"get", "--ticket", "X", "--config", cfg}); code != ExitAuth {
 		t.Fatalf("exit code = %d, want %d", code, ExitAuth)
@@ -189,7 +202,6 @@ func withIsolatedUserConfigDir(t *testing.T) {
 func TestGetWithUnreadableCredentialsExitsAuth(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {})
 	t.Setenv(config.TokenEnv, "")
-	withIsolatedUserConfigDir(t)
 
 	credPath, err := config.CredentialsPath()
 	if err != nil {
@@ -211,7 +223,6 @@ func TestGetWithUnreadableCredentialsExitsAuth(t *testing.T) {
 func TestGetWithCorruptedCredentialsExitsAuth(t *testing.T) {
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {})
 	t.Setenv(config.TokenEnv, "")
-	withIsolatedUserConfigDir(t)
 
 	credPath, err := config.CredentialsPath()
 	if err != nil {
@@ -240,7 +251,6 @@ func TestGetUsesTokenFromCredentialsFile(t *testing.T) {
 		w.Write([]byte(`{"results":[` + cliRowJSON + `],"has_more":false}`))
 	})
 	t.Setenv(config.TokenEnv, "")
-	withIsolatedUserConfigDir(t)
 	if err := config.SaveToken("ntn_from_file"); err != nil {
 		t.Fatalf("SaveToken: %v", err)
 	}

@@ -150,6 +150,22 @@ func anyConfigFlagSet(cmd *cobra.Command) bool {
 	return false
 }
 
+// identityOnly reports an `init --me <name>` with nothing else to configure.
+// --me is a config flag like the rest — it keeps the wizard out of the way —
+// but on its own it says something different from all the others: not "here is
+// the data source", just "here is who I am".
+func identityOnly(cmd *cobra.Command) bool {
+	if !cmd.Flags().Changed("me") {
+		return false
+	}
+	for _, name := range configFlags {
+		if name != "me" && cmd.Flags().Changed(name) {
+			return false
+		}
+	}
+	return true
+}
+
 // runWizard is the seam that keeps bubbletea's runtime out of the tests. A
 // test has no terminal to give it, and tea.NewProgram would block waiting for
 // input nobody is there to type. The Model itself is tested directly, in
@@ -217,15 +233,134 @@ func runInitWizard(cmd *cobra.Command) error {
 		return Errorf(ExitUsage, "%v", err)
 	}
 
-	return saveInitProfile(cmd, config.Profile{
+	if err := saveInitProfile(cmd, config.Profile{
 		DatabaseID:   res.Ref.DatabaseID,
 		DataSourceID: res.Ref.ID,
 		StatusType:   statusType,
 		Properties:   res.Props,
-		// The wizard has no equivalent of --me yet: an identity here would come
-		// from typing, and the wizard is not wired to collect it.
+		// The identity the wizard collected goes to credentials.yml via
+		// saveInitIdentity below, never here: config.yml is shared, and Me
+		// on the profile is the legacy field that lives there for
+		// configurations written before the identity moved.
 		Me: "",
-	}, res.Schema.Title)
+	}, res.Schema.Title); err != nil {
+		return err
+	}
+	return saveInitIdentity(cmd, res.Identity)
+}
+
+// saveInitIdentity writes the identity both profile-writing paths through init
+// collect, so the wizard and the flags cannot drift into disagreeing about
+// which profile it belongs to.
+//
+// It goes in credentials.yml, not the profile saveInitProfile just wrote:
+// config.yml is committed and shared, and an identity written there would be
+// everyone's. Called after the profile so that a failure to write it leaves
+// a usable configuration behind rather than an identity pointing at a
+// profile that does not exist.
+//
+// The profile name follows the same rule saveInitProfile uses — --profile,
+// else the literal "default" — not cfg.DefaultProfile: an identity is
+// per-profile, and resolving through the default here would save it under
+// the wrong key the moment --profile is set without --config pointing at a
+// fresh file. runInitIdentity resolves the name instead, and the difference
+// is deliberate: see the comment there.
+func saveInitIdentity(cmd *cobra.Command, identity string) error {
+	if identity == "" {
+		return nil
+	}
+	name, _ := cmd.Flags().GetString("profile")
+	if name == "" {
+		name = "default"
+	}
+	return saveIdentityFor(cmd, name, identity)
+}
+
+// saveIdentityFor persists one identity under one profile name and says where
+// it landed. Both init paths end here so the file that gets named, and the
+// shape of the confirmation, cannot drift apart.
+//
+// The profile is named in the message because the two callers key the identity
+// differently and a user has no other way to see which key was used.
+func saveIdentityFor(cmd *cobra.Command, profileName, identity string) error {
+	if err := config.SaveIdentity(profileName, identity); err != nil {
+		return err
+	}
+	credPath, err := config.CredentialsPath()
+	if err != nil {
+		return err
+	}
+	cmd.Printf("identity %q saved to %s for profile %q\n", identity, credPath, profileName)
+	return nil
+}
+
+// runInitIdentity is `notion-track init --me <name>` on its own: it records who
+// the user is and configures nothing else.
+//
+// That command is what every remediation message in the tool names — doctor's
+// legacy-identity warning, service.ErrNoIdentity, the agent skill — and none of
+// them is asking the user to re-describe a data source they configured long
+// ago. So it reads the profile in use instead of writing one: the assignee
+// column to validate the name against is already mapped there, and config.yml
+// must not be touched at all (a file meant to be committed, edited as a side
+// effect, turns up unexplained in someone's git status).
+func runInitIdentity(cmd *cobra.Command, me string) error {
+	path, _ := cmd.Flags().GetString("config")
+	cfg, err := loadConfigForFlag(path)
+	if err != nil {
+		return err
+	}
+
+	requested, _ := cmd.Flags().GetString("profile")
+	// The RESOLVED name — --profile, then NOTION_TRACK_PROFILE, then
+	// default_profile — because that is the profile every other command will
+	// read the identity back under (see buildService).
+	//
+	// This is where init's two profile-key rules meet, and they differ on
+	// purpose: an init that CREATES a profile saves the identity for the
+	// profile it just wrote (--profile, else "default" — saveInitIdentity),
+	// because resolving through a default_profile that names some other
+	// profile would file it under a profile the user was not configuring. An
+	// init that only SETS an identity has created nothing, so the profile it
+	// belongs to is simply the one in use.
+	name := cfg.ProfileName(requested)
+	if name == "" {
+		return Errorf(ExitUsage,
+			"--me on its own sets the identity of a profile that already exists, and none is configured\n"+
+				"  fix: run 'notion-track init' to configure one first")
+	}
+	profile, err := cfg.Resolve(name)
+	if err != nil {
+		return Errorf(ExitUsage, "%v", err)
+	}
+	column := profile.Properties.Assignee
+	if column == "" {
+		return Errorf(ExitUsage,
+			"profile %q maps no assignee column, so there is nothing to resolve %q against\n"+
+				"  fix: rerun init with --assignee-prop <name> to map one", name, me)
+	}
+
+	token, err := resolveInitToken(cmd)
+	if err != nil {
+		return err
+	}
+	// Validated against the live schema for the same reason the flag path
+	// does it: a typo has to fail here, not on the first --assignee me.
+	schema, err := newClient(token).GetSchema(cmd.Context(), profile.DataSourceID)
+	if err != nil {
+		return err
+	}
+	prop, ok := schema.Properties[column]
+	if !ok {
+		return Errorf(ExitUsage,
+			"the profile's assignee column %q no longer exists in this data source\n"+
+				"  fix: run 'notion-track doctor' to see what the mapping should be", column)
+	}
+	resolved, err := tracker.ResolveOption("me", me, prop.Options)
+	if err != nil {
+		return Errorf(ExitUsage, "%v", err)
+	}
+	return saveIdentityFor(cmd, name, resolved)
 }
 
 // saveInitProfile writes the profile both paths through init produce, so the
@@ -280,6 +415,15 @@ func newInitCmd() *cobra.Command {
 			// can answer would hang the run.
 			if !anyConfigFlagSet(cmd) && isInteractive() {
 				return runInitWizard(cmd)
+			}
+
+			// Before the --data-source-id guard below, which exists to stop a
+			// profile being written without one: `init --me <name>` writes no
+			// profile at all, and demanding a data source id to record an
+			// identity would make every "run 'notion-track init --me <name>'"
+			// message in this tool unrunnable as printed.
+			if identityOnly(cmd) {
+				return runInitIdentity(cmd, me)
 			}
 
 			// Usage must be validated before anything that could prompt for
@@ -344,22 +488,18 @@ func newInitCmd() *cobra.Command {
 				if err != nil {
 					return Errorf(ExitUsage, "%v", err)
 				}
-				// config.yml is meant to be committed and shared, so an identity
-				// written there is everyone's identity: say so at the one moment
-				// the user is choosing to write it.
-				cmd.PrintErrf(
-					"warning: %q is stored in the config file, which is meant to be shared.\n"+
-						"  For a personal identity, export %s instead.\n",
-					resolvedMe, config.MeEnv)
 			}
 
-			return saveInitProfile(cmd, config.Profile{
+			if err := saveInitProfile(cmd, config.Profile{
 				DatabaseID:   databaseID,
 				DataSourceID: dataSourceID,
 				StatusType:   statusType,
 				Properties:   props,
-				Me:           resolvedMe,
-			}, schema.Title)
+			}, schema.Title); err != nil {
+				return err
+			}
+
+			return saveInitIdentity(cmd, resolvedMe)
 		},
 	}
 
@@ -372,7 +512,7 @@ func newInitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&assigneeProp, "assignee-prop", "", "select property holding the assignee (optional)")
 	cmd.Flags().StringVar(&priorityProp, "priority-prop", "", "select property holding the priority (optional)")
 	cmd.Flags().StringVar(&idProp, "id-prop", "", "unique_id property holding the board id, e.g. TASK-271 (optional)")
-	cmd.Flags().StringVar(&me, "me", "", "the assignee value '--assignee me' stands for (optional)")
+	cmd.Flags().StringVar(&me, "me", "", "the assignee value '--assignee me' stands for; on its own, sets only the identity, for the profile in use (optional)")
 	cmd.Flags().BoolVar(&list, "list", false, "list the data sources shared with the integration and exit")
 	return cmd
 }

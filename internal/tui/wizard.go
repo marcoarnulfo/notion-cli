@@ -28,6 +28,7 @@ const (
 	stageLoadingSchema
 	stageConfirm
 	stageEditRole
+	stageIdentity
 	stageSchemaError
 	stageDone
 	stageCancelled
@@ -71,6 +72,11 @@ type Result struct {
 	Ref    notion.DataSourceRef
 	Schema *notion.Schema
 	Props  config.Properties
+	// Identity is the option of the assignee column that stands for the user,
+	// what --assignee me resolves to. Empty is a complete answer: the wizard
+	// only asks when an assignee column is mapped, and skipping is allowed —
+	// a board can be tracked perfectly well without saying who you are.
+	Identity string
 	// Cancelled records that the user walked away rather than that anything
 	// went wrong. The caller turns it into a distinct exit code: a script has
 	// to be able to tell "profile configured" from "user changed their mind".
@@ -85,15 +91,21 @@ type Model struct {
 	sources     []notion.DataSourceRef
 	fetchSchema func(dataSourceID string) (*notion.Schema, error)
 
-	stage      stage
-	sourceList list.Model
-	roleList   list.Model
-	editing    int // index into roles, meaningful in stageEditRole
+	stage        stage
+	sourceList   list.Model
+	roleList     list.Model
+	identityList list.Model
+	editing      int // index into roles, meaningful in stageEditRole
 
-	ref    notion.DataSourceRef
-	schema *notion.Schema
-	props  config.Properties
-	err    error
+	ref      notion.DataSourceRef
+	schema   *notion.Schema
+	props    config.Properties
+	identity string
+	// identityAsked keeps the question to one appearance per run. Without it,
+	// leaving the picker without answering would put the user back on the
+	// summary, where enter — the key that opened it — would open it again.
+	identityAsked bool
+	err           error
 
 	width, height int
 }
@@ -153,7 +165,7 @@ func (m Model) Result() Result {
 		// as one the user approved.
 		return Result{Cancelled: true}
 	default:
-		return Result{Ref: m.ref, Schema: m.schema, Props: m.props}
+		return Result{Ref: m.ref, Schema: m.schema, Props: m.props, Identity: m.identity}
 	}
 }
 
@@ -165,6 +177,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.sourceList.SetSize(m.width, m.listHeight())
 		m.roleList.SetSize(m.width, m.listHeight())
+		m.identityList.SetSize(m.width, m.listHeight())
 		return m, nil
 
 	case schemaLoadedMsg:
@@ -199,6 +212,8 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateConfirm(msg)
 	case stageEditRole:
 		return m.updateEditRole(msg)
+	case stageIdentity:
+		return m.updateIdentity(msg)
 	case stageSchemaError:
 		return m.updateSchemaError(msg)
 	}
@@ -246,6 +261,14 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// already says which one is missing.
 			return m, nil
 		}
+		if items := m.identityItems(); !m.identityAsked && items != nil {
+			// The identity is asked last, and is not a role on the summary: a
+			// role names a column, this names a value inside one, so there is
+			// nothing to ask until the assignee column is settled.
+			m.identityList = newList(items, "Which "+m.props.Assignee+" option is you?", m.width, m.listHeight())
+			m.stage = stageIdentity
+			return m, nil
+		}
 		m.stage = stageDone
 		return m, tea.Quit
 	}
@@ -284,6 +307,37 @@ func (m Model) updateEditRole(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.roleList, cmd = m.roleList.Update(msg)
+	return m, cmd
+}
+
+func (m Model) updateIdentity(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.identityList.FilterState() == list.Filtering {
+		var cmd tea.Cmd
+		m.identityList, cmd = m.identityList.Update(msg)
+		return m, cmd
+	}
+
+	switch msg.String() {
+	case "esc", "q":
+		// Back to the summary, as out of every other picker — but the question
+		// counts as asked, so the enter that opened this screen saves next
+		// time instead of reopening it.
+		m.identityAsked = true
+		m.stage = stageConfirm
+		return m, nil
+	case "enter":
+		if item, ok := m.identityList.SelectedItem().(identityItem); ok {
+			// The skip entry's name is empty, which is exactly the value that
+			// means "no identity" everywhere else.
+			m.identity = item.name
+		}
+		m.identityAsked = true
+		m.stage = stageDone
+		return m, tea.Quit
+	}
+
+	var cmd tea.Cmd
+	m.identityList, cmd = m.identityList.Update(msg)
 	return m, cmd
 }
 
@@ -354,6 +408,30 @@ func (m Model) roleItems(r roleSpec) []list.Item {
 	return items
 }
 
+// identityItems lists the options of the mapped assignee column, plus a way
+// to answer "nobody". It returns nil when there is nothing worth asking:
+// --assignee me resolves against that column, so with no column mapped — or
+// no option in it — the question has no answer to offer.
+func (m Model) identityItems() []list.Item {
+	if m.schema == nil || m.props.Assignee == "" {
+		return nil
+	}
+	prop, ok := m.schema.Properties[m.props.Assignee]
+	if !ok || len(prop.Options) == 0 {
+		return nil
+	}
+
+	// Notion's own option order is kept: unlike the role pickers, which sort
+	// because map iteration would reshuffle them, this order is the one the
+	// user already sees in the board.
+	items := make([]list.Item, 0, len(prop.Options)+1)
+	items = append(items, identityItem{})
+	for _, name := range prop.Options {
+		items = append(items, identityItem{name: name})
+	}
+	return items
+}
+
 type schemaLoadedMsg struct{ schema *notion.Schema }
 type schemaFailedMsg struct{ err error }
 
@@ -382,6 +460,8 @@ func (m Model) View() string {
 		return "\n  reading the schema of " + m.ref.Title + "…\n"
 	case stageEditRole:
 		return m.roleList.View() + "\n" + hintStyle.Render("enter  choose    /  filter    esc  back")
+	case stageIdentity:
+		return m.identityList.View() + "\n" + hintStyle.Render("enter  choose    /  filter    esc  skip")
 	case stageSchemaError:
 		return "\n" + warnStyle.Render("  could not read that data source") +
 			fmt.Sprintf("\n  %v\n\n", m.err) +
@@ -501,3 +581,28 @@ func (i propItem) Description() string {
 }
 
 func (i propItem) FilterValue() string { return i.name }
+
+// identityItem is one option of the assignee column, offered as the answer to
+// "which of these is you?". Because the list is built from the column itself,
+// a name that column does not offer cannot be chosen — the same guarantee
+// --me gets by validating what was typed, without the validation.
+//
+// The zero value is the "no identity" entry, kept alongside esc so that
+// skipping is as visible as choosing.
+type identityItem struct{ name string }
+
+func (i identityItem) Title() string {
+	if i.name == "" {
+		return "— skip —"
+	}
+	return i.name
+}
+
+func (i identityItem) Description() string {
+	if i.name == "" {
+		return "no identity; --assignee me stays unavailable"
+	}
+	return "--assignee me means " + i.name
+}
+
+func (i identityItem) FilterValue() string { return i.name }

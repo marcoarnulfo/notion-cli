@@ -143,14 +143,15 @@ func TestSetExitsNotFoundInsteadOfCreating(t *testing.T) {
 // stubForAssignee answers schema, query and write, keeping the properties
 // payload of the write so a test can assert on what reached Notion.
 //
-// NOTION_TRACK_ME is cleared deliberately: config.Resolve lets it override the
-// profile, so a developer who followed the README and exported it would
-// otherwise have their own identity leak into every test here — and the one
-// test that asserts "me" is *not* configured would silently pass for the wrong
-// reason.
+// It clears no environment of its own: withStubbedAPIProfile already isolates
+// the user config dir and NOTION_TRACK_ME for every test, which is what these
+// tests need — buildService resolves the identity through
+// config.ResolveIdentity on every command, so a developer who exported
+// NOTION_TRACK_ME, or simply has a credentials.yml, would otherwise have their
+// own identity leak in here — and the one test that asserts "me" is *not*
+// configured would silently pass for the wrong reason.
 func stubForAssignee(t *testing.T, profile string, written *map[string]any) string {
 	t.Helper()
-	t.Setenv(config.MeEnv, "")
 	return withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/v1/data_sources/ds1":
@@ -216,6 +217,73 @@ func TestSetMeUsesTheConfiguredIdentity(t *testing.T) {
 	}
 }
 
+// TestAssigneeMeUsesTheIdentityFromCredentials proves the identity comes from
+// credentials.yml, and that it is looked up under the *resolved* profile
+// name rather than the raw --profile flag: the fixture's config.yml names
+// "work" as default_profile, the identity is saved under "work", and the
+// command below never passes --profile at all. If buildService looked up
+// identities[""] (the flag's zero value) instead of identities[name], this
+// would find nothing and fail with ErrNoIdentity.
+func TestAssigneeMeUsesTheIdentityFromCredentials(t *testing.T) {
+	var written map[string]any
+	// assigneeProfileNoIdentity carries no legacy me:, so the only possible
+	// source for a resolved value here is credentials.yml.
+	cfg := stubForAssignee(t, assigneeProfileNoIdentity, &written)
+
+	if err := config.SaveIdentity("work", "Andrea Ghidara"); err != nil {
+		t.Fatalf("SaveIdentity: %v", err)
+	}
+
+	if code := executeArgs([]string{
+		"set", "--ticket", "BDF-231", "--assignee", "me", "--config", cfg,
+	}); code != ExitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+
+	got, _ := json.Marshal(written["Referente"])
+	if want := `{"select":{"name":"Andrea Ghidara"}}`; string(got) != want {
+		t.Errorf("Referente = %s, want %s", got, want)
+	}
+}
+
+// An unreadable credentials.yml used to take down every command, because
+// buildService resolved the identity eagerly and failed hard. It no longer
+// does — but it must not silently fall back to the profile's legacy me:
+// either, which is someone else's identity. `--assignee me` is one of the two
+// places that has to say so, and it says it with ExitAuth, like every other
+// failure to read that file.
+func TestAssigneeMeWithUnreadableCredentialsExitsAuth(t *testing.T) {
+	var written map[string]any
+	// assigneeProfile carries a legacy me: — the value the old fallback would
+	// have quietly assigned the row to.
+	cfg := stubForAssignee(t, assigneeProfile, &written)
+	unreadableCredentials(t)
+
+	if code := executeArgs([]string{
+		"set", "--ticket", "BDF-231", "--assignee", "me", "--config", cfg,
+	}); code != ExitAuth {
+		t.Fatalf("exit code = %d, want %d (ExitAuth)", code, ExitAuth)
+	}
+	if written != nil {
+		t.Errorf("the write went through with an identity nothing could confirm: %v", written)
+	}
+}
+
+// The other half: a command that never asks who "me" is must keep working
+// with the same broken file. Before this, resolving the identity eagerly for
+// every command made an unreadable credentials.yml fatal to `list` too.
+func TestListStillWorksWithUnreadableCredentials(t *testing.T) {
+	var written map[string]any
+	cfg := stubForAssignee(t, assigneeProfile, &written)
+	unreadableCredentials(t)
+
+	captureStdout(t, func() {
+		if code := executeArgs([]string{"list", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d, want %d (ExitOK)", code, ExitOK)
+		}
+	})
+}
+
 func TestAssigneeUsageErrorsAllExitTwo(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -250,7 +318,6 @@ func TestAssigneeOnAnUnmappedRoleExitsOne(t *testing.T) {
 	// other four roles have always produced, and typing it for assignee alone
 	// would either change --due's exit code too or treat one role differently
 	// from the rest for the identical condition. Both are worse than a 1.
-	t.Setenv(config.MeEnv, "")
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/data_sources/ds1" {
 			w.Write([]byte(cliSchemaJSON))
@@ -342,7 +409,6 @@ func TestPriorityOnAnUnmappedRoleExitsOne(t *testing.T) {
 	// so it stays a choice rather than turning into a surprise.
 	// withStubbedAPI's default profile maps no priority — the same fixture the
 	// assignee's twin test uses for this case.
-	t.Setenv(config.MeEnv, "")
 	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/data_sources/ds1" {
 			w.Write([]byte(cliSchemaJSON))

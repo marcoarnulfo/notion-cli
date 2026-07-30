@@ -63,7 +63,6 @@ func TestDoctorReportsTokenSourceFromFile(t *testing.T) {
 		}
 	})
 	t.Setenv(config.TokenEnv, "")
-	withIsolatedUserConfigDir(t)
 	if err := config.SaveToken("ntn_from_file"); err != nil {
 		t.Fatalf("SaveToken: %v", err)
 	}
@@ -202,6 +201,110 @@ func TestDoctorExitsZeroWhenOnlyAWarn(t *testing.T) {
 	}
 	if strings.Contains(out, "✗") {
 		t.Fatalf("expected no fail symbol (✗) in a warn-only run, got: %s", out)
+	}
+}
+
+// assigneeCheck runs `doctor --json` and returns its assignee check.
+//
+// --json rather than the text form because the text renderer collapses the
+// status into a symbol: a test that greps for "!" cannot tell which check
+// warned, which is the entire question here.
+func assigneeCheck(t *testing.T, cfgPath string) struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Detail string `json:"detail"`
+} {
+	t.Helper()
+	type check struct {
+		Name   string `json:"name"`
+		Status string `json:"status"`
+		Detail string `json:"detail"`
+	}
+	var out string
+	code := 0
+	out = captureStdout(t, func() {
+		code = executeArgs([]string{"doctor", "--json", "--config", cfgPath})
+	})
+	if code != ExitOK {
+		t.Fatalf("doctor exit code = %d, want %d: %s", code, ExitOK, out)
+	}
+	var checks []check
+	if err := json.Unmarshal([]byte(out), &checks); err != nil {
+		t.Fatalf("output is not JSON: %s", out)
+	}
+	for _, c := range checks {
+		if c.Name == "assignee" {
+			return c
+		}
+	}
+	t.Fatalf("no assignee check in %s", out)
+	return check{}
+}
+
+// The one line that makes doctor's legacy-identity warning work —
+// buildService assigning MeSource onto the profile — has no unit test that
+// could catch its removal: every test in internal/service sets MeSource by
+// hand and so asserts on its own setup. Deleting the assignment leaves them
+// all green while the shipped binary never warns again. This is the test that
+// goes through the real command, so the wiring itself is what is under test.
+//
+// The second half matters as much as the first: a warning that never goes
+// away teaches users to ignore it, so moving the identity to credentials.yml
+// has to actually silence it.
+func TestDoctorWarnsAboutALegacyIdentityAndStopsOnceItMoves(t *testing.T) {
+	// assigneeProfile carries `me:` in config.yml and nothing in
+	// credentials.yml — exactly the setup of a config written before the
+	// identity moved.
+	cfg := withStubbedAPIProfile(t, stubbedDoctorAPI, assigneeProfile)
+
+	before := assigneeCheck(t, cfg)
+	if before.Status != "warn" {
+		t.Fatalf("assignee = %s (%s), want warn while the identity is still in config.yml", before.Status, before.Detail)
+	}
+	if !strings.Contains(before.Detail, "notion-track init --me") {
+		t.Errorf("detail = %q, want it to name the command that moves the identity", before.Detail)
+	}
+
+	// "work" is assigneeProfile's default_profile, which is the key
+	// buildService resolves the identity under.
+	if err := config.SaveIdentity("work", "Marco Arnulfo"); err != nil {
+		t.Fatalf("SaveIdentity: %v", err)
+	}
+
+	after := assigneeCheck(t, cfg)
+	if after.Status != "ok" {
+		t.Errorf("assignee = %s (%s), want ok once the identity lives in credentials.yml", after.Status, after.Detail)
+	}
+}
+
+// A credentials.yml nobody can read leaves buildService with no identity and
+// no way to tell whether one was configured. Reporting "none configured"
+// would send that user to set up something they may already have, so doctor
+// warns about the file instead.
+func TestDoctorWarnsWhenTheCredentialsFileCannotBeRead(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, stubbedDoctorAPI, assigneeProfileNoIdentity)
+	unreadableCredentials(t)
+
+	check := assigneeCheck(t, cfg)
+	if check.Status != "warn" {
+		t.Fatalf("assignee = %s (%s), want warn", check.Status, check.Detail)
+	}
+	if !strings.Contains(check.Detail, "could not be read") {
+		t.Errorf("detail = %q, want it to name the unreadable credentials file", check.Detail)
+	}
+}
+
+// unreadableCredentials puts a directory where credentials.yml belongs, which
+// reproduces "exists but cannot be read" without depending on how permissions
+// behave for whoever runs the suite.
+func unreadableCredentials(t *testing.T) {
+	t.Helper()
+	credPath, err := config.CredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(credPath, 0o755); err != nil {
+		t.Fatal(err)
 	}
 }
 

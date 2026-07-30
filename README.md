@@ -113,16 +113,16 @@ Note: `go install` above needs no release at all — it builds straight from sou
    notion-track upsert --ticket TASK-231 --title "Hardening" --status "In progress"
    notion-track upsert --ticket TASK-231 --status "Done"  # updates the same row, no duplicate
    ```
-8. **(Optional) Track who owns each row.** Map a `select` column with `--assignee-prop` (see [Usage](#usage) below), export your own identity once, and `me` works everywhere `--assignee` is accepted:
+8. **(Optional) Track who owns each row.** Map a `select` column with `--assignee-prop`, and save your own identity alongside it with `--me` (see [Usage](#usage) below), and `me` works everywhere `--assignee` is accepted:
    ```bash
-   # once, in your shell profile
-   export NOTION_TRACK_ME="Jordan Lee"
+   notion-track init --data-source-id <id> --ticket-prop Ticket --status-prop Status --title-prop Name \
+     --assignee-prop Referente --me "Jordan Lee"
 
    notion-track set --ticket TASK-231 --status "In progress" --assignee me
    notion-track list --assignee me --status "To do"
    notion-track list --unassigned
    ```
-9. **(Optional) Track how urgent each row is.** Map a `select` column with `--priority-prop` (see [Usage](#usage) below); there's no identity to export for this one, so it's ready to use as soon as it's mapped:
+9. **(Optional) Track how urgent each row is.** Map a `select` column with `--priority-prop` (see [Usage](#usage) below); there's no identity to configure for this one, so it's ready to use as soon as it's mapped:
    ```bash
    notion-track list --priority ALTA --status "To do"
    notion-track list --priority ALTA --assignee me
@@ -178,13 +178,21 @@ notion-track init --data-source-id <id> --ticket-prop <name> --status-prop <name
 | `--assignee-prop string` | `select` property naming who owns the row (optional) |
 | `--priority-prop string` | `select` property ranking how urgent the row is (optional) |
 | `--id-prop string` | `unique_id` property holding the row's board id, e.g. `TASK-271` (optional) |
-| `--me string` | the value `--assignee me` resolves to; resolved and validated against `--assignee-prop`'s options before being saved (optional, needs `--assignee-prop`) |
+| `--me string` | the value `--assignee me` resolves to; resolved and validated against the assignee column's options before being saved (optional — needs `--assignee-prop` as part of a full `init`, and nothing else at all when passed on its own, see below) |
 | `--database-id string` | database id, recorded for reference only — every read/write is keyed off `--data-source-id`, not this |
 | `--list` | list the data source ids shared with the integration, and exit |
 
 Each mapped property is checked against the data source's live schema; `init` refuses to write a profile that would break on first use (wrong type, or a property that doesn't exist). `--ticket-prop`, `--status-prop`, and `--title-prop` are required in practice — `init` returns a usage error naming which one is missing — even though `--due-prop`, `--assignee-prop` and `--priority-prop` are optional. The profile is written under the name given by `--profile` (default `"default"`); if this is the first profile in the file it also becomes `default_profile`. Running `init` again with the same `--profile` name overwrites that profile without touching the others.
 
-`--assignee-prop` behaves like `--due-prop`: a board that tracks nobody in particular simply leaves it unmapped, and every command behaves exactly as it did before this feature. `--me` resolves its value against `--assignee-prop`'s options the same way `--assignee me` does, so a typo can't reach the file, and saves the canonical name — but because `config.yml` is meant to be committed and shared, `init --me` prints a warning recommending `NOTION_TRACK_ME` instead of relying on the value it just wrote (see [Environment variables](#environment-variables)).
+`--assignee-prop` behaves like `--due-prop`: a board that tracks nobody in particular simply leaves it unmapped, and every command behaves exactly as it did before this feature. `--me` resolves its value against `--assignee-prop`'s options the same way `--assignee me` does, so a typo can't reach the file, and saves the canonical name — to `credentials.yml`, not `config.yml`, since the identity is personal and `config.yml` is meant to be committed and shared (see [Environment variables](#environment-variables)).
+
+**Setting only the identity.** `--me` on its own is a command of its own:
+
+```
+notion-track init --me "Jordan Lee"
+```
+
+It configures no profile and writes nothing to `config.yml`. It reads the profile you are already using, resolves the name against the assignee column that profile maps, and saves the canonical spelling to `credentials.yml` under that profile's name — printing which profile it was saved for. This is the form every "run `notion-track init --me <name>`" message in the tool points at: `doctor`'s warning about an identity still living in `config.yml`, and the error `--assignee me` gives when nothing says who you are. The profile is the resolved one (`--profile` → `NOTION_TRACK_PROFILE` → `default_profile`), i.e. the same one every other command reads the identity back under — whereas a full `init`, which *creates* a profile, files the identity under the profile it just wrote. It's a usage error if no profile is configured yet, or if the one in use maps no assignee column.
 
 `--priority-prop` behaves like `--due-prop` too: a board with no notion of urgency simply leaves it unmapped, and every command behaves exactly as it did before this feature. Unlike `--assignee-prop`, there is no `--priority-me` equivalent — a priority belongs to no one, so there is no identity to resolve it against.
 
@@ -224,13 +232,13 @@ notion-track set --id TASK-271 --status "Done"
 ```bash
 notion-track set --ticket TASK-231 --assignee "Sam Rivera"
 notion-track set --ticket TASK-231 --assignee sam     # a partial name is enough when it's unambiguous
-notion-track set --ticket TASK-231 --assignee me       # NOTION_TRACK_ME, or the profile's `me:` — see below
+notion-track set --ticket TASK-231 --assignee me       # resolves to your configured identity — see below
 notion-track set --ticket TASK-231 --unassign           # clears the column
 ```
 
 Available on `upsert` and `set`. `--assignee` resolves what you type against the mapped column's options, trying an exact match, then an exact case-insensitive match, then a case-insensitive substring match, and stopping at whichever pass finds exactly one candidate — so `sam` reaches Notion as `Sam Rivera`. Zero matches and more than one are both usage errors (exit code 2): the first names the values the column actually offers, the second names which ones matched and asks for more of the name.
 
-`me` is a reserved value: before resolution runs, it is replaced by `NOTION_TRACK_ME` (or, failing that, the profile's `me:` field — see [Environment variables](#environment-variables) for why the environment variable is the one to actually use), so `NOTION_TRACK_ME=jordan` works exactly like typing the full name. Using `me` with neither configured is a usage error naming the fix.
+`me` is a reserved value: before resolution runs, it is replaced by the configured identity — `NOTION_TRACK_ME` if set, otherwise the value `notion-track init --me <name>` (or the wizard) saved to `credentials.yml`, otherwise the profile's legacy `me:` field (see [Environment variables](#environment-variables) for the full precedence). `NOTION_TRACK_ME=jordan` therefore overrides whatever is on file, which is what CI and one-off runs want. Using `me` with no identity configured anywhere is a usage error naming the fix.
 
 Not passing `--assignee` at all leaves the column untouched — the same "empty means leave it alone" rule every other field follows. `--assignee ""` is therefore a usage error, not a way to clear the column; use `--unassign` for that. `--assignee` and `--unassign` are mutually exclusive, and a select column holds one value, so `--assignee` cannot be repeated.
 
@@ -381,7 +389,7 @@ notion-track doctor [--json]
 
 Runs five checks — `token`, `data_source`, `properties`, `duplicates`, `secrets` — plus a sixth, `assignee`, between `properties` and `duplicates`, when the role is mapped; each prints as `ok`, `warn`, or `fail` with an actionable detail message. A `warn` (e.g. the status property's type changed since `init` ran) does not fail the command; any `fail` makes it exit non-zero. Of the checks that talk to Notion, only `duplicates` still runs when `data_source` fails — it doesn't need the schema, so a broken setup at least gets scanned for duplicate ticket keys instead of stopping there; `properties` and `assignee` both need the live schema, so a `data_source` failure skips them until it's fixed. (`secrets` also still runs, but it never talks to Notion in the first place — see below.)
 
-`assignee` verifies that the configured identity (`me:`, or `NOTION_TRACK_ME`) still resolves to an option the mapped column offers — an option renamed in Notion would otherwise turn every `--assignee me` into a runtime failure discovered only when a write is attempted. It only ever reports `ok` or `warn`, never `fail`, and it also warns when the identity comes from `me:` in the config file rather than `NOTION_TRACK_ME` — see [Environment variables](#environment-variables) for why that distinction matters.
+`assignee` verifies that the configured identity still resolves to an option the mapped column offers — an option renamed in Notion would otherwise turn every `--assignee me` into a runtime failure discovered only when a write is attempted. It only ever reports `ok` or `warn`, never `fail`; the one thing it warns about, beyond an identity that no longer resolves, is an identity still coming from `config.yml`'s legacy `me:` field instead of `credentials.yml` or `NOTION_TRACK_ME` — see [Environment variables](#environment-variables) for why that's worth moving. It also warns when `credentials.yml` exists but can't be read: an identity may well be in there, and reporting "none configured" would send you to set up something you already have.
 
 `secrets` is the only check that looks at your machine rather than at Notion: it scans the files the current git repository *tracks* for anything shaped like an integration token, and warns with the file and line number — never with the matched text, which would leak the secret a second time into scrollback and CI logs. Untracked files are left alone: a token in an ignored `.env` is not the mistake this is for. Running outside a repository, or without git installed, reports `ok` with the reason rather than a warning nobody can act on.
 
@@ -421,13 +429,14 @@ profiles:
       assignee: Referente   # optional: select property naming who owns the row
       priority: Urgenza     # optional: select property ranking how urgent the row is
       id: ID                # optional: unique_id property holding the row's board id
-    me: Jordan Lee          # optional: the value `--assignee me` resolves to; NOTION_TRACK_ME overrides it
 ```
 
 ```yaml
 # credentials.yml — never commit this file
 schema_version: 1
 token: ntn_...
+identities:
+  work: Jordan Lee   # what `--assignee me` resolves to for the "work" profile; written by `init --me`
 ```
 
 Both files are replaced atomically (a temporary file in the same directory, then a rename), but only `credentials.yml` is guaranteed `0600`: its temp file has a random suffix and its permissions are set explicitly, immune to anything already sitting at a guessable temp path. `config.yml`'s temp file has a fixed name and its permissions are not forced onto a pre-existing file there, so a leftover `config.yml.tmp` from an earlier run can leave it at whatever mode that leftover already had (e.g. `0644`) — acceptable only because, unlike `credentials.yml`, it holds no secret of its own.
@@ -442,13 +451,13 @@ Both files are replaced atomically (a temporary file in the same directory, then
 | `NOTION_TRACK_PROFILE` | which profile to resolve, unless `--profile` is also given |
 | `NOTION_TRACK_DB` | overrides the resolved profile's `database_id` |
 | `NOTION_TRACK_DATA_SOURCE` | overrides the resolved profile's `data_source_id` |
-| `NOTION_TRACK_ME` | overrides the resolved profile's `me:` — the value `--assignee me` resolves to |
+| `NOTION_TRACK_ME` | overrides the configured identity — the value `--assignee me` resolves to |
 
 Precedence:
 
 - **Profile selection:** `--profile` flag → `NOTION_TRACK_PROFILE` → `default_profile` in the config file.
 - **`database_id` / `data_source_id`:** the env vars above always override whatever the resolved profile has on file, regardless of how that profile was chosen — this is what lets a CI job point an existing profile at a different data source without touching the committed file.
-- **Identity (`--assignee me`):** `NOTION_TRACK_ME` → the profile's `me:` field, same override mechanism as `database_id`/`data_source_id` above. The environment variable is the one to actually use: `config.yml` is meant to be committed and shared (see [Configuration](#configuration)), so a `me:` written there is *everyone's* identity — a teammate who never exports `NOTION_TRACK_ME` resolves `me` to whoever committed the file, silently assigning work to the wrong person. `init --me` prints a warning to that effect the moment it writes one, and `doctor` warns if a profile has `me:` set but `NOTION_TRACK_ME` isn't.
+- **Identity (`--assignee me`):** `NOTION_TRACK_ME` → `credentials.yml`'s `identities` map for the resolved profile → the profile's `me:` field in `config.yml` (legacy). `notion-track init --me <name>` (or the wizard, offered whenever an assignee column is mapped) is the default way to set it up, and it writes to `credentials.yml` — the per-user file — never to `config.yml`, which is meant to be committed and shared (see [Configuration](#configuration)). `NOTION_TRACK_ME` is the override on top of that, for CI and one-off runs. The profile's `me:` field still works forever, for configurations written before the identity moved — but a `me:` in a committed `config.yml` is *everyone's* identity, so `doctor` warns when a profile's identity is still coming from there, naming `init --me` as the fix.
 - **Token:** `NOTION_TOKEN` → `credentials.yml`. A token read from the environment is never written back to `credentials.yml` — a CI secret can never leak onto disk through a normal run. Run `notion-track doctor` if you need to see which source actually won.
 - **Config file location:** `--config` flag → the OS default path above. There is no environment variable for the path itself, and no equivalent flag for `credentials.yml`.
 
@@ -511,7 +520,7 @@ Pipelines can branch on these without parsing any message text:
 | `2` | Usage | the invocation cannot work as written: a missing/invalid flag, more than one of `--ticket`/`--id`/`--page-id` given or none of the three given, an unknown command, no config yet (`notion-track init` was never run), a status value the data source doesn't allow, a malformed `--page-id` or `--id`, an `--id` used on a profile with no id role mapped, a `--page-id` that resolves outside the active profile's data source, an `--assignee` value that resolves to zero or more than one option, an empty `--assignee`, `--assignee me` with no configured identity, `--assignee` combined with `--unassign` (or with `--unassigned` on `list`), a `--priority` value that resolves to zero or more than one option, or an empty `--priority` |
 | `3` | Not found | the requested ticket, board id, or page id has no matching row (or, for a page id, one not shared with this integration) (`get`, `set`) |
 | `4` | Duplicate | the ticket key matches more than one row (`upsert`, `set`, `get`) |
-| `5` | Auth | no token was found (including a `credentials.yml` that exists but can't be read), or Notion rejected it (401/403) — including `doctor`, when its `token` check is the only one that failed |
+| `5` | Auth | no token was found (including a `credentials.yml` that exists but can't be read), or Notion rejected it (401/403) — including `doctor`, when its `token` check is the only one that failed. `--assignee me` also exits 5 when `credentials.yml` can't be read: an identity may be in there, and falling back to the profile's shared `me:` would assign the row to somebody else |
 
 ## CI usage
 

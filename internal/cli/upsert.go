@@ -34,7 +34,7 @@ func (wf *writeFlags) bindShared(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&wf.due, "due", "", "due date, YYYY-MM-DD")
 	cmd.Flags().StringVar(&wf.assignee, "assignee", "",
 		"who the row belongs to; a partial name is enough when it is unambiguous, "+
-			"and 'me' stands for NOTION_TRACK_ME")
+			"and 'me' stands for your configured identity")
 	cmd.Flags().BoolVar(&wf.unassign, "unassign", false, "clear the assignee")
 	cmd.MarkFlagsMutuallyExclusive("assignee", "unassign")
 	cmd.Flags().StringVar(&wf.priority, "priority", "",
