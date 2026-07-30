@@ -383,7 +383,11 @@ func TestDoctorWarnsWhenTheIdentityLivesOnlyInTheSharedConfig(t *testing.T) {
 	defer srv.Close()
 	t.Setenv(config.MeEnv, "")
 
-	profile := assigneeProfile("mirko")
+	// A two-word identity, because that is the case the fix line has to
+	// survive: unquoted, "init --me Mirko Spinato" is a command cobra rejects
+	// as a stray argument, so the remediation would name something the user
+	// cannot run.
+	profile := assigneeProfile("Mirko Spinato")
 	profile.MeSource = "legacy"
 	checks := New(notion.New("t", notion.WithBaseURL(srv.URL)), profile).
 		Doctor(context.Background())
@@ -395,30 +399,8 @@ func TestDoctorWarnsWhenTheIdentityLivesOnlyInTheSharedConfig(t *testing.T) {
 	if check.Status != "warn" {
 		t.Errorf("assignee = %s (%s), want warn", check.Status, check.Detail)
 	}
-	if !strings.Contains(check.Detail, "notion-track init --me") {
-		t.Errorf("detail = %q, want it to name the command that moves the identity out of config.yml", check.Detail)
-	}
-}
-
-func TestDoctorWarnsWhenTheIdentityIsStillInTheConfigFile(t *testing.T) {
-	srv := doctorRoutes(t)
-	defer srv.Close()
-	t.Setenv(config.MeEnv, "")
-
-	profile := assigneeProfile("mirko")
-	profile.MeSource = "legacy"
-	checks := New(notion.New("t", notion.WithBaseURL(srv.URL)), profile).
-		Doctor(context.Background())
-
-	check, ok := findCheck(checks, "assignee")
-	if !ok {
-		t.Fatal("no assignee check")
-	}
-	if check.Status != "warn" {
-		t.Errorf("assignee = %s (%s), want warn", check.Status, check.Detail)
-	}
-	if !strings.Contains(check.Detail, "notion-track init --me") {
-		t.Errorf("detail = %q, want it to name the command that moves the identity to credentials.yml", check.Detail)
+	if !strings.Contains(check.Detail, `notion-track init --me "Mirko Spinato"`) {
+		t.Errorf("detail = %q, want a runnable command that moves the identity out of config.yml", check.Detail)
 	}
 }
 

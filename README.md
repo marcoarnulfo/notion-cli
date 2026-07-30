@@ -178,13 +178,21 @@ notion-track init --data-source-id <id> --ticket-prop <name> --status-prop <name
 | `--assignee-prop string` | `select` property naming who owns the row (optional) |
 | `--priority-prop string` | `select` property ranking how urgent the row is (optional) |
 | `--id-prop string` | `unique_id` property holding the row's board id, e.g. `TASK-271` (optional) |
-| `--me string` | the value `--assignee me` resolves to; resolved and validated against `--assignee-prop`'s options before being saved (optional, needs `--assignee-prop`) |
+| `--me string` | the value `--assignee me` resolves to; resolved and validated against the assignee column's options before being saved (optional — needs `--assignee-prop` as part of a full `init`, and nothing else at all when passed on its own, see below) |
 | `--database-id string` | database id, recorded for reference only — every read/write is keyed off `--data-source-id`, not this |
 | `--list` | list the data source ids shared with the integration, and exit |
 
 Each mapped property is checked against the data source's live schema; `init` refuses to write a profile that would break on first use (wrong type, or a property that doesn't exist). `--ticket-prop`, `--status-prop`, and `--title-prop` are required in practice — `init` returns a usage error naming which one is missing — even though `--due-prop`, `--assignee-prop` and `--priority-prop` are optional. The profile is written under the name given by `--profile` (default `"default"`); if this is the first profile in the file it also becomes `default_profile`. Running `init` again with the same `--profile` name overwrites that profile without touching the others.
 
 `--assignee-prop` behaves like `--due-prop`: a board that tracks nobody in particular simply leaves it unmapped, and every command behaves exactly as it did before this feature. `--me` resolves its value against `--assignee-prop`'s options the same way `--assignee me` does, so a typo can't reach the file, and saves the canonical name — to `credentials.yml`, not `config.yml`, since the identity is personal and `config.yml` is meant to be committed and shared (see [Environment variables](#environment-variables)).
+
+**Setting only the identity.** `--me` on its own is a command of its own:
+
+```
+notion-track init --me "Jordan Lee"
+```
+
+It configures no profile and writes nothing to `config.yml`. It reads the profile you are already using, resolves the name against the assignee column that profile maps, and saves the canonical spelling to `credentials.yml` under that profile's name — printing which profile it was saved for. This is the form every "run `notion-track init --me <name>`" message in the tool points at: `doctor`'s warning about an identity still living in `config.yml`, and the error `--assignee me` gives when nothing says who you are. The profile is the resolved one (`--profile` → `NOTION_TRACK_PROFILE` → `default_profile`), i.e. the same one every other command reads the identity back under — whereas a full `init`, which *creates* a profile, files the identity under the profile it just wrote. It's a usage error if no profile is configured yet, or if the one in use maps no assignee column.
 
 `--priority-prop` behaves like `--due-prop` too: a board with no notion of urgency simply leaves it unmapped, and every command behaves exactly as it did before this feature. Unlike `--assignee-prop`, there is no `--priority-me` equivalent — a priority belongs to no one, so there is no identity to resolve it against.
 

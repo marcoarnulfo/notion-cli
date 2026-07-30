@@ -178,13 +178,21 @@ notion-track init --data-source-id <id> --ticket-prop <nome> --status-prop <nome
 | `--assignee-prop string` | proprietà `select` che indica chi possiede la riga (opzionale) |
 | `--priority-prop string` | proprietà `select` che indica quanto è urgente la riga (opzionale) |
 | `--id-prop string` | proprietà `unique_id` che contiene l'id di board della riga, es. `TASK-271` (opzionale) |
-| `--me string` | il valore a cui risolve `--assignee me`; risolto e validato contro le opzioni di `--assignee-prop` prima di essere salvato (opzionale, richiede `--assignee-prop`) |
+| `--me string` | il valore a cui risolve `--assignee me`; risolto e validato contro le opzioni della colonna assignee prima di essere salvato (opzionale — richiede `--assignee-prop` all'interno di un `init` completo, e nient'altro quando è passato da solo, vedi più sotto) |
 | `--database-id string` | id del database, registrato solo come riferimento — ogni lettura/scrittura usa `--data-source-id`, non questo |
 | `--list` | elenca gli id delle data source condivise con l'integrazione, ed esce |
 
 Ogni proprietà mappata viene verificata contro lo schema live della data source; `init` rifiuta di scrivere un profilo che si romperebbe al primo uso (tipo sbagliato, o proprietà inesistente). `--ticket-prop`, `--status-prop` e `--title-prop` sono di fatto obbligatori — `init` restituisce un errore di uso indicando quale manca — anche se `--due-prop`, `--assignee-prop` e `--priority-prop` sono opzionali. Il profilo viene scritto con il nome passato tramite `--profile` (default `"default"`); se è il primo profilo nel file diventa anche `default_profile`. Rilanciare `init` con lo stesso nome di `--profile` sovrascrive quel profilo senza toccare gli altri.
 
 `--assignee-prop` si comporta come `--due-prop`: una board che non traccia referenti in particolare lo lascia semplicemente non mappato, e ogni comando si comporta esattamente come prima di questa funzionalità. `--me` risolve il proprio valore contro le opzioni di `--assignee-prop` nello stesso modo di `--assignee me`, così un refuso non può finire nel file, e salva il nome canonico — in `credentials.yml`, non in `config.yml`, perché l'identità è personale e `config.yml` è pensato per essere committato e condiviso (vedi [Variabili d'ambiente](#variabili-dambiente)).
+
+**Impostare solo l'identità.** `--me` da solo è un comando a sé:
+
+```
+notion-track init --me "Jordan Lee"
+```
+
+Non configura nessun profilo e non scrive niente in `config.yml`. Legge il profilo che stai già usando, risolve il nome contro la colonna assignee che quel profilo mappa, e salva la grafia canonica in `credentials.yml` sotto il nome di quel profilo — stampando per quale profilo è stata salvata. È questa la forma indicata da ogni messaggio del tool che dice «esegui `notion-track init --me <nome>`»: l'avviso di `doctor` su un'identità ancora presente in `config.yml`, e l'errore che `--assignee me` restituisce quando niente dice chi sei. Il profilo è quello risolto (`--profile` → `NOTION_TRACK_PROFILE` → `default_profile`), cioè lo stesso sotto cui ogni altro comando rilegge l'identità — mentre un `init` completo, che *crea* un profilo, registra l'identità sotto il profilo appena scritto. È un errore d'uso se non c'è ancora nessun profilo configurato, o se quello in uso non mappa nessuna colonna assignee.
 
 `--priority-prop` si comporta come `--due-prop` a sua volta: una board senza nessuna nozione di urgenza lo lascia semplicemente non mappato, e ogni comando si comporta esattamente come prima di questa funzionalità. A differenza di `--assignee-prop`, non esiste un equivalente `--priority-me`: una priorità non appartiene a nessuno, quindi non c'è nessuna identità da risolvere.
 

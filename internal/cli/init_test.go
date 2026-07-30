@@ -602,6 +602,131 @@ func TestInitMeNeedsTheAssigneeColumn(t *testing.T) {
 	}
 }
 
+// `notion-track init --me "<name>"` is the command doctor's legacy warning,
+// service.ErrNoIdentity and the agent skill all tell users to run. It used to
+// exit 2 with "--data-source-id is required", because --me is a config flag
+// and so took the branch that writes a profile — making every one of those
+// remediation messages a dead end.
+func TestInitMeAloneSavesTheIdentityForTheProfileInUse(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaJSON))
+	}, assigneeProfileNoIdentity)
+	withInteractivePrompt(t, false, nil, nil)
+
+	var code int
+	out := captureStdout(t, func() {
+		code = executeArgs([]string{"init", "--me", "marco", "--config", cfg})
+	})
+	if code != ExitOK {
+		t.Fatalf("exit code = %d, want %d (ExitOK): %s", code, ExitOK, out)
+	}
+
+	// "work", not "default": no --profile was given, so the identity belongs
+	// to the profile the run is actually about — the fixture's
+	// default_profile — which is the key every other command reads it under.
+	got, source, err := config.ResolveIdentity("work", config.Profile{})
+	if err != nil {
+		t.Fatalf("ResolveIdentity: %v", err)
+	}
+	if got != "Marco Arnulfo" || source != "file" {
+		t.Errorf("identity = %q (source %q), want the canonical option %q from credentials.yml", got, source, "Marco Arnulfo")
+	}
+	if !strings.Contains(out, `"work"`) {
+		t.Errorf("output = %q, want it to name the profile the identity was saved for", out)
+	}
+}
+
+// Setting only an identity must leave config.yml byte-for-byte alone: it is
+// the file meant to be committed, and an unexplained diff in someone's
+// `git status` is exactly what §3.7 of the design forbids.
+func TestInitMeAloneWritesNoProfile(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaJSON))
+	}, assigneeProfileNoIdentity)
+	withInteractivePrompt(t, false, nil, nil)
+
+	before, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	captureStdout(t, func() {
+		if code := executeArgs([]string{"init", "--me", "marco", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+	after, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("init --me rewrote the shared config:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// --me on its own reads the profile in use instead of writing one, so the two
+// ways that reading can fail have to say so rather than falling through to a
+// schema fetch or an empty option list.
+func TestInitMeAloneUsageErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		profile string
+	}{
+		// A config whose profiles map is empty: nothing to attach an identity
+		// to yet.
+		{"no profile configured", "schema_version: 1\nprofiles: {}\n"},
+		// A profile that exists but maps no assignee column: there is nothing
+		// to resolve the name against.
+		{"no assignee column mapped", titleKeyedProfile},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Write([]byte(cliSchemaJSON))
+			}, tt.profile)
+			withInteractivePrompt(t, false, nil, nil)
+
+			if code := executeArgs([]string{"init", "--me", "marco", "--config", cfg}); code != ExitUsage {
+				t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+			}
+			credPath, err := config.CredentialsPath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(credPath); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("an identity was written despite the usage error (stat err = %v)", err)
+			}
+		})
+	}
+}
+
+// A name the column does not offer must fail here rather than reaching disk,
+// exactly as it does on the profile-writing path.
+func TestInitMeAloneRejectsAnUnknownName(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaJSON))
+	}, assigneeProfileNoIdentity)
+	withInteractivePrompt(t, false, nil, nil)
+
+	if code := executeArgs([]string{"init", "--me", "Nobody At All", "--config", cfg}); code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+	}
+}
+
+// --me alongside a flag that does describe a data source is still the
+// profile-writing path, unchanged: the identity-only branch must not swallow
+// an invocation that was meant to configure something.
+func TestInitMeWithAnotherConfigFlagStillRequiresADataSource(t *testing.T) {
+	cfg := withStubbedAPIProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(cliSchemaJSON))
+	}, assigneeProfileNoIdentity)
+	withInteractivePrompt(t, false, nil, nil)
+
+	code := executeArgs([]string{"init", "--me", "marco", "--assignee-prop", "Referente", "--config", cfg})
+	if code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d (ExitUsage)", code, ExitUsage)
+	}
+}
+
 // TestInitMeWritesToCredentialsNotConfig proves the identity landed in
 // credentials.yml and nowhere in config.yml. The raw-bytes check on top of
 // the struct-level one guards against a future rename of Profile.Me hiding a

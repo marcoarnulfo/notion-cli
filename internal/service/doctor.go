@@ -179,9 +179,13 @@ func (s *Service) checkAssignee(schema *notion.Schema) Check {
 	// the environment or the per-user credentials file are exactly as intended,
 	// so only "legacy" is worth a warning.
 	if s.profile.MeSource == "legacy" {
+		// %q, not %s: an identity is usually two words, and an unquoted one
+		// makes the fix line say `init --me Marco Arnulfo`, which cobra parses
+		// as a stray argument and rejects. A message that names a command the
+		// user cannot run is worse than no message.
 		return Check{"assignee", "warn", fmt.Sprintf(
 			"--assignee me resolves to %s, from the config file, which is meant to be shared\n"+
-				"  fix: rerun 'notion-track init --me %s' to move it to your credentials file",
+				"  fix: rerun 'notion-track init --me %q' to move it to your credentials file",
 			resolved, s.profile.Me)}
 	}
 	return Check{"assignee", "ok", "--assignee me resolves to " + resolved}
