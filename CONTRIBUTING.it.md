@@ -59,7 +59,7 @@ internal/cli         albero dei comandi cobra, parsing dei flag, rendering JSON,
 internal/service     orchestra client + config + dominio per un profilo (Upsert/Set/Get/List/Doctor)
 internal/notion      client per l'API Notion (solo net/http — nessun SDK), retry/backoff, errori tipizzati
 internal/tracker     dominio PURO: decisioni crea-o-aggiorna, costruzione payload, validazione stato
-internal/config      config.yml (profili, mapping proprietà), credentials.yml (token) + variabili NOTION_TOKEN / NOTION_TRACK_*
+internal/config      config.yml (profili, mapping proprietà), credentials.yml (token + identità per profilo) + variabili NOTION_TOKEN / NOTION_TRACK_*
 ```
 
 Due regole qui **non sono negoziabili**:
@@ -76,6 +76,7 @@ Altre convenzioni utili da conoscere:
 - Gli exit code sono un contratto pubblico (vedi la tabella [Exit code](README.it.md#exit-code) del README) — mappa una nuova modalità di fallimento su un codice esistente invece di inventarne uno con leggerezza, e aggiorna la tabella se ne aggiungi uno.
 - Anche ogni chiave JSON stampata con `--json` è un contratto di scripting stabile — rinominarla o rimuoverla è un breaking change, da documentare come tale.
 - `internal/config`: un token letto da `NOTION_TOKEN` non deve mai essere scritto su disco — `Save`/`SaveTo` (config.yml) devono restarne silenziosi, e `SaveToken` (credentials.yml) non va mai chiamata con un token proveniente dall'ambiente. `config.yml` non deve mai contenere un token, punto — è a questo che serve `credentials.yml`, e solo un opt-in esplicito e interattivo dell'utente (il prompt di salvataggio di `init`) può scriverci.
+- `internal/config`: lo stesso ragionamento vale per l'identità di `--assignee me`, che è personale e vive in `credentials.yml`. Nessuno deve riscrivere `me:` dentro `config.yml` — quel campo è legacy in sola lettura, mantenuto perché le configurazioni esistenti continuino a funzionare, e `doctor` lo segnala. Nessun comando deve inoltre riscrivere `config.yml` come effetto collaterale: è pensato per essere committato, e un diff inspiegato nel `git status` di qualcuno è il modo in cui un valore personale torna a essere condiviso.
 
 ## Linee guida per commit e PR
 

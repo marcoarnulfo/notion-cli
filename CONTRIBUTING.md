@@ -62,7 +62,7 @@ internal/tracker     PURE domain: create-or-update decisions, payload building, 
 internal/markdown    PURE domain: Markdown → Notion block tree, chunking limits
 internal/template    PURE domain: {{ticket}}/{{date}} placeholder expansion for --body-file
 internal/manifest    PURE domain: the JSON/CSV bulk manifest `apply` reads
-internal/config      config.yml (profiles, property mapping), credentials.yml (token) + NOTION_TOKEN / NOTION_TRACK_* env vars
+internal/config      config.yml (profiles, property mapping), credentials.yml (token + per-profile identities) + NOTION_TOKEN / NOTION_TRACK_* env vars
 internal/tui         bubbletea models (init wizard, browsing TUI); no network — calls arrive injected, so screens are testable without a terminal
 internal/secrets     scans git-tracked files for token-shaped strings, for doctor's "secrets" check
 ```
@@ -79,6 +79,7 @@ Other conventions worth knowing:
 - Exit codes are a public contract (see the README's [Exit codes](README.md#exit-codes) table) — map a new failure mode onto an existing code rather than inventing one casually, and update the table if you do add one.
 - Any JSON key printed with `--json` is a stable scripting contract too — renaming or removing one is a breaking change, documented as such.
 - `internal/config`: a token read from `NOTION_TOKEN` must never be written to disk — `Save`/`SaveTo` (config.yml) must stay silent about it, and `SaveToken` (credentials.yml) must never be called with an env-sourced token. `config.yml` itself must never carry a token, full stop — that's what `credentials.yml` is for, and only an interactive, explicit user opt-in (`init`'s save prompt) may write to it.
+- `internal/config`: the same reasoning covers the `--assignee me` identity, which is personal and lives in `credentials.yml`. Nothing may write `me:` back into `config.yml` — the field is read-only legacy, kept so existing configs keep working, and `doctor` reports it. No command may rewrite `config.yml` as a side effect either: it is meant to be committed, and an unexplained diff in someone's `git status` is how a personal value ends up shared again.
 
 ## Commit & PR guidelines
 
