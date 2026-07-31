@@ -85,4 +85,39 @@ Altre convenzioni utili da conoscere:
 - Mantieni le PR focalizzate; compila il template della PR e collega la issue (`Closes #N`).
 - Assicurati che i controlli sopra passino prima di chiedere una review.
 
+## Pubblicare una release
+
+Per chi mantiene il progetto. Pubblicare è un comando solo; tutto ciò che viene dopo è automatico.
+
+```bash
+git checkout main && git pull
+git status --short          # deve essere vuoto
+
+gofmt -l .                  # non deve stampare niente
+go vet ./... && go build ./... && go test ./... -race
+go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+
+git tag -a v0.7.1 -m "cosa cambia"
+git push origin v0.7.1
+```
+
+Esegui questi controlli anche se il workflow di release ne ripete quasi tutti: `staticcheck` lo salta di proposito, perché scaricare uno strumento non fissato dentro il job che pubblica eseguibili restituirebbe esattamente la proprietà di supply chain che i suoi SHA fissati servono a proteggere.
+
+**Quale numero.** Finché il progetto è `0.x`: la terza cifra per le correzioni, la seconda per le funzionalità. `v0.6.0` → `v0.6.1` era una correzione; `v0.6.1` → `v0.7.0` ha aggiunto lo spostamento dell'identità.
+
+**Il tag è ciò che fa partire tutto**, ed è l'unica cosa che lo fa — un merge su `main` non pubblica niente. Il workflow riconosce solo `vX.Y.Z` e `vX.Y.Z-suffisso`, così un tag maggiore mobile come `v1` (quello attraverso cui si consuma una composite action) può essere ripuntato senza far partire una release. Un suffisso con il trattino pubblica una prerelease, che `latest` salta — utile per esercitare la pipeline senza toccare nessuno.
+
+Spingere il tag compila i sei archivi e il `checksums.txt`, pubblica la release con le note generate dai commit dal tag precedente, e poi installa quel tag esatto con la composite action su Linux, macOS e Windows. Un fallimento in quest'ultimo job significa che gli archivi sono pubblici e inutilizzabili — il run diventa rosso.
+
+Poi conferma la strada che gli utenti percorrono davvero:
+
+```bash
+go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest
+notion-track --version
+```
+
+Se riporta ancora la versione precedente, la cache locale dei moduli sta tenendo una lista di versioni ferma; rilancia tra poco, oppure chiedi il tag esplicitamente.
+
+Due cose non si possono disfare: le note di una release pubblicata sono immutabili, quindi una correzione al footer in `.goreleaser.yaml` arriva solo alla release *successiva*; e un tag che qualcuno ha scaricato come modulo Go resta risolvibile tramite `proxy.golang.org` anche dopo averlo cancellato qui. Nessuna delle due è un motivo per ri-taggare — pubblica la patch successiva.
+
 Grazie per aiutare a migliorare notion-track!
