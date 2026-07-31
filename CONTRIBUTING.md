@@ -88,4 +88,39 @@ Other conventions worth knowing:
 - Keep PRs focused; fill in the PR template and link the issue (`Closes #N`).
 - Make sure the checks above pass before requesting review.
 
+## Cutting a release
+
+For maintainers. Publishing is one command; everything after it is automated.
+
+```bash
+git checkout main && git pull
+git status --short          # must be empty
+
+gofmt -l .                  # must print nothing
+go vet ./... && go build ./... && go test ./... -race
+go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+
+git tag -a v0.7.1 -m "what changed"
+git push origin v0.7.1
+```
+
+Run those checks even though the release workflow re-runs most of them: it deliberately skips `staticcheck`, because fetching an unpinned tool inside the job that publishes executables would give back the supply-chain property its pinned SHAs exist to protect.
+
+**Which number.** While the project is `0.x`: the third digit for fixes, the second for features. `v0.6.0` → `v0.6.1` was a fix; `v0.6.1` → `v0.7.0` added the identity move.
+
+**The tag is the trigger**, and it is the only one — merging to `main` publishes nothing. The workflow matches `vX.Y.Z` and `vX.Y.Z-suffix` only, so a moving major tag like `v1` (the kind a composite action is consumed through) can be repointed without firing a release. A hyphen suffix publishes a prerelease, which `latest` skips — useful for exercising the pipeline without affecting anyone.
+
+Pushing the tag builds the six archives and `checksums.txt`, publishes the release with notes generated from the commits since the previous tag, and then installs that exact tag with the composite action on Linux, macOS and Windows. A failure in that last job means the archives are public and unusable — the run goes red.
+
+Then confirm the path users actually take:
+
+```bash
+go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest
+notion-track --version
+```
+
+If it still reports the previous version, the local module cache is holding a stale version list; rerun it shortly, or ask for the tag explicitly.
+
+Two things that cannot be undone: a published release's notes are fixed, so a correction to the footer in `.goreleaser.yaml` only reaches the *next* release; and a tag anyone has fetched as a Go module stays resolvable through `proxy.golang.org` even after you delete it here. Neither is a reason to re-tag — cut the next patch instead.
+
 Thank you for helping make notion-track better!
