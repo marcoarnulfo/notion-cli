@@ -43,7 +43,7 @@ Two workflows in this repository install a published release with this action on
 - the release workflow's `smoke` job, on every release, against the tag it has just published;
 - `action-smoke`, whenever the action changes and weekly — the runner images this action leans on change underneath it.
 
-The `windows/arm64` and `darwin/amd64` archives are published but have never been installed by this action on a real runner.
+The `windows/arm64` and `darwin/amd64` archives are published but have never been installed by this action on a real runner — tracked in [#30](https://github.com/marcoarnulfo/notion-cli/issues/30), which is open for contributors.
 
 ## Requirements
 
