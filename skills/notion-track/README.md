@@ -22,7 +22,7 @@ where the CLI has `page` and a bare array), addressing (only by ticket key —
 body writing and any `apply`/`doctor` tool. See also "Use it from an AI agent"
 in the [README](../../README.md).
 
-## Install
+## Install and update
 
 Copy `SKILL.md` into your Claude Code skills directory:
 
@@ -33,6 +33,24 @@ cp skills/notion-track/SKILL.md ~/.claude/skills/notion-track/SKILL.md
 
 The agent then picks it up automatically when you ask to touch a task on your
 Notion board ("mark this done", "what am I working on?", "create a task…").
+
+**Updating is the same copy, run again** — and it is on you to run it. The
+installed file is a snapshot: it does not follow the tool, so upgrading the
+binary with `go install …@latest` leaves the skill exactly as old as the day
+you copied it. Without the repo checked out:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/marcoarnulfo/notion-cli/main/skills/notion-track/SKILL.md \
+  -o ~/.claude/skills/notion-track/SKILL.md
+```
+
+A stale copy is quiet rather than broken, which is what makes it worth a
+calendar reminder: the agent simply never reaches for the commands it doesn't
+know about, and you see a capable tool behaving like a limited one. `SKILL.md`
+tells the agent to flag the two symptoms it can notice — a documented flag the
+binary rejects, or a `--help` entry the skill never mentions — but neither
+shows up until you happen to ask for the affected thing. Re-copy after every
+tool upgrade and the question doesn't arise.
 
 ## Requirements
 

@@ -22,6 +22,21 @@ If the command isn't found, or the user asks to update it:
 `notion-track --version` reports what is installed — check it first when a
 command misbehaves and a stale build is a plausible reason.
 
+**This file is a hand-installed copy and does not update with the tool.** Two
+signs it has fallen behind the binary: a command rejects a flag documented
+here, or `notion-track <command> --help` lists one this file never mentions.
+Either way the copy is older than the tool — say so instead of working around
+it, and offer the refresh:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/marcoarnulfo/notion-cli/main/skills/notion-track/SKILL.md \
+  -o ~/.claude/skills/notion-track/SKILL.md
+```
+
+The mismatch runs the other way too: a flag described here that the installed
+binary doesn't have means the *tool* is behind, and `go install …@latest`
+above is the fix.
+
 ## Before you write anything
 
 **1. Start the session by looking.** Board setup differs per workspace and
