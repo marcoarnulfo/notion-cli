@@ -1,506 +1,343 @@
 ---
 name: notion-track
 description: >-
-  Manage Notion task-tracking rows from the terminal with the notion-track CLI:
-  create tasks, change their status (mark done / in progress / archived), assign
-  or clear who owns one, mark how urgent one is, read a single task, and list
-  tasks filtered by status, by assignee, or by priority. Use whenever the user
-  wants to touch a task on their Notion board — create one, move it to another
-  status, assign or reassign it, mark it urgent, look one up, list what's in a
-  given state, assigned to someone, or at a given priority, or apply many
-  changes at once from a file. Triggers on: "task su Notion", "segna come
-  fatto", "mettilo in corso", "aggiorna lo stato", "crea un task", "elenca i
-  task", "che task ho da fare", "creali tutti", "aggiornali tutti", "assegna a
-  Sam", "prendi in carico", "chi ha in mano X", "cosa devo fare io", "task
-  senza referente", "è urgente", "priorità alta", "mettilo in alta", "cosa c'è
-  di urgente", "cosa faccio prima", "mark done", "update the status", "assign
-  this to X", "take ownership of X", "who owns X", "what's on my plate",
-  "unassigned tasks", "it's urgent", "high priority", "mark it high priority",
-  "what's urgent", "what should I do first", "notion-track". The user often
-  phrases these in Italian.
+  Use when the user wants to touch a task on their Notion board — create one,
+  change its status, assign it, set its priority, look one up, list what's in a
+  given state, or apply many changes at once. Often phrased in Italian ("segna
+  come fatto", "mettilo in corso", "crea un task", "che task ho da fare",
+  "assegna a Sam", "prendi in carico", "è urgente", "cosa faccio prima") or in
+  English ("mark done", "what's on my plate", "who owns X", "what's urgent").
+  Drives the installed notion-track CLI.
 ---
 
 # notion-track — managing Notion tasks from the CLI
 
-`notion-track` is an installed command-line tool that syncs a single Notion
-task-tracking database. Use it — via the shell — instead of asking the user to
-open Notion, whenever they want to create, update, read, or list tasks.
+`notion-track` syncs one Notion task-tracking database. Use it from the shell
+instead of asking the user to open Notion. It is already authenticated — the
+token lives in a local credentials file and you never handle it.
 
-The tool is already authenticated (the token lives in a local credentials file);
-you never handle the token. Just run the commands.
+If the command isn't found, or the user asks to update it:
+`go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest`
+(installs and upgrades both; needs Go, puts the binary in `$(go env GOPATH)/bin`).
+`notion-track --version` reports what is installed — check it first when a
+command misbehaves and a stale build is a plausible reason.
 
-## Installing or updating the tool
+## Before you write anything
 
-If the `notion-track` command isn't found, or the user asks you to update it,
-run:
+**1. Start the session by looking.** Board setup differs per workspace and
+nothing below is safe to assume:
 
 ```sh
-go install github.com/marcoarnulfo/notion-cli/cmd/notion-track@latest
+notion-track doctor          # token, database, property mapping, duplicates
+notion-track list --json     # real rows, and the status values actually in use
 ```
 
-That one command both installs and upgrades — rerunning it always fetches the
-newest release. It needs a Go toolchain and puts the binary at
-`$(go env GOPATH)/bin`, which has to be on `PATH`. `notion-track --version`
-reports what is actually installed, so check it first if a command behaves
-unexpectedly and a stale build is a plausible reason why.
+**2. Read before you write.** A write acts on whichever row it resolves, and
+there is no undo. Before a `set` or an `upsert` that updates an existing task,
+confirm you're aiming at the right row — with `get`, or by having just listed
+it. When the request is ambiguous about *which* task, ask rather than guess.
 
-## The one rule that prevents mistakes
+**3. Never run two writes at once.** No shell backgrounding, no parallel tool
+calls. There is no locking anywhere in this tool: two `upsert`s racing on the
+same ticket create a duplicate row, two body writes on one page duplicate the
+body, and nothing detects a change made between your `get` and your `set` — it
+is silently overwritten. `apply` serializes for you; prefer it to a loop.
 
-**Read before you write.** A write command acts on whichever row it resolves,
-and there is no undo. Before a `set` or an `upsert` that updates an existing
-task, confirm you're aiming at the right row — with `get`, or by having just
-listed it. When the user's request is ambiguous about *which* task, ask rather
-than guess.
+**4. Preview with `--dry-run`** (on `upsert`, `set` and `apply`): it reports
+what the write *would* do and writes nothing, exiting 0. With `--json` the
+output is `{"dry_run":true,"plan":{...}}`. Its limits are real, see below.
 
-Every write command takes **`--dry-run`**, which reports whether it would
-create or update, which row, and which columns — and writes nothing. Use it
-whenever you are not certain a write will land where you intend, and always
-before applying a manifest you built rather than one the user wrote.
+**5. Parse `--json`, never the human-readable lines.**
 
-Everything a machine reads should come from `--json`, never from parsing the
-human-readable lines.
+### What `--dry-run` does not catch
 
-## How a task is identified
+It re-runs the same lookups and validates status, assignee and priority against
+the board — so a value the board rejects fails on the dry run. But:
 
-A task is addressed in one of three ways. Pick deliberately:
+- **`--due` is not validated at all.** The date string is passed through to
+  Notion untouched, so `--due "domani"` passes the dry run and fails the real
+  write. Send `YYYY-MM-DD` and nothing else.
+- **The body is not sent to Notion.** A `--body-file` problem can still surface
+  on the real write, *after* the properties have been written.
+- **In `apply`, each entry is checked against the board as it is now**, not
+  against what earlier entries would have created. A `set` that depends on an
+  `upsert` higher in the same manifest fails the dry run with exit 3. That is an
+  expected false alarm — **do not "fix" it by turning that `set` into an
+  `upsert`**, which would remove the typo protection that made it a `set`.
+- Its answer ages. If time has passed, run it again.
 
-- **By ticket key** (`--ticket "<value>"`) — the tool looks up the row whose
-  key column equals that value. In this workspace the key column *is the task
-  title* (see "This workspace" below), so `--ticket` is the exact task name.
-  Renaming a task in Notion changes its key, so a name that was valid yesterday
-  may not resolve today.
-- **By board id** (`--id <board-id>`) — addresses a row by the short id
-  Notion itself assigns and shows on the row (`TASK-271`, or the bare number
-  `271` on its own) — the one a person reads aloud. Use it when the user gives
-  you that id instead of a name. Only works if this board maps an id column;
-  not every board does (see "This workspace" below) — `list --json` or
-  `get --json` show a non-empty `id` key only when the role is mapped.
-- **By Notion page id** (`--page-id <id>`) — addresses one specific row
-  directly, no lookup. The id is stable forever, even if the task is renamed.
-  It accepts the page URL copied from Notion ("Copy link"), a bare 32-hex id, or
-  a dashed UUID. Use this when the user pastes a Notion link or id, or when the
-  task might have been renamed.
+## Know this board
 
-`--ticket`, `--id` and `--page-id` are mutually exclusive on `get` and `set`;
-exactly one is required. `upsert` only takes `--ticket` (see below for why).
+Five things change how you address and create tasks. Discover them; the skill
+cannot tell you.
+
+| What to establish | How |
+|---|---|
+| **Is the ticket key its own column, or the title?** | `doctor`'s mapping. If the key *is* the title, `--ticket "X"` means the task literally named X, creating with `upsert --ticket "X"` names it X, and a rename breaks lookup by name — `--page-id` is then the stable handle |
+| **Which status values does the board accept?** | No command prints them. `list --json` shows the ones rows carry; the exit-2 rejection names *every* allowed value, so one wrong guess costs one failed call — cheapest with `--dry-run`, which writes nothing |
+| **Is there an assignee column, and does `me` resolve?** | When mapped, `doctor` runs an `assignee` check (absent otherwise) saying whether `me` resolves. When unmapped, `doctor` stays silent and `--assignee` failing with exit 1 is the only signal |
+| **Is there a priority column?** | Same silence: `--priority` failing with exit 1 is the only signal. `doctor` never lists its values either — read them off `list` |
+| **Is there a board id column?** | `list --json` / `get --json` show a non-empty `id` only when mapped. `--id` on an unmapped board fails with **exit 2, not 1** — the one role that differs |
+
+Two things that hold on every board: every change is recorded under the
+integration's bot identity, so "who moved this card" is not recoverable; and
+running `notion-track` with no arguments at a terminal opens a full-screen
+browsing TUI, so always use an explicit subcommand.
+
+With several profiles configured, `--profile <name>` (and `--config <path>`)
+select which board you are driving. Addressing *and* the `me` identity are
+per-profile: the wrong profile assigns the right name on the wrong board.
+
+## Addressing a row
+
+`--ticket`, `--id` and `--page-id` are mutually exclusive on `get` and `set`,
+and exactly one is required. `upsert` takes only `--ticket` — at creation time
+there is no page to point at.
+
+- **`--ticket "<value>"`** — the row whose key column equals that value. Exact,
+  not fuzzy. A trailing space is a different key, and on `upsert` a key that
+  matches nothing is **created**, not reported.
+- **`--id <board-id>`** — the short id Notion shows on the row (`TASK-271`, or
+  the bare `271`), the one a person reads aloud. Only when the board maps an id
+  column.
+- **`--page-id <id-or-url>`** — one specific row, no lookup: a "Copy link" URL,
+  a bare 32-hex id, or a dashed UUID. Stable across renames. A page that exists
+  but belongs to another data source fails with **exit 2** (wrong id, or wrong
+  `--profile`) — not exit 3.
+
+**To rename a task on a board where the key is the title**, the only correct
+form is `set --page-id <id> --title "New name"`. `set --ticket Old --title New`
+exits 0 having changed nothing (the ticket value wins over a separate title on
+that shared column), and `upsert --ticket New` creates a second row.
 
 ## Commands
 
-### Create or update a task by name — `upsert`
+### `upsert` — create or update by name
 
 ```sh
 notion-track upsert --ticket "<name>" [--status "<status>"] [--title "<title>"] [--due YYYY-MM-DD] [--assignee "<name-or-me>"] [--priority "<value>"] [--body-file <path>] [--dry-run] [--json]
 ```
 
-Creates the row if no task has that key, updates it if one does. Running it
-twice yields one row — safe to repeat. `--ticket` is required; the others are
-set only if given. `upsert` cannot address a task by `--page-id`: at creation
-time the page doesn't exist yet, so there's no id to use.
+Creates the row if no task has that key, updates it if one does; running it
+twice yields one row. `--json` returns `{"action":"created"|"updated","page":{...}}`
+— read `action` to tell which happened and `page.page_id` to capture the id.
 
-`--json` returns `{"action":"created"|"updated","page":{...}}` — read `action`
-to tell which happened, and `page.page_id` to capture the id for later. On a
-body write, success adds `body:{blocks_written,blocks_deleted}`. On partial
-failure (properties written, body failed) the command exits 1 and `--json`
-adds `body:{written:false,error,...}` while `page` still reflects the
-properties that did get applied — check `body.written` before assuming a
-`--body-file` call fully succeeded.
+Prefer `set` whenever the task is meant to already exist, so a typo surfaces as
+an error instead of a stray new row.
 
-### Change an existing task — `set`
+### `set` — update only
 
 ```sh
 notion-track set --ticket "<name>"     --status "<status>" [--title ...] [--due ...] [--assignee "<name-or-me>"] [--priority "<value>"] [--body-file <path>] [--dry-run] [--json]
-notion-track set --id <board-id>       --status "<status>" [--title ...] [--due ...] [--assignee "<name-or-me>"] [--priority "<value>"] [--body-file <path>] [--dry-run] [--json]
-notion-track set --page-id <id-or-url> --status "<status>" [--title ...] [--due ...] [--assignee "<name-or-me>"] [--priority "<value>"] [--body-file <path>] [--dry-run] [--json]
+notion-track set --id <board-id>       --status "<status>" [...]
+notion-track set --page-id <id-or-url> --status "<status>" [...]
 ```
 
-Updates only. **Fails if the task doesn't exist** (exit 3) instead of creating
-it — that's the point of `set` versus `upsert`. Only the flags you pass are
-touched; everything else on the row is left alone. Prefer `set` over `upsert`
-when the task is meant to already exist, so a typo surfaces as an error instead
-of a stray new row.
+**Fails with exit 3 if the task doesn't exist** instead of creating it — that is
+the whole point of `set` versus `upsert`. Only the flags you pass are touched.
 
-### Assign a task, or clear who owns it — `--assignee` / `--unassign`
-
-Available on `upsert` and `set`. This is what "assegna a Sam", "prendi in
-carico questo task", or "assign this to X" mean in practice:
+### `--assignee` / `--unassign` (on `upsert`, `set`; `--assignee` also on `list`)
 
 ```sh
 notion-track set --ticket "<name>" --assignee "Sam Rivera"
-notion-track set --ticket "<name>" --assignee sam     # a partial name is enough when it's unambiguous
-notion-track set --ticket "<name>" --assignee me       # "prendi in carico" / "assign it to me"
-notion-track set --ticket "<name>" --unassign           # clears it — "task senza referente" going forward
+notion-track set --ticket "<name>" --assignee sam    # a partial name is enough when unambiguous
+notion-track set --ticket "<name>" --assignee me     # "prendi in carico"
+notion-track set --ticket "<name>" --unassign        # clears it
 ```
 
-`--assignee` takes a name and resolves it against whatever the board's assignee
-column actually offers — exact match, then case-insensitive, then a
-case-insensitive substring — so `sam` is enough when only one option
-contains it. **Don't invent or guess a full name**: pass what the user said and
-let resolution do the matching; if it's genuinely ambiguous or unknown the
-error message lists the real options, which is more reliable than guessing
-yourself. `--assignee` and `--unassign` are mutually exclusive, and `--assignee
-""` is a usage error, not a way to clear — use `--unassign`.
+A name resolves against what the board's column offers: exact, then
+case-insensitive, then case-insensitive substring. **Don't invent a full name** —
+pass what the user said; an ambiguous or unknown value fails with the real
+options listed, which beats guessing. But a *unique* partial match is applied
+silently, so **report the resolved name back to the user** (it's in the
+response's `assignee` field): "sam" can match the only Sam on the board and
+still be the wrong person.
 
-`me` is a reserved value standing for the configured identity. Precedence:
-`NOTION_TRACK_ME` (an override, for CI and one-off runs) → the profile's entry
-in `credentials.yml`'s `identities` map (what `notion-track init --me
-"<name>"`, or the wizard, writes) → the profile's legacy `me:` in `config.yml`.
-It's what "prendi in carico" / "cosa devo fare io" / "take ownership" resolve
-to when the user means themselves. If nothing is configured, `--assignee me`
-fails with a clear message (exit 2); don't substitute a guessed name, and
-don't tell the user to export a variable — tell them to run `notion-track init
---me "<name>"` (or run `doctor` first, to see what identity, if any, is set
-up).
+`--assignee ""` is a usage error, not a way to clear — use `--unassign`. The two
+are mutually exclusive.
 
-That command takes no other flags: `notion-track init --me "<name>"` on its
-own writes only the identity, for the profile already in use, and never
-touches `config.yml`. It needs a profile that already maps an assignee column
-— if it exits 2 saying otherwise, the board has no referente column and there
-is no identity to configure.
+`me` is the configured identity, resolved in this order: `NOTION_TRACK_ME` →
+the profile's entry in `credentials.yml` → the profile's legacy `me:` in
+`config.yml`. With nothing configured it fails (exit 2): tell the user to run
+`notion-track init --me "<name>"` — don't substitute a guessed name and don't
+tell them to export a variable. That command writes only the identity for the
+profile in use, and needs a board that maps an assignee column.
 
-Exit 5 from `--assignee me` has two causes, and the error text tells them
-apart. If it says the credentials file couldn't be read, don't retry with a
-name — say the file is unreadable, since an identity may well be in it. If it
-says no integration token was found, that is the ordinary auth failure every
-command gives, and has nothing to do with the identity.
+Exit 5 from `--assignee me` has two causes and the message tells them apart: an
+unreadable credentials file (say so — the fix is repairing the file) versus the
+ordinary missing-token failure every command gives.
 
-If this board doesn't map an assignee column at all, `--assignee`/`--unassign`
-fail (exit 1, not 2) telling you so — that's your cue to say the board has no
-referente column, not to retry with a different flag.
-
-### Mark how urgent a task is — `--priority`
-
-Available on `upsert` and `set` to set it, and on `list` to filter by it. This
-is what "è urgente", "priorità alta", "mettilo in alta", "cosa c'è di
-urgente", "cosa faccio prima", "it's urgent", "high priority", or "what should
-I do first" mean in practice:
+### `--priority` (on `upsert`, `set`; also on `list` to filter)
 
 ```sh
-notion-track set --ticket "<name>" --priority ALTA
-notion-track set --ticket "<name>" --priority alta          # a partial value is enough when unambiguous
-notion-track list --priority ALTA --status "<status>"       # what's urgent, optionally narrowed
-notion-track list --priority ALTA --assignee me              # what's urgent that's mine
+notion-track set --ticket "<name>" --priority alta      # partial values resolve like names do
+notion-track list --priority ALTA --assignee me --json  # what's urgent and mine
 ```
 
-`--priority` resolves what you type against the board's priority column the
-same way `--assignee` resolves a name — exact match, then case-insensitive,
-then a case-insensitive substring — so `alta` is enough when only one option
-contains it. **Don't invent a priority value**: pass what the user said and
-let resolution match it against the board's real options; if it's ambiguous
-or unknown the error lists the real options, which is more reliable than
-guessing. Never assume a fixed vocabulary like ALTA/MEDIA/NORMALE applies —
-read the actual values with `doctor` or `list` first.
+Resolves exactly like `--assignee`, with the same "don't invent a value" rule
+and the same empty-string usage error. **Never assume a vocabulary** like
+ALTA/MEDIA/NORMALE — read the board's real values.
 
-**Unlike `--assignee`, this role has no way to clear a value, and no `me`.**
-There is no `--unpriority` flag — nothing in this tool can remove a priority
-once set; if asked to "remove the priority" or "togli la priorità", say that
-has to be done in Notion directly, don't guess at a flag. There is also no
-`list --unprioritized` (the priority equivalent of `--unassigned`), and no
-reserved `me` value — a priority belongs to no one, so "prendi in carico"
-never applies here.
+Unlike assignee, priority has **no way to clear a value and no `me`**: there is
+no `--unpriority` and no `list --unprioritized`. Asked to "togli la priorità",
+say it has to be done in Notion rather than reaching for a flag.
 
-If this board doesn't map a priority column at all, `--priority` fails (exit
-1, not 2) telling you so — same as an unmapped assignee.
+### `--body-file` — writing the page body (on `upsert`, `set`)
 
-### Check first — `--dry-run`
+A Markdown file (`-` for stdin) that becomes the page body.
 
-```sh
-notion-track upsert --ticket "<name>" --status "<status>" --dry-run [--json]
-```
+**It owns the body: every run makes the body exactly equal to the file**,
+deleting whatever was there, hand-written content included.
 
-Available on `upsert`, `set` and `apply`. It reports what the write *would* do
-— created or updated, which row, which columns — and writes nothing, exiting 0.
-With `--json` the output is `{"dry_run":true,"plan":{...}}`, so you can tell it
-apart from a write that happened.
+**You cannot see what you are about to delete** — `get` returns properties
+only, and no command in this tool reads a page body. So: use `--body-file`
+freely on pages this workflow created, and on any pre-existing row **ask the
+user before overwriting**. "I ran `get` first" is not a check on the body.
 
-It runs the same validation a real write does, so a status the board rejects
-fails on the dry run rather than on the real one. That makes `--dry-run` the
-cheapest way to answer "will this do what I think?" before touching the board.
+Sub-pages and child databases are preserved **only at the top level of the
+body**. One nested inside a toggle, a column or a callout is deleted along with
+the block that contains it.
 
-### Writing the page body — `--body-file`
-
-Both `upsert` and `set` accept `--body-file <path>` (`-` for stdin): a
-Markdown file whose content becomes the page body. **Replace semantics —
-`--body-file` owns the body.** Every run makes the body exactly equal to the
-file, deleting whatever blocks were already there, hand-edited content
-included; running it twice on the same file is idempotent, but running it
-against a page someone has since edited in Notion silently discards their
-edit. Read the page first if you're not sure what's on it. Sub-pages and
-child databases nested under the page are preserved, not archived. See
-`--body-file` under Usage in the [README](../../README.md) for the supported
-Markdown subset, degrade-with-warning behavior, and cost.
+`--json` adds `body:{blocks_written,blocks_deleted}` on success. On partial
+failure (properties written, body failed) the command exits 1 and `body` gains
+`written:false` plus an `error`, while `page` still reflects the properties that
+did land. So: treat `written:false` as failure — the key is absent on success.
 
 Add **`--expand`** to substitute `{{ticket}}` and `{{date}}` (today, as
-`YYYY-MM-DD`) in the file before it is sent. Without the flag those braces are
-left exactly as written, so a body that legitimately contains `{{...}}` is safe
-by default. A placeholder that is neither of the two known names is an error
-naming the line, not something quietly passed through — so never invent
-placeholder names.
+`YYYY-MM-DD`) before sending. Without it, braces are left alone, so a body that
+legitimately contains `{{...}}` is safe by default. An unknown placeholder is an
+error naming the line — never invent placeholder names. Note that with
+`--page-id` or `--id` addressing there is no ticket in the invocation, so
+`{{ticket}}` expands to an empty string.
 
-### Read one task — `get`
+### `get` — read one task
 
 ```sh
-notion-track get --ticket "<name>"     [--json]
-notion-track get --id <board-id>       [--json]
-notion-track get --page-id <id-or-url> [--json]
+notion-track get --ticket "<name>" [--json]     # or --id / --page-id
 ```
 
-Use it to confirm a task exists and to see its current state before changing it.
-With `--json` the fields are `id`, `ticket`, `title`, `status`, `page_id`, `url`,
-`last_edited_time`, `assignee`, `priority` — a stable schema, safe to parse.
-`id` is the board id (`TASK-271`), always present and empty both when the row
-carries no value and when the board doesn't map that role — the same rule
-`assignee` and `priority` follow next. `assignee` is always present and empty
-both when nobody is assigned and when the board doesn't map the role, so check
-for an empty string rather than a missing key. `priority` follows the same
-rule: always present, empty both when the row carries no value and when the
-board doesn't map the role.
+`--json` fields, a stable schema safe to parse: `id`, `ticket`, `title`,
+`status`, `page_id`, `url`, `last_edited_time`, `assignee`, `priority`. The
+keys are always present; `id`, `assignee` and `priority` are empty **both**
+when the row carries no value and when the board doesn't map the role, so check
+for an empty string rather than a missing key.
 
-### List tasks — `list`
+### `list` — many tasks
 
 ```sh
 notion-track list [--status "<status>"] [--assignee "<name-or-me>"] [--unassigned] [--priority "<value>"] [--json]
 ```
 
-All rows, or narrowed by one status, by assignee, to only-unassigned rows
-(`--assignee` and `--unassigned` are mutually exclusive), or by priority.
-`--json` returns an **array** (`[]` when empty, never `null`), each element
-with the same fields as `get`. This is the way to answer "what do I have in
-progress?" or to find a task's page id — and, with `--assignee`/`--unassigned`,
-to answer "chi ha in mano X" (`list --status "<status>"` then check `assignee`
-per row, or `list --assignee "<name>"` directly), "cosa devo fare io" /
-"what's on my plate" (`list --assignee me --status "<status>"`), and "task
-senza referente" / "unassigned tasks" (`list --unassigned`). `--assignee`
-resolves partial names and `me` exactly like it does on `upsert`/`set` — don't
-guess a full name, pass what the user said. With `--priority`, it also answers
-"cosa c'è di urgente" / "what's urgent" (`list --priority ALTA`) and "cosa
-faccio prima" / "what should I do first" (narrow further with `--status` and,
-if it's specifically the user's own work, `--assignee me`). There is no
-`--unprioritized` — no shortcut for rows Notion ranks with nothing.
+`--json` returns an **array** (`[]` when empty, never null) of the same fields
+as `get`. This answers "cosa devo fare io" (`--assignee me --status ...`), "chi
+ha in mano X" (`--assignee "<name>"`), "task senza referente" (`--unassigned`,
+mutually exclusive with `--assignee`) and "cosa c'è di urgente" (`--priority`).
 
-### Many changes at once — `apply`
+### `apply` — many changes at once
 
 ```sh
 notion-track apply --file <manifest.json|manifest.csv> [--dry-run] [--expand] [--json]
 ```
 
-**Use this instead of looping over `set`/`upsert`.** One entry per write,
-applied in order, in a single process.
+**Use this instead of looping over `set`/`upsert`** — one entry per write,
+applied in order, in one process. A loop is only worth it when an entry's flags
+depend on a previous entry's output.
 
 ```json
 [
-  {"op": "upsert", "ticket": "TASK-1", "title": "Hardening", "status": "In corso", "assignee": "sam", "priority": "alta"},
+  {"op": "set", "ticket": "TASK-1", "status": "In corso", "assignee": "sam", "priority": "alta"},
   {"op": "set", "ticket": "TASK-2", "status": "Fatto", "unassign": true}
 ]
 ```
 
-The format comes from the file extension (`.json` or `.csv`; a CSV needs a
-header row with the same field names). Fields: `op` (`upsert` or `set`,
-defaulting to `upsert`), `ticket` (required), `title`, `status`, `due`,
-`body_file`, `assignee`, `unassign`, `priority`. An unknown field is an error
-rather than something ignored, so spell them exactly. `body_file` paths are
-resolved relative to the manifest, not to the working directory. `assignee`
-accepts the same partial names and `me` that `--assignee` does; `unassign` is
-`true`/`false`/empty and conflicts with `assignee` on the same entry, the same
-rule the flags enforce. `priority` accepts the same partial values that
-`--priority` does; there is no `unpriority` field.
+Fields: `op` (`upsert` or `set`), `ticket` (required), `title`, `status`,
+`due`, `body_file`, `assignee`, `unassign`, `priority`. Unknown fields are
+errors, so spell them exactly. `body_file` is resolved relative to the
+manifest. Format comes from the extension; a CSV needs a header row.
 
-**It stops at the first entry that fails** and exits with that entry's own code
-(3, 4, …), after reporting how many were applied — so a partial run is
-something you can see and resume from, not something to reconstruct. With
-`--json`: `{"applied":N,"total":M,"entries":[...]}`, where each entry carries
-its `action` or its `error`.
+**Write `"op":"set"` on every entry that updates an existing task.** `op`
+defaults to `upsert`, so an entry with a typo — or a stray trailing space, which
+is not trimmed in JSON manifests — silently creates a ghost row with a status
+already set instead of failing. In a dry run of an update-only manifest, **every
+`created` in the plan is a typo**.
 
-Write the manifest to a file, run `apply --dry-run` first when you built it
-yourself, and show the user the plan before applying it for real.
+Build the manifest in a file, dry-run it when you wrote it yourself, and show
+the user the plan before applying for real.
 
-### Diagnose — `doctor`
+**It stops at the first failing entry**, reporting how many were applied and
+exiting with that entry's code. With `--json`:
+`{"applied":N,"total":M,"entries":[...]}`, each entry carrying its `action` or
+its `error`. Note that exit 2 from `apply` means *either* a manifest rejected
+before anything ran *or* an entry that failed validation mid-run (an unknown
+status, an ambiguous assignee, or `assignee` and `unassign` on one entry — that
+conflict is caught at write time, not at parse time). Read `applied` before
+concluding that nothing was written.
+
+### `doctor` — diagnose
 
 ```sh
 notion-track doctor [--json]
 ```
 
-Run this first if any command errors in a way you don't understand. It checks
-the token, database access, the property mapping, duplicate keys, and whether a
-git-tracked file in the current repository looks like it carries the user's
-integration token — and prints what's wrong and how to fix it. When an
-assignee column is mapped, it also checks that the configured `me` identity
-still resolves to a real option, and warns if that identity is still coming
-from `config.yml`'s legacy `me:` field rather than `credentials.yml` or
-`NOTION_TRACK_ME`. Only a `fail` makes it exit
-non-zero; a `warn` (including the token scan and the identity check) is worth
-reporting to the user but does not block anything.
+Run it first when a command fails in a way you don't understand. It checks the
+token, database access, the property mapping, duplicate keys, and whether a
+git-tracked file looks like it carries the user's token. Only a `fail` exits
+non-zero; a `warn` is worth reporting but blocks nothing.
+
+It does **not** list the accepted values of any select column — not statuses,
+not priorities. Nothing does.
+
+If its `secrets` check flags a file, **do not open or print that file**: relay
+the warning as it stands, token rotation included.
 
 ## Exit codes — branch on these, don't parse messages
 
 | Code | Meaning | What to do |
 |---|---|---|
 | 0 | success | proceed |
-| 2 | bad usage (missing/invalid flag, unknown status, a malformed `--page-id` or `--id`, an `--assignee` value that's unknown or ambiguous, an empty `--assignee`, `--assignee me` with no identity configured, `--assignee` combined with `--unassign`/`--unassigned`, a `--priority` value that's unknown or ambiguous, or `--id` used on a board with no id column mapped) | fix the invocation; a rejected status, assignee or priority means the value isn't one the board allows — read the error's list of valid options rather than guessing again. **An unmapped id role is exit 2, not 1** — the one role that differs from the row below |
-| 3 | task not found | with `set`/`get`: the ticket, board id, or page id doesn't match a row — don't retry as `upsert` without checking with the user |
-| 4 | duplicate key | more than one row has that ticket key; the tool refuses to guess. Surface it and run `doctor` to list the duplicates |
-| 5 | auth failure | the token is missing or invalid; tell the user to run `notion-track init`. Also what `--assignee me` gives when the credentials file can't be read — there the fix is repairing that file, not configuring an identity |
-| 1 | other error, including an `--assignee`, `--priority` or `--due` role that simply isn't mapped on this board | report it; for one of these unmapped roles, say so and point at `init` rather than retrying. (Unmapped **id** is the exception — see exit 2 above.) |
+| 1 | other error, including an `--assignee`, `--priority` or `--due` role not mapped on this board | report it; for an unmapped role say so and point at `init` rather than retrying (unmapped **id** is the exception — it's exit 2) |
+| 2 | bad usage: missing or invalid flag, unknown status, malformed `--page-id`/`--id`, an unknown or ambiguous `--assignee`/`--priority`, an empty value for either, `--assignee` with `--unassign`, `--assignee me` with no identity, `--id` on a board with no id column, or a `--page-id` belonging to another data source | fix the invocation; a rejected value means it isn't one the board allows — read the options the error lists rather than guessing again |
+| 3 | task not found | the ticket, board id or page id matches no row — don't retry as `upsert` without asking the user |
+| 4 | duplicate key | more than one row has that key and the tool refuses to guess; surface it and run `doctor` to list them |
+| 5 | auth failure | token missing or invalid — tell the user to run `notion-track init`. Also what `--assignee me` gives when the credentials file can't be read, where the fix is that file |
 
-`apply` reports the exit code of the entry that stopped it, so the same table
-applies: a run that ends with 3 means one of its entries addressed a row that
-does not exist, not that the manifest was malformed (that would be 2).
+## When a write fails halfway
 
-A rejected status (exit 2) is common and recoverable: the board accepts only a
-fixed set of status values. Never invent one — use a value the board already
-has (list them with `doctor` or by looking at existing tasks).
+- **Body failed after properties** (exit 1, `body.written:false`): the page may
+  hold old and new blocks together — the new body is appended before the old is
+  deleted. Re-run the same command; it converges.
+- **`apply` stopped mid-run**: fix the entry it named and re-run the whole
+  manifest — entries are idempotent — or resume from the reported index (1-based).
+  The exception is `--expand` with `{{date}}`, which changes across midnight.
+- **"write outcome unknown; re-run to converge"**: a timeout or 5xx left the
+  result unknown. Re-run the same command once, then confirm with `get`.
 
-## Safe patterns
+## Over MCP instead of the shell
 
-Change a task's status, checking it exists first:
+If your host speaks MCP, `notion-track mcp` serves four tools over stdio:
+`upsert_task`, `set_task`, `get_task`, `list_tasks`. Same code underneath, so
+read-before-write, never-invent-a-status and branch-on-the-outcome all apply.
+Three differences matter:
 
-```sh
-notion-track get --ticket "Deploy staging" --json   # confirm it's there and see its state
-notion-track set --ticket "Deploy staging" --status "Fatto"
-```
+- **Envelopes differ from the CLI's.** A write returns `{"action":…,"row":{…}}`
+  — the key is `row`, not `page`. `list_tasks` wraps its array in a `rows` key
+  (`{"rows":[…]}`) rather than returning a bare array. Only `get_task` matches
+  `get --json` exactly. The fields inside a row are the same either way.
+- **Rows are addressed only by `ticket`.** There is no MCP equivalent of
+  `--id` or `--page-id`; passing one is rejected or ignored as an unknown field
+  (a result still *carries* `id`, it just can't take one).
+- **There is no preview and no body.** No `dry_run` argument, no body writing,
+  no `apply` or `doctor` equivalent — an MCP write always writes. Compensate
+  with `get_task` immediately before `set_task`, and prefer `set_task` over
+  `upsert_task` for anything that should already exist.
 
-Assign a task ("assegna a Sam") or take it yourself ("prendi in carico"):
+## Out of scope
 
-```sh
-notion-track get --ticket "Deploy staging" --json   # confirm it's there and who has it now
-notion-track set --ticket "Deploy staging" --assignee sam
-notion-track set --ticket "Deploy staging" --assignee me   # "prendi in carico" — needs an identity configured, see doctor
-```
-
-Update a task the user pasted a Notion link for (name unknown, immune to rename):
-
-```sh
-notion-track set --page-id "https://www.notion.so/Deploy-23fb4e5c8a5f4d21b7c9d0e1f2a3b4c5" --status "Fatto"
-```
-
-Create a task and keep its id for later steps:
-
-```sh
-PID=$(notion-track upsert --ticket "Backup NAS" --status "Da fare" --json | jq -r .page.page_id)
-notion-track set --page-id "$PID" --status "Fatto"
-```
-
-Answer "what am I working on?", "chi ha in mano X?", or "task senza referente":
-
-```sh
-notion-track list --status "In corso" --json                # what am I working on? (scoped by status)
-notion-track list --assignee me --status "In corso" --json   # narrowed to mine
-notion-track list --assignee "Sam Rivera" --json             # chi ha in mano X? / what's assigned to Sam
-notion-track list --unassigned --json                        # task senza referente
-```
-
-Mark a task urgent and hand it off in one write ("è urgente" + "assegna a Sam"), then answer "cosa c'è di urgente":
-
-```sh
-notion-track set --ticket "Deploy staging" --priority alta --assignee sam
-notion-track list --priority ALTA --json                     # cosa c'è di urgente, across the board
-notion-track list --priority ALTA --assignee me --json        # cosa c'è di urgente ed è mio
-```
-
-Apply several changes the user asked for in one go — check, then commit to it:
-
-```sh
-cat > /tmp/changes.json <<'EOF'
-[
-  {"op": "set", "ticket": "Deploy staging", "status": "Fatto"},
-  {"op": "set", "ticket": "Backup NAS", "status": "In corso"}
-]
-EOF
-notion-track apply --file /tmp/changes.json --dry-run   # show this to the user
-notion-track apply --file /tmp/changes.json
-```
-
-## Know this workspace before acting
-
-This section is meant to be filled in for the board you're driving — status
-values and the key mapping differ per workspace. **Don't assume; discover.** At
-the start of a task session, or whenever a command fails in a way that suggests
-the setup changed, run:
-
-```sh
-notion-track doctor          # token, database, property mapping, duplicates
-notion-track list --json     # real rows, real status values in use
-```
-
-`doctor`'s `properties` check confirms each configured property still exists
-with the expected type, naming the property and what's wrong when one doesn't
-— it does not enumerate the mapped columns when everything checks out, only
-reports that they do; the statuses actually present on the board are whatever
-`list` returns. Two things to establish up front, because they change how you
-address and create tasks:
-
-- **Is the ticket key its own column, or the title?** If the key column *is* the
-  title, then `--ticket "X"` means the task literally named X, and creating with
-  `upsert --ticket "X"` sets its name to X — so a rename breaks lookup by name,
-  and `--page-id` is the stable way to address such a task.
-- **What status values does the board accept?** `--status` only takes an
-  existing value; anything else is rejected with exit 2. Never invent one. No
-  command prints the allowed set — `doctor` checks the column's type but never
-  reads its options, and `list` shows only the values rows happen to carry. The
-  rejection itself is the cheapest way to learn them: it names every accepted
-  value ("unknown status "Done"; allowed values are: …"), so a wrong guess costs
-  one failed call rather than a wrong write.
-- **Is there an assignee column, and is `me` configured?** Not every board maps
-  one, and `doctor` does not call that out when it's missing — an unmapped
-  assignee role is skipped silently by the `properties` check, the same way an
-  unmapped `id` role is; the only signal is `--assignee`/`--unassign` failing
-  with exit 1. When it *is* mapped, `doctor` runs a dedicated `assignee` check
-  (absent from the output otherwise) that says whether `me` resolves to a real
-  identity, and warns if that identity is still coming from `config.yml`'s
-  legacy `me:` field rather than `credentials.yml` or `NOTION_TRACK_ME`. If it
-  doesn't resolve at all, "prendi in carico"/"assign it to me" needs the user
-  to run `notion-track init --me "<name>"` — not a guessed name, and not
-  "export a variable".
-- **Is there a priority column?** Not every board ranks urgency, and here too
-  `doctor` stays silent when it's unmapped — `--priority` failing with exit 1
-  is the only signal. Unlike assignee, priority never gets a dedicated check
-  even when it *is* mapped: the `properties` check only confirms the column
-  exists with the expected type, it does not list the accepted values. Read
-  those from `list` — the values actually in use on real rows — rather than
-  assuming a fixed set like ALTA/MEDIA/NORMALE applies here.
-- **Is there a board id column?** Not every board maps one — `list --json` or
-  `get --json` show a non-empty `id` key only when the role is mapped, and
-  `--id` fails if it isn't mapped, but with **exit 2, not 1** (unlike
-  assignee/priority/due, an unmapped id role is a usage error). When it is
-  mapped, `--id` accepts the id exactly as Notion shows it (`TASK-271`) or the
-  bare number alone (`271`).
-
-- **Attribution caveat**: every change is recorded by the integration's bot
-  identity, not by the person running the command. If the user asks "who moved
-  this card", that information isn't captured.
-
-> Using this on a fixed personal board? Replace this section with your board's
-> concrete status values and mapping so the agent doesn't have to rediscover
-> them every session.
-
-## When NOT to reach for this skill
-
-- Comments, arbitrary Notion pages, and other databases remain out of scope;
-  `notion-track` only touches this one board. The page **body** is now
-  writable via `upsert`/`set --body-file <file>` (Markdown, replace semantics
-  — it **owns** the body and overwrites anything there, so read before you
-  write). Sub-pages are preserved, not archived.
-- Bulk changes across many tasks are now `apply`'s job, not a shell loop's:
-  reach for a manifest rather than calling the binary once per row. A loop is
-  only worth it when each row's flags depend on the previous row's output.
-- The assignee is a single `select` value, not Notion's native "person" type —
-  there's no team or multi-person assignment, and no lookup against Notion
-  workspace members. `--assignee` only ever matches names the board's column
-  already offers; don't try to resolve a Notion user id or invent a name it
-  hasn't offered.
-- Priority is a single `select` value too — a fixed vocabulary the board
-  defines, not a numeric scale, and nobody's personal priority. There is no
-  way to clear it through this tool (no `--unpriority`) and no
-  `list --unprioritized`; if asked to do either, say so rather than trying a
-  flag that doesn't exist.
-- If your host speaks MCP, `notion-track mcp` serves the same operations as
-  tools (`upsert_task`, `set_task`, `get_task`, `list_tasks`) over stdio, with
-  the same JSON shapes documented here. It is the same code underneath, so
-  everything on this page — read before you write, never invent a status,
-  branch on the outcome — applies there unchanged, with one exception:
-  addressing. Over MCP a row is addressed **only** by ticket key —
-  `get_task`/`set_task`'s only argument for finding a row is `ticket`.
-  `--id` and `--page-id` are CLI-only; there is no MCP equivalent for either,
-  even though a tool's JSON result still carries the board id under `id`
-  exactly like the CLI's `--json` does. Don't call an MCP tool with an `id`
-  or `page_id` argument expecting it to address a row — it will be rejected
-  (or, worse, ignored as an unknown field).
+- Comments, arbitrary Notion pages and other databases: `notion-track` only
+  touches this one board. Page bodies are writable, with the replace semantics
+  above.
+- The assignee is a `select` value, not Notion's "person" type: no teams, no
+  multi-assignment, no lookup against workspace members. Don't try to resolve a
+  Notion user id or invent a name the column hasn't offered.
+- Priority is a `select` too — the board's fixed vocabulary, not a scale, and
+  not clearable through this tool.
