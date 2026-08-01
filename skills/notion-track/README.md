@@ -14,12 +14,13 @@ status, branch on exit codes).
 
 This skill drives the CLI over the shell, which needs nothing beyond the binary.
 If your host speaks MCP instead, `notion-track mcp` serves the same operations
-as tools over stdio — same code underneath, same JSON shapes, so the safety
-rules in `SKILL.md` apply either way, with one exception: addressing. A row is
-addressed **only** by ticket key over MCP — `--id` and `--page-id` are CLI-only,
-with no MCP equivalent, even though a tool's JSON result still carries the
-board id under `id` like the CLI does. See "How a task is identified" in
-`SKILL.md` and "Use it from an AI agent" in the [README](../../README.md).
+as tools over stdio — same code underneath, so the safety rules in `SKILL.md`
+apply either way. Three things differ there, and `SKILL.md` spells them out
+under "Over MCP instead of the shell": the result envelopes (`row` and `rows`,
+where the CLI has `page` and a bare array), addressing (only by ticket key —
+`--id` and `--page-id` have no MCP equivalent), and the absence of `dry_run`,
+body writing and any `apply`/`doctor` tool. See also "Use it from an AI agent"
+in the [README](../../README.md).
 
 ## Install
 
@@ -41,7 +42,20 @@ Notion board ("mark this done", "what am I working on?", "create a task…").
 
 ## Workspace-specific details
 
-The "This workspace" section of `SKILL.md` describes one particular board (its
-status values, its key column). If you install this on a different setup, edit
-that section — or delete it and let the agent rediscover the board with
-`notion-track doctor` and `notion-track list --json`.
+`SKILL.md` deliberately asserts nothing about your board: its "Know this board"
+section lists the five things that differ per workspace — whether the ticket key
+is the title, which status values exist, whether assignee, priority and board-id
+columns are mapped — and tells the agent to discover them with
+`notion-track doctor` and `notion-track list --json` at the start of a session.
+
+If you run it against one fixed board, filling that section in with your real
+values saves the agent a round of discovery every session. Keep it accurate:
+stale values there are worse than none, because the agent trusts them.
+
+## Keeping it honest
+
+The claims `SKILL.md` makes about flags, commands, exit codes and JSON keys are
+checked against the code by tests in `internal/cli`, `internal/mcp` and
+`internal/manifest` (`skilldoc_test.go`). Adding a flag or renaming a JSON key
+without updating the skill fails CI. Everything else — the prose, the ordering,
+the judgement calls — is still on whoever edits it.
