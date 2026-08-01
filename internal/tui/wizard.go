@@ -110,7 +110,7 @@ type Model struct {
 	width, height int
 }
 
-// Sizes used until the terminal reports its own. A test never sends a
+// Sizes used until the terminal reports its own. Most tests never send a
 // WindowSizeMsg, and a list with zero height renders nothing at all, which
 // would make every assertion about what is on screen vacuously fail.
 const (
@@ -133,6 +133,14 @@ func NewWizard(sources []notion.DataSourceRef, fetchSchema func(string) (*notion
 		height:      defaultHeight,
 	}
 	m.sourceList = newList(items, "Which data source?", m.width, m.listHeight())
+	// The role and identity pickers cannot be filled in yet: their contents
+	// are the columns of a schema nobody has chosen and the options of a
+	// column nobody has mapped. They are built for real on the way into their
+	// screens — but they have to be lists from the start regardless, because
+	// the terminal reports its size before the user can reach either screen,
+	// and a zero list.Model has no delegate for SetSize to measure against.
+	m.roleList = newList(nil, "", m.width, m.listHeight())
+	m.identityList = newList(nil, "", m.width, m.listHeight())
 	return m
 }
 

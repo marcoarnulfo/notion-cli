@@ -90,6 +90,10 @@ func NewBrowser(board Board) BrowseModel {
 	}
 	m.rows = newList(nil, "notion-track", m.width, m.listHeight())
 	m.rows.SetDelegate(rowDelegate{})
+	// Filled in for real when the picker opens, once the statuses are known.
+	// It is built here anyway for the same reason rows is: the terminal
+	// reports its size first, and SetSize on a zero list.Model panics.
+	m.statuses = newList(nil, "", m.width, m.listHeight())
 
 	m.ticket = textinput.New()
 	m.ticket.Placeholder = "ticket key"

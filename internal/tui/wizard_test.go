@@ -584,6 +584,54 @@ func TestCancellingTheIdentityStepWritesNothing(t *testing.T) {
 	}
 }
 
+// A real terminal sends a WindowSizeMsg before the user can touch a key, so
+// the resize path runs against a wizard whose role and identity pickers hold
+// nothing yet — they are filled in on the way into their screens. Resizing a
+// list that list.New never touched panics inside bubbles, which made
+// `notion-track init` unusable at an interactive terminal while every
+// key-driven test kept passing.
+func TestResizingBeforeAnyPickerIsOpen(t *testing.T) {
+	m := send(t, wizardWith(guessableSchema()), tea.WindowSizeMsg{Width: 106, Height: 64})
+
+	if m.width != 106 || m.height != 64 {
+		t.Errorf("size = %dx%d, want 106x64", m.width, m.height)
+	}
+	// The source list is the one with contents from the start; it has to have
+	// taken the new size rather than merely survived the message.
+	if got := m.sourceList.Width(); got != 106 {
+		t.Errorf("source list width = %d, want 106", got)
+	}
+}
+
+// Resizing has to keep working once a picker is on screen, so that surviving
+// the early WindowSizeMsg does not come at the cost of ignoring later ones.
+func TestResizingAnOpenPickerAppliesTheNewSize(t *testing.T) {
+	// "t" opens the ticket picker, which fills roleList at the old size.
+	editing, _ := press(t, atConfirm(t, guessableSchema()), "t")
+	if editing.stage != stageEditRole {
+		t.Fatalf("stage = %v, want edit role", editing.stage)
+	}
+
+	resized := send(t, editing, tea.WindowSizeMsg{Width: 106, Height: 64})
+
+	if got := resized.roleList.Width(); got != 106 {
+		t.Errorf("role list width = %d, want 106", got)
+	}
+}
+
+func TestResizingAnOpenIdentityPickerAppliesTheNewSize(t *testing.T) {
+	asking, _ := press(t, withAssignee(t, atConfirm(t, identitySchema("Ada", "Grace"))), "enter")
+	if asking.stage != stageIdentity {
+		t.Fatalf("stage = %v, want the identity picker", asking.stage)
+	}
+
+	resized := send(t, asking, tea.WindowSizeMsg{Width: 106, Height: 64})
+
+	if got := resized.identityList.Width(); got != 106 {
+		t.Errorf("identity list width = %d, want 106", got)
+	}
+}
+
 func TestRoleAccessorsRoundTripEveryRole(t *testing.T) {
 	// Every role must survive setRole -> roleValue. A role added to the slice
 	// but forgotten in one of the two switches would otherwise be silently
