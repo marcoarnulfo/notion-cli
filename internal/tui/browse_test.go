@@ -410,3 +410,21 @@ func TestQuitting(t *testing.T) {
 		}
 	}
 }
+
+// The terminal reports its size before anything else, so the resize path runs
+// against a browser whose status picker has not been built yet — it is built
+// on the way into its screen. Resizing a list that list.New never touched
+// panics inside bubbles, which made `notion-track browse` unusable at an
+// interactive terminal while every key-driven test kept passing.
+func TestResizingBeforeTheStatusPickerIsOpen(t *testing.T) {
+	m := NewBrowser(testBoard())
+
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 106, Height: 64})
+	out, ok := next.(BrowseModel)
+	if !ok {
+		t.Fatalf("Update returned %T, not a BrowseModel", next)
+	}
+	if got := out.rows.Width(); got != 106 {
+		t.Errorf("row list width = %d, want 106", got)
+	}
+}
