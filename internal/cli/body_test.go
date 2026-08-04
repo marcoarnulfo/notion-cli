@@ -3,10 +3,13 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -356,6 +359,30 @@ func TestDryRunCountsTheBodyWithoutWritingIt(t *testing.T) {
 	}
 }
 
+// A dry run with --append-file must say so: today's blockCount only counts
+// Blocks, so without AppendBytes an append dry run would report the
+// properties and stay completely silent about the one thing that command was
+// asked about.
+func TestDryRunReportsAppendWithoutWritingIt(t *testing.T) {
+	cfg := withStubbedAPI(t, dryRunAPI(t, cliRowJSON))
+	md := filepath.Join(t.TempDir(), "note.md")
+	if err := os.WriteFile(md, []byte("Ticket closed."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{
+			"set", "--ticket", "BDF-231", "--append-file", md, "--dry-run", "--config", cfg,
+		}); code != ExitOK {
+			t.Errorf("exit code = %d", code)
+		}
+	})
+
+	if !strings.Contains(out, "page body") || !strings.Contains(out, "bytes") || !strings.Contains(out, "appending") {
+		t.Errorf("output does not mention the append:\n%s", out)
+	}
+}
+
 // A dry run that reported a happy plan for a write the real run would reject
 // is worse than useless: it would send the user off to run the real thing.
 func TestDryRunStillFailsOnAnInvalidStatus(t *testing.T) {
@@ -367,5 +394,305 @@ func TestDryRunStillFailsOnAnInvalidStatus(t *testing.T) {
 
 	if code == ExitOK {
 		t.Fatal("a dry run accepted a status the data source rejects")
+	}
+}
+
+func TestLoadAppendBodyKeepsRawMarkdown(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.md")
+	if err := os.WriteFile(path, []byte("## Update\nDone."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req, err := loadAppendBody(path, nil, io.Discard, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Raw Markdown, not blocks: the append endpoint parses it server-side.
+	if req.AppendMarkdown != "## Update\nDone." {
+		t.Errorf("AppendMarkdown = %q", req.AppendMarkdown)
+	}
+	if len(req.Blocks) != 0 {
+		t.Errorf("the append path must not build blocks, got %d", len(req.Blocks))
+	}
+}
+
+// Notion answers 200 and does nothing for empty content (spec §10.e), so this
+// check is the only thing between a user and a successful-looking no-op.
+func TestLoadAppendBodyRejectsEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.md")
+	if err := os.WriteFile(path, []byte("   \n\t\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadAppendBody(path, nil, io.Discard, nil); err == nil {
+		t.Fatal("an empty append file must be a usage error, not a silent no-op")
+	}
+}
+
+func TestLoadAppendBodyExpandsPlaceholders(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.md")
+	if err := os.WriteFile(path, []byte("Ticket {{ticket}} done."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req, err := loadAppendBody(path, nil, io.Discard, map[string]string{"ticket": "T-9", "date": "2026-08-04"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.AppendMarkdown != "Ticket T-9 done." {
+		t.Errorf("AppendMarkdown = %q", req.AppendMarkdown)
+	}
+}
+
+func TestLoadAppendBodyReadsStdin(t *testing.T) {
+	req, err := loadAppendBody("-", strings.NewReader("from stdin"), io.Discard, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.AppendMarkdown != "from stdin" {
+		t.Errorf("AppendMarkdown = %q", req.AppendMarkdown)
+	}
+}
+
+// A file that is non-empty on disk but expands to nothing would slip past the
+// pre-expansion check and reach Notion as a silent no-op.
+func TestLoadAppendBodyRejectsFileThatExpandsToNothing(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.md")
+	if err := os.WriteFile(path, []byte("{{ticket}}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Addressing by --page-id leaves ticket empty, which is what makes this
+	// reachable in practice.
+	_, err := loadAppendBody(path, nil, io.Discard, map[string]string{"ticket": "", "date": "2026-08-04"})
+	if err == nil {
+		t.Fatal("a file that expands to nothing must be rejected, not sent as an empty append")
+	}
+}
+
+// The empty-file check must stop the run BEFORE any network call: Notion
+// answers 200 for an empty append, so reaching it at all defeats the guard.
+func TestSetAppendEmptyFileMakesNoHTTPCall(t *testing.T) {
+	var calls int32
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(cliSchemaJSON))
+			return
+		}
+		w.Write([]byte(`{"results":[` + cliRowJSON + `],"has_more":false}`))
+	})
+	dir := t.TempDir()
+	empty := filepath.Join(dir, "empty.md")
+	if err := os.WriteFile(empty, []byte("  \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := executeArgs([]string{"set", "--ticket", "BDF-231", "--append-file", empty, "--config", cfg}); code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d", code, ExitUsage)
+	}
+	if n := atomic.LoadInt32(&calls); n != 0 {
+		t.Fatalf("an empty append must be rejected before any request, got %d calls", n)
+	}
+}
+
+func TestSetRejectsBodyFileWithAppendFile(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/data_sources/ds1" {
+			w.Write([]byte(cliSchemaJSON))
+			return
+		}
+		w.Write([]byte(`{"results":[` + cliRowJSON + `],"has_more":false}`))
+	})
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.md")
+	b := filepath.Join(dir, "b.md")
+	for _, p := range []string{a, b} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code := executeArgs([]string{"set", "--ticket", "BDF-231",
+		"--body-file", a, "--append-file", b, "--config", cfg})
+	if code != ExitUsage {
+		t.Fatalf("--body-file with --append-file must exit %d (replace and append are different intents), got %d",
+			ExitUsage, code)
+	}
+}
+
+// appended and blocks_written are different facts about different operations:
+// a script must not have to infer which one ran.
+func TestEmitWriteJSONReportsAppendDistinctly(t *testing.T) {
+	cmd := &cobra.Command{}
+	var out, errBuf bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+
+	res := service.Result{
+		Action: "updated",
+		Page:   notion.Page{ID: "p1", URL: "https://notion.so/p1"},
+		Body:   &service.BodyResult{WasAppend: true, Appended: true},
+	}
+	if err := emitWrite(cmd, cliProps(), res, nil, true, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var got struct {
+		Body map[string]any `json:"body"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, out.String())
+	}
+	if got.Body["appended"] != true {
+		t.Errorf(`body.appended = %v, want true`, got.Body["appended"])
+	}
+	if _, present := got.Body["blocks_written"]; present {
+		t.Error("an append must not report blocks_written: that is the replace path's counter")
+	}
+}
+
+// The replace path must keep reporting exactly what it always did.
+func TestEmitWriteJSONKeepsReplaceCounters(t *testing.T) {
+	cmd := &cobra.Command{}
+	var out, errBuf bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+
+	res := service.Result{
+		Action: "updated",
+		Page:   notion.Page{ID: "p1"},
+		Body:   &service.BodyResult{BlocksWritten: 3, BlocksDeleted: 2},
+	}
+	if err := emitWrite(cmd, cliProps(), res, nil, true, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var got struct {
+		Body map[string]any `json:"body"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("output is not JSON: %v", err)
+	}
+	if got.Body["blocks_written"] != float64(3) || got.Body["blocks_deleted"] != float64(2) {
+		t.Errorf("replace counters changed: %v", got.Body)
+	}
+	if _, present := got.Body["appended"]; present {
+		t.Error("a replace must not report appended")
+	}
+}
+
+// A FAILED append must say appended:false -- not borrow the replace path's
+// counters and claim "0 blocks written" about an operation that never counted
+// blocks.
+//
+// Driven end to end rather than by handing emitWrite a *BodyWriteError:
+// its field is unexported (service.go:181), so package cli cannot build one.
+// This mirrors the existing partial-failure test in this file, which makes the
+// properties write succeed and the body write fail.
+func TestSetAppendPartialFailureReportsAppendedFalse(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/data_sources/ds1":
+			w.Write([]byte(cliSchemaJSON))
+		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/markdown"):
+			// The append fails AFTER the properties were written.
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"object":"error","status":500,"code":"internal_server_error","message":"boom"}`))
+		case r.Method == http.MethodPatch:
+			w.Write([]byte(cliRowJSON)) // the properties write succeeds
+		default:
+			w.Write([]byte(`{"results":[` + cliRowJSON + `],"has_more":false}`))
+		}
+	})
+	note := filepath.Join(t.TempDir(), "note.md")
+	if err := os.WriteFile(note, []byte("## Progress\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var code int
+	out := captureStdout(t, func() {
+		code = executeArgs([]string{"set", "--ticket", "BDF-231",
+			"--append-file", note, "--json", "--config", cfg})
+	})
+	if code != ExitError {
+		t.Fatalf("a partial failure must exit %d, got %d", ExitError, code)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("stdout must stay parsable JSON on partial failure: %v\n%s", err, out)
+	}
+	body, ok := got["body"].(map[string]any)
+	if !ok {
+		t.Fatalf("body missing: %v", got)
+	}
+	if body["appended"] != false {
+		t.Errorf(`body.appended = %v, want false`, body["appended"])
+	}
+	if _, present := body["blocks_written"]; present {
+		t.Error("a failed append must not report blocks_written")
+	}
+	if got["page"] == nil {
+		t.Error("page (applied properties) must still be present")
+	}
+}
+
+// The whole path, flag to HTTP: --append-file must reach Notion as one
+// insert_content PATCH and delete nothing.
+func TestSetAppendFileEndToEnd(t *testing.T) {
+	var patched map[string]any
+	var deletes int32
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/data_sources/ds1":
+			w.Write([]byte(cliSchemaJSON))
+		case r.Method == http.MethodDelete:
+			atomic.AddInt32(&deletes, 1)
+			fmt.Fprint(w, `{}`)
+		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/markdown"):
+			_ = json.NewDecoder(r.Body).Decode(&patched)
+			fmt.Fprint(w, `{"object":"page_markdown","id":"page1","markdown":"old\nnew",
+				"truncated":false,"unknown_block_ids":[]}`)
+		case r.Method == http.MethodPatch:
+			// the properties write
+			fmt.Fprint(w, cliRowJSON)
+		default:
+			fmt.Fprint(w, `{"results":[`+cliRowJSON+`],"has_more":false}`)
+		}
+	})
+
+	dir := t.TempDir()
+	note := filepath.Join(dir, "note.md")
+	if err := os.WriteFile(note, []byte("## Progress\nShipped."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"set", "--ticket", "BDF-231",
+			"--append-file", note, "--json", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+
+	if patched == nil {
+		t.Fatal("no append reached Notion")
+	}
+	if patched["type"] != "insert_content" {
+		t.Errorf(`type = %v, want "insert_content"`, patched["type"])
+	}
+	ic, ok := patched["insert_content"].(map[string]any)
+	if !ok {
+		t.Fatalf("insert_content missing: %v", patched)
+	}
+	if ic["content"] != "## Progress\nShipped." {
+		t.Errorf("content = %v", ic["content"])
+	}
+	if n := atomic.LoadInt32(&deletes); n != 0 {
+		t.Fatalf("append must delete nothing, got %d DELETEs", n)
+	}
+	var got struct {
+		Body map[string]any `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, out)
+	}
+	if got.Body["appended"] != true {
+		t.Errorf("--json should report the append, got:\n%s", out)
 	}
 }

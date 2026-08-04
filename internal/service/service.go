@@ -171,6 +171,11 @@ type Result struct {
 type BodyRequest struct {
 	Blocks   []notion.Block
 	Progress io.Writer // optional; ephemeral progress lines go here (stderr)
+	// AppendMarkdown, when non-empty, appends this Markdown to the end of the
+	// page instead of replacing the body: Blocks is ignored and nothing is
+	// deleted. The two modes are mutually exclusive and the CLI enforces that,
+	// so exactly one of Blocks / AppendMarkdown is ever set.
+	AppendMarkdown string
 }
 
 // BodyResult reports what replaceBody did, for --json and stderr warnings.
@@ -178,6 +183,13 @@ type BodyResult struct {
 	BlocksWritten int
 	BlocksDeleted int
 	Warnings      []string // e.g. skipped child_page/child_database
+	// WasAppend records which mode ran, set before the call so it survives a
+	// failure. Appended records whether that append actually landed. Two flags
+	// rather than one because the error path has to answer both questions: a
+	// single false would not distinguish "the append failed" from "this was a
+	// replace", and the two want different counters reported.
+	WasAppend bool
+	Appended  bool
 }
 
 // BodyWriteError marks a failure that happened AFTER the row's properties were
@@ -228,6 +240,29 @@ func (s *Service) replaceBody(ctx context.Context, pageID string, req *BodyReque
 	return res, nil
 }
 
+// appendBody adds req.AppendMarkdown to the end of the page, deleting nothing.
+// Unlike replaceBody it makes exactly one call, so there is no partially
+// applied state to converge: it either appended or it did not.
+func (s *Service) appendBody(ctx context.Context, pageID string, req *BodyRequest) (BodyResult, error) {
+	res := BodyResult{WasAppend: true}
+	progress(req.Progress, "appending to the page body…")
+	if _, err := s.client.AppendPageMarkdown(ctx, pageID, req.AppendMarkdown); err != nil {
+		// ErrAmbiguousWrite reads "re-run to converge", which is sound advice
+		// for the replace path -- re-running it makes the body equal the file
+		// again -- and the wrong advice here: re-running an append that did
+		// land appends the note twice. Say so, rather than let the generic
+		// wording send someone to duplicate their own content.
+		if errors.Is(err, notion.ErrAmbiguousWrite) {
+			return res, fmt.Errorf(
+				"the append may or may not have been applied; check the page before re-running, "+
+					"because re-running an append that did land adds the content twice: %w", err)
+		}
+		return res, err
+	}
+	res.Appended = true
+	return res, nil
+}
+
 func progress(w io.Writer, format string, args ...any) {
 	if w != nil {
 		fmt.Fprintf(w, format+"\n", args...)
@@ -241,7 +276,13 @@ func (s *Service) withBody(ctx context.Context, page notion.Page, action string,
 	if body == nil {
 		return res, nil
 	}
-	br, err := s.replaceBody(ctx, page.ID, body)
+	var br BodyResult
+	var err error
+	if body.AppendMarkdown != "" {
+		br, err = s.appendBody(ctx, page.ID, body)
+	} else {
+		br, err = s.replaceBody(ctx, page.ID, body)
+	}
 	res.Body = &br
 	if err != nil {
 		return res, &BodyWriteError{err: err}
@@ -463,7 +504,7 @@ func (s *Service) Upsert(ctx context.Context, f tracker.Fields, body *BodyReques
 		return Result{
 			Action: action,
 			Page:   existing,
-			Plan:   planFor(action, existing.ID, existing.URL, f, s.profile.Properties, blockCount(body)),
+			Plan:   planFor(action, existing.ID, existing.URL, f, s.profile.Properties, blockCount(body), appendCount(body)),
 		}, nil
 	}
 
@@ -520,7 +561,7 @@ func (s *Service) Set(ctx context.Context, f tracker.Fields, body *BodyRequest) 
 		return Result{
 			Action: "updated",
 			Page:   existing,
-			Plan:   planFor("updated", existing.ID, existing.URL, f, s.profile.Properties, blockCount(body)),
+			Plan:   planFor("updated", existing.ID, existing.URL, f, s.profile.Properties, blockCount(body), appendCount(body)),
 		}, nil
 	}
 
@@ -538,6 +579,15 @@ func blockCount(body *BodyRequest) int {
 		return 0
 	}
 	return len(body.Blocks)
+}
+
+// appendCount is blockCount for the append path: bytes of Markdown, since
+// nothing is parsed into blocks there.
+func appendCount(body *BodyRequest) int {
+	if body == nil {
+		return 0
+	}
+	return len(body.AppendMarkdown)
 }
 
 // Get returns the row for a ticket.
@@ -614,6 +664,25 @@ func (s *Service) GetByID(ctx context.Context, pageID string) (notion.Page, erro
 	return s.resolvePage(ctx, pageID, false)
 }
 
+// GetBody returns the page body as Markdown.
+//
+// It takes an already-resolved page id rather than re-running the addressing
+// dance: get's --ticket/--id/--page-id paths each hand back a notion.Page that
+// carries the id, so the caller reuses that instead of paying for a second
+// lookup.
+//
+// It deliberately does NOT call NormalizePageID. That function parses what a
+// *user* typed -- a URL, a bare 32-hex id, a dashed UUID -- and rejects
+// anything else; the id here comes from a page Notion already returned, so it
+// is canonical by construction. Running it through the user-input parser would
+// reject perfectly good ids that simply are not 32 hex characters.
+func (s *Service) GetBody(ctx context.Context, pageID string) (notion.PageMarkdown, error) {
+	if pageID == "" {
+		return notion.PageMarkdown{}, ErrEmptyPageID
+	}
+	return s.client.GetPageMarkdown(ctx, pageID)
+}
+
 // SetByID updates the row with the given Notion page id directly.
 //
 // Unlike Set, it never queries by ticket key: the id alone already
@@ -648,7 +717,7 @@ func (s *Service) SetByID(ctx context.Context, pageID string, f tracker.Fields, 
 		return Result{
 			Action: "updated",
 			Page:   page,
-			Plan:   planFor("updated", page.ID, page.URL, f, s.profile.Properties, blockCount(body)),
+			Plan:   planFor("updated", page.ID, page.URL, f, s.profile.Properties, blockCount(body), appendCount(body)),
 		}, nil
 	}
 

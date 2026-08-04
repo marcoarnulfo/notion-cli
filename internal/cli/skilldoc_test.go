@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/marcoarnulfo/notion-cli/internal/manifest"
 	"github.com/spf13/pflag"
 )
 
@@ -135,6 +136,22 @@ func TestGetJSONFieldsAreDocumented(t *testing.T) {
 		if !strings.Contains(skill, "`"+tag+"`") {
 			t.Errorf("get --json returns %q but the skill never documents that field", tag)
 		}
+	}
+}
+
+// TestApplyManifestRejectsAppendFile pins the skill's claim that apply cannot
+// append: it only replaces a body via body_file. If a future change teaches
+// the manifest format an append_file field, this starts failing, which is the
+// signal to update the skill's "loop over set --append-file instead" advice
+// rather than let it quietly go stale while apply grows the capability it
+// currently lacks.
+func TestApplyManifestRejectsAppendFile(t *testing.T) {
+	_, err := manifest.Parse("manifest.json", []byte(
+		`[{"op":"set","ticket":"TASK-1","append_file":"note.md"}]`))
+	if err == nil {
+		t.Fatal("apply's manifest format now accepts append_file; " +
+			"update the skill's apply section, which tells agents to loop over " +
+			"`set --append-file` because apply itself cannot append")
 	}
 }
 

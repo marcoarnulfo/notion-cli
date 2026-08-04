@@ -24,6 +24,10 @@ type Plan struct {
 	Properties []PlannedProperty `json:"properties"`
 	// BodyBlocks is how many blocks --body-file would replace the body with.
 	BodyBlocks int `json:"body_blocks,omitempty"`
+	// AppendBytes is how many bytes of Markdown --append-file would add. Bytes
+	// rather than blocks: the append path never parses into blocks, so there is
+	// no block count to report.
+	AppendBytes int `json:"append_bytes,omitempty"`
 	// Cleared names the columns a write would empty. Properties cannot carry
 	// them: it reports what would be *written*, and skips empty values by
 	// design, which would make a clear invisible in the one command that exists
@@ -44,8 +48,8 @@ type PlannedProperty struct {
 // this alone" everywhere else in notion-track, and listing it here as if it
 // were about to be written would misrepresent the very thing a dry run exists
 // to show.
-func planFor(action, pageID, url string, f tracker.Fields, props config.Properties, bodyBlocks int) *Plan {
-	plan := &Plan{Action: action, PageID: pageID, URL: url, BodyBlocks: bodyBlocks}
+func planFor(action, pageID, url string, f tracker.Fields, props config.Properties, bodyBlocks, appendBytes int) *Plan {
+	plan := &Plan{Action: action, PageID: pageID, URL: url, BodyBlocks: bodyBlocks, AppendBytes: appendBytes}
 	for _, p := range []PlannedProperty{
 		{Column: props.Ticket, Value: f.Ticket},
 		{Column: props.Title, Value: f.Title},

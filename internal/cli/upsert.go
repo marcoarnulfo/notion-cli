@@ -13,17 +13,18 @@ type writeFlags struct {
 	// boardID is the unique_id address ("BDF-271"). Deliberately absent from
 	// fields() below: like pageID it says which row to write, never what to
 	// write into it — a unique_id column is assigned by Notion and read-only.
-	boardID  string
-	title    string
-	status   string
-	due      string
-	assignee string
-	unassign bool
-	priority string
-	asJSON   bool
-	bodyFile string
-	expand   bool
-	dryRun   bool
+	boardID    string
+	title      string
+	status     string
+	due        string
+	assignee   string
+	unassign   bool
+	priority   string
+	asJSON     bool
+	bodyFile   string
+	appendFile string
+	expand     bool
+	dryRun     bool
 }
 
 // bindShared registers the flags that carry no addressing semantics, common
@@ -42,8 +43,14 @@ func (wf *writeFlags) bindShared(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&wf.asJSON, "json", false, "print machine-readable JSON")
 	cmd.Flags().StringVar(&wf.bodyFile, "body-file", "",
 		"Markdown file whose content replaces the page body ('-' for stdin); replace semantics, owns the body")
+	cmd.Flags().StringVar(&wf.appendFile, "append-file", "",
+		"Markdown file added to the END of the page body ('-' for stdin); "+
+			"appends, deletes nothing")
+	// Replace and append are different intents, and silently letting one win
+	// is how a user loses a page body they meant to keep.
+	cmd.MarkFlagsMutuallyExclusive("body-file", "append-file")
 	cmd.Flags().BoolVar(&wf.expand, "expand", false,
-		"expand {{ticket}} and {{date}} placeholders in --body-file before sending it")
+		"expand {{ticket}} and {{date}} placeholders in --body-file or --append-file before sending it")
 	cmd.Flags().BoolVar(&wf.dryRun, "dry-run", false,
 		"report what would be written, and write nothing")
 
@@ -125,8 +132,14 @@ func newUpsertCmd() *cobra.Command {
 			}
 			var body *service.BodyRequest
 			var warnings []string
-			if wf.bodyFile != "" {
+			switch {
+			case wf.bodyFile != "":
 				body, warnings, err = loadBody(wf.bodyFile, cmd.InOrStdin(), cmd.ErrOrStderr(), wf.bodyVars())
+				if err != nil {
+					return err
+				}
+			case wf.appendFile != "":
+				body, err = loadAppendBody(wf.appendFile, cmd.InOrStdin(), cmd.ErrOrStderr(), wf.bodyVars())
 				if err != nil {
 					return err
 				}

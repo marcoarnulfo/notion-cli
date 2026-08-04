@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1032,5 +1033,97 @@ func TestSetByUniqueIDFailsBeforeWritingWhenTheIDIsUnknown(t *testing.T) {
 			t.Errorf("requests = %v, want no write after failing to resolve the id", seen)
 			break
 		}
+	}
+}
+
+func TestGetBodyReturnsPageMarkdown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/pages/abc/markdown" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"object":"page_markdown","id":"abc","markdown":"# Hi",
+			"truncated":false,"unknown_block_ids":[]}`))
+	}))
+	defer srv.Close()
+
+	svc := New(notion.New("tok", notion.WithBaseURL(srv.URL)), config.Profile{})
+	got, err := svc.GetBody(context.Background(), "abc")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Markdown != "# Hi" {
+		t.Errorf("markdown = %q", got.Markdown)
+	}
+}
+
+// An append must never delete: the whole point of the mode.
+func TestWithBodyAppendsWithoutDeletingAnything(t *testing.T) {
+	var deletes, patches int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete:
+			atomic.AddInt32(&deletes, 1)
+			_, _ = w.Write([]byte(`{}`))
+		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/markdown"):
+			atomic.AddInt32(&patches, 1)
+			_, _ = w.Write([]byte(`{"object":"page_markdown","id":"p1","markdown":"old\nnew",
+				"truncated":false,"unknown_block_ids":[]}`))
+		default:
+			t.Errorf("unexpected call %s %s", r.Method, r.URL.Path)
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer srv.Close()
+
+	svc := New(notion.New("tok", notion.WithBaseURL(srv.URL)), config.Profile{})
+	res, err := svc.withBody(context.Background(), notion.Page{ID: "p1"}, "updated",
+		&BodyRequest{AppendMarkdown: "new"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if atomic.LoadInt32(&patches) != 1 {
+		t.Errorf("want exactly 1 append call, got %d", patches)
+	}
+	if n := atomic.LoadInt32(&deletes); n != 0 {
+		t.Fatalf("an append must delete nothing, got %d DELETEs", n)
+	}
+	if res.Body == nil || !res.Body.Appended {
+		t.Error("the result must report that an append happened")
+	}
+}
+
+// A failed append still went out after the properties were written, so it must
+// surface as a BodyWriteError like the replace path does.
+func TestWithBodyAppendFailureIsABodyWriteError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"object":"error","status":500,"code":"internal_server_error","message":"boom"}`))
+	}))
+	defer srv.Close()
+
+	svc := New(notion.New("tok", notion.WithBaseURL(srv.URL)), config.Profile{})
+	_, err := svc.withBody(context.Background(), notion.Page{ID: "p1"}, "updated",
+		&BodyRequest{AppendMarkdown: "new"})
+	var bwe *BodyWriteError
+	if !errors.As(err, &bwe) {
+		t.Fatalf("want *BodyWriteError, got %v", err)
+	}
+	if !errors.Is(err, notion.ErrAmbiguousWrite) {
+		t.Errorf("the ambiguity must stay reachable through the wrapper: %v", err)
+	}
+	// "re-run to converge" is right for a replace and dangerous for an append:
+	// re-running one that did land duplicates the note.
+	if !strings.Contains(err.Error(), "check the page before re-running") {
+		t.Errorf("an ambiguous append must warn against blind re-running, got: %v", err)
+	}
+}
+
+func TestGetBodyRejectsEmptyPageID(t *testing.T) {
+	svc := New(notion.New("tok"), config.Profile{})
+	// errors.Is rather than err != nil: the client here has no test server, so
+	// a missing guard would still fail — on a network error against the real
+	// api.notion.com — and a laxer check could not tell the two apart.
+	if _, err := svc.GetBody(context.Background(), ""); !errors.Is(err, ErrEmptyPageID) {
+		t.Fatalf("want ErrEmptyPageID, got %v", err)
 	}
 }

@@ -62,6 +62,43 @@ func loadBody(path string, stdin io.Reader, progress io.Writer, vars map[string]
 	return &service.BodyRequest{Blocks: blocks, Progress: progress}, warnings, nil
 }
 
+// loadAppendBody reads a --append-file into a BodyRequest that appends rather
+// than replaces. Unlike loadBody it does NOT parse Markdown into blocks: the
+// append endpoint takes Markdown directly and parses it server-side, so
+// goldmark and ValidateAppendable are not in this path at all.
+//
+// The empty check is load-bearing rather than defensive: Notion answers 200
+// and does nothing for empty content, so without it an empty file would
+// report success while changing nothing.
+func loadAppendBody(path string, stdin io.Reader, progress io.Writer, vars map[string]string) (*service.BodyRequest, error) {
+	raw, err := readBodySource(path, stdin)
+	if err != nil {
+		return nil, Errorf(ExitUsage, "reading append file %s: %v", path, err)
+	}
+	if len(raw) > maxBodyFileBytes {
+		return nil, Errorf(ExitUsage, "append file %s is over the %d-byte limit", path, maxBodyFileBytes)
+	}
+	if strings.TrimSpace(string(raw)) == "" {
+		return nil, Errorf(ExitUsage, "append file %s is empty", path)
+	}
+	if vars != nil {
+		expanded, err := template.Expand(string(raw), vars)
+		if err != nil {
+			return nil, Errorf(ExitUsage, "%s: %v", path, err)
+		}
+		raw = []byte(expanded)
+		// Checked again AFTER expanding, not only before: a file holding just
+		// "{{ticket}}" is non-empty on disk but expands to nothing when the row
+		// was addressed by --page-id or --id, and would reach Notion as the
+		// silent no-op the first check exists to prevent.
+		if strings.TrimSpace(string(raw)) == "" {
+			return nil, Errorf(ExitUsage,
+				"append file %s expands to nothing: every placeholder in it resolved to an empty value", path)
+		}
+	}
+	return &service.BodyRequest{AppendMarkdown: string(raw), Progress: progress}, nil
+}
+
 func readBodySource(path string, stdin io.Reader) ([]byte, error) {
 	// Read one byte past the cap so the size check can detect an over-limit file.
 	limit := int64(maxBodyFileBytes) + 1
@@ -106,6 +143,9 @@ func emitPlan(cmd *cobra.Command, plan *service.Plan, asJSON bool) error {
 	if plan.BodyBlocks > 0 {
 		cmd.Printf("  %-20s %d blocks (replacing the current body)\n", "page body", plan.BodyBlocks)
 	}
+	if plan.AppendBytes > 0 {
+		cmd.Printf("  %-20s %d bytes (appending to the current body)\n", "page body", plan.AppendBytes)
+	}
 	if plan.URL != "" {
 		cmd.Printf("  %s\n", plan.URL)
 	}
@@ -139,11 +179,19 @@ func emitWrite(cmd *cobra.Command, props config.Properties, res service.Result, 
 		if errors.As(err, &bwe) && asJSON {
 			body := map[string]any{"written": false, "error": bwe.Error()}
 			if res.Body != nil {
-				// Real counts of what happened before the failure: crucial in the
-				// dual case (append ok, a DELETE failed) where the body WAS written
-				// (spec §8).
-				body["blocks_written"] = res.Body.BlocksWritten
-				body["blocks_deleted"] = res.Body.BlocksDeleted
+				if res.Body.WasAppend {
+					// An append either landed or it did not; there are no
+					// partial counts, and borrowing the replace path's would
+					// claim "0 blocks written" about an operation that never
+					// counted blocks.
+					body["appended"] = res.Body.Appended
+				} else {
+					// Real counts of what happened before the failure: crucial in the
+					// dual case (append ok, a DELETE failed) where the body WAS written
+					// (spec §8).
+					body["blocks_written"] = res.Body.BlocksWritten
+					body["blocks_deleted"] = res.Body.BlocksDeleted
+				}
 			}
 			_ = printJSON(cmd.OutOrStdout(), map[string]any{
 				"action": res.Action,
@@ -156,9 +204,17 @@ func emitWrite(cmd *cobra.Command, props config.Properties, res service.Result, 
 	if asJSON {
 		out := map[string]any{"action": res.Action, "page": toPageJSON(res.Page, props)}
 		if res.Body != nil {
-			out["body"] = map[string]any{
-				"blocks_written": res.Body.BlocksWritten,
-				"blocks_deleted": res.Body.BlocksDeleted,
+			// An append and a replace are different operations with different
+			// consequences: report the counters that actually apply, so a
+			// script never has to infer which one ran. Branch on WasAppend
+			// (which mode ran), not on Appended (whether it landed).
+			if res.Body.WasAppend {
+				out["body"] = map[string]any{"appended": res.Body.Appended}
+			} else {
+				out["body"] = map[string]any{
+					"blocks_written": res.Body.BlocksWritten,
+					"blocks_deleted": res.Body.BlocksDeleted,
+				}
 			}
 		}
 		return printJSON(cmd.OutOrStdout(), out)
