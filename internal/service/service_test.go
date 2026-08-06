@@ -1253,3 +1253,25 @@ func TestAmbiguousAppendErrorUnwrapsThroughExtraWrapping(t *testing.T) {
 		t.Fatal("errors.Is must still reach the sentinel through extra wrapping")
 	}
 }
+
+// replaceBody deletes the page's existing blocks after writing the new ones.
+// With no blocks to write, "replace" is just the delete: the body goes and
+// nothing takes its place, and the run reports success. Nothing upstream
+// should send that — loadBody rejects a blank file — but that guard is one
+// TrimSpace in one command's argument handling, and it has been wrong (#37:
+// it did not strip a BOM, and a BOM-only file parses to zero blocks). The
+// property belongs here too, where the deleting actually happens.
+func TestReplaceBodyRefusesToDeleteWhenThereIsNothingToWrite(t *testing.T) {
+	var seen []string
+	srv := bodyRoutes(t, rowJSON, `{"id":"old1","type":"paragraph"}`, &seen)
+	defer srv.Close()
+
+	s := New(notion.New("t", notion.WithBaseURL(srv.URL), notion.WithSleep(func(time.Duration) {})), testProfile())
+	_, err := s.Set(context.Background(), tracker.Fields{Ticket: "BDF-231"}, &BodyRequest{})
+	if indexOf(seen, "DELETE", "/blocks/old1") >= 0 {
+		t.Fatalf("the old body was deleted with nothing to replace it: %v", seen)
+	}
+	if err == nil {
+		t.Fatal("replacing a body with no blocks must be refused, not performed")
+	}
+}

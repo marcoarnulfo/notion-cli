@@ -287,6 +287,15 @@ const sentinelAdvice = "re-run to converge"
 // happen), which the CLI surfaces even in the partial-failure JSON (spec §8).
 func (s *Service) replaceBody(ctx context.Context, pageID string, req *BodyRequest) (BodyResult, error) {
 	var res BodyResult
+	// A replace with nothing to write is a delete. The CLI already refuses a
+	// blank file, but that guard is one check in one command's argument
+	// handling and it has been wrong before (#37: it did not strip a BOM, and
+	// a BOM-only file parses to zero blocks). The page's content is not
+	// recoverable, so the refusal belongs here too, next to the deleting.
+	if len(req.Blocks) == 0 {
+		return res, errors.New(
+			"refusing to replace a body with no blocks: this would delete the page's content and write nothing in its place")
+	}
 	old, err := s.client.ListBlockChildren(ctx, pageID)
 	if err != nil {
 		return res, err

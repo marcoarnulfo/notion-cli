@@ -1186,3 +1186,83 @@ func TestPreGateMessageDoesNotClaimAMeasuredRequestSize(t *testing.T) {
 		t.Errorf("the message should name Notion's limit, got: %v", err)
 	}
 }
+
+// --body-file REPLACES: the new blocks are appended, then every old one is
+// deleted. loadBody's empty guard is the only thing standing between a file
+// with no content and a body wipe — and strings.TrimSpace does not strip
+// U+FEFF, which left Unicode's White_Space in 6.3. A BOM-only file therefore
+// reads as content, goldmark returns zero blocks, ValidateAppendable returns
+// nil on the empty slice, splitIntoRequests emits no batch so no PATCH goes
+// out, and replaceBody deletes every child anyway. The body is gone, nothing
+// replaced it, and the run exits 0. See #37.
+func TestSetBodyFileHoldingOnlyInvisibleCharactersMakesNoHTTPCall(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"a bare BOM", "\ufeff"},
+		{"a BOM with whitespace", "\ufeff  \n\t\n"},
+		{"a zero-width space", "\u200b"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls int32
+			cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/data_sources/ds1" {
+					atomic.AddInt32(&calls, 1)
+				}
+				w.Write([]byte(cliSchemaJSON))
+			})
+
+			p := filepath.Join(t.TempDir(), "blank.md")
+			if err := os.WriteFile(p, []byte(tc.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			if code := executeArgs([]string{"set", "--ticket", "BDF-231",
+				"--body-file", p, "--config", cfg}); code != ExitUsage {
+				t.Fatalf("a body file with no content must exit %d, got %d", ExitUsage, code)
+			}
+			if n := atomic.LoadInt32(&calls); n != 0 {
+				t.Fatalf("it must be refused before anything reaches Notion, got %d calls", n)
+			}
+		})
+	}
+}
+
+// The overcorrection this fix must not make: a BOM in front of real content is
+// an ordinary file, and refusing it would break writing bodies from any editor
+// that emits one.
+func TestBodyFileKeepsAFileWhoseBOMPrefixesRealContent(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "bom-content.md")
+	if err := os.WriteFile(p, []byte("\ufeff## Progress\nShipped.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	req, _, err := loadBody(p, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("a BOM before real content must not make the file blank: %v", err)
+	}
+	if len(req.Blocks) == 0 {
+		t.Fatal("the content parsed to no blocks at all")
+	}
+}
+
+// The twin hole, on the same replace path: --expand can empty a file that was
+// non-blank on disk. loadAppendBody re-checks after expanding; loadBody did
+// not, so a file of nothing but "{{ticket}}" addressed by --page-id parsed to
+// zero blocks and the body was deleted with nothing to replace it.
+func TestBodyFileThatExpandsToNothingIsRefused(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "expand.md")
+	if err := os.WriteFile(p, []byte("\ufeff{{ticket}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := loadBody(p, nil, nil, map[string]string{"ticket": ""})
+	if err == nil {
+		t.Fatal("a body file that expands to nothing must be refused")
+	}
+	if exitCodeFor(err) != ExitUsage {
+		t.Fatalf("want a usage error, got %v (code %d)", err, exitCodeFor(err))
+	}
+}
