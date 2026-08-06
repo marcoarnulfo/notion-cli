@@ -19,7 +19,25 @@ import (
 // maxBodyFileBytes is the pre-flight cap on a --body-file (spec §9): a task
 // body over 1 MiB of Markdown is out of scope, and rejecting it up front beats
 // dying mid-replace.
+//
+// It can exceed Notion's 500KB per-payload limit because --body-file does not
+// send the file: it parses it into blocks, which splitIntoRequests then groups
+// into batches each kept under maxBytesPerRequest. The file is a total, not a
+// request.
 const maxBodyFileBytes = 1 << 20
+
+// maxAppendFileBytes is the cap on a --append-file, and it is NOT the same
+// number, because this path has no splitter: the Markdown is sent verbatim as
+// one insert_content PATCH, so the file IS the request payload. Notion caps a
+// payload at 500KB (documented under Request limits > Size limits), and a file
+// over that is refused by the API after the request goes out.
+//
+// 450KB matches maxBytesPerRequest in the notion package rather than sitting at
+// the 500KB line: the JSON envelope, the escaping of the Markdown into a JSON
+// string, and the header all add to what the file itself weighs, so a file
+// exactly at the cap would serialize to something over it. The margin absorbs
+// that without needing to model it precisely.
+const maxAppendFileBytes = 450 << 10
 
 // now is the clock, as a seam: --expand's {{date}} has to be assertable in a
 // test without the test knowing what day it is run on.
@@ -75,8 +93,12 @@ func loadAppendBody(path string, stdin io.Reader, progress io.Writer, vars map[s
 	if err != nil {
 		return nil, Errorf(ExitUsage, "reading append file %s: %v", path, err)
 	}
-	if len(raw) > maxBodyFileBytes {
-		return nil, Errorf(ExitUsage, "append file %s is over the %d-byte limit", path, maxBodyFileBytes)
+	if len(raw) > maxAppendFileBytes {
+		return nil, Errorf(ExitUsage,
+			"append file %s is %d bytes, over the %d-byte limit: an append is sent as a single "+
+				"request and Notion caps one payload at 500KB, so this would be refused by the API. "+
+				"Split it across two runs, or use --body-file, which batches",
+			path, len(raw), maxAppendFileBytes)
 	}
 	if strings.TrimSpace(string(raw)) == "" {
 		return nil, Errorf(ExitUsage, "append file %s is empty", path)
@@ -99,9 +121,13 @@ func loadAppendBody(path string, stdin io.Reader, progress io.Writer, vars map[s
 	return &service.BodyRequest{AppendMarkdown: string(raw), Progress: progress}, nil
 }
 
+// readBodySource reads a body/append source, one byte past the LARGER of the
+// two caps so either caller's size check can still see an over-limit file. It
+// deliberately does not enforce a limit itself: which cap applies depends on
+// whether the content will be batched (--body-file) or sent as one payload
+// (--append-file), which is the caller's knowledge, not this function's.
 func readBodySource(path string, stdin io.Reader) ([]byte, error) {
-	// Read one byte past the cap so the size check can detect an over-limit file.
-	limit := int64(maxBodyFileBytes) + 1
+	limit := int64(max(maxBodyFileBytes, maxAppendFileBytes)) + 1
 	if path == "-" {
 		if stdin == nil {
 			return nil, fmt.Errorf("no stdin")

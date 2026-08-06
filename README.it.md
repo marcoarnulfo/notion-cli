@@ -295,7 +295,9 @@ notion-track upsert --ticket <chiave> --append-file note.md
 notion-track set --page-id <id> --append-file -
 ```
 
-Disponibile sia su `upsert` sia su `set`, `--append-file` accetta il percorso di un file Markdown, oppure `-` per stdin, come `--body-file`. `--expand` funziona su di esso esattamente come su `--body-file`, e vale lo stesso limite di 1 MiB.
+Disponibile sia su `upsert` sia su `set`, `--append-file` accetta il percorso di un file Markdown, oppure `-` per stdin, come `--body-file`. `--expand` funziona su di esso esattamente come su `--body-file`.
+
+**Il limite di dimensione è più basso di quello di `--body-file`: 450 KB, non 1 MiB.** I due differiscono per come il contenuto viaggia. `--body-file` viene parsato in blocchi e inviato in più richieste raggruppate, quindi il suo limite è un totale. Un append viene invece inviato tale e quale come un unico payload `insert_content`, e [Notion limita un payload a 500 KB](https://developers.notion.com/reference/request-limits) — quindi il file *è* la richiesta, e 450 KB lasciano spazio all'involucro JSON che lo racchiude. Un file oltre il limite viene rifiutato prima di qualunque chiamata (exit code 2), con un messaggio che lo spiega; dividilo in due esecuzioni, oppure usa `--body-file`.
 
 **Semantica di aggiunta, non di sostituzione.** `--append-file` aggiunge il contenuto del file in **coda** al corpo della pagina e non cancella nulla — l'opposto della regola "rendi il corpo uguale a questo file" di `--body-file`. Questo lo rende la scelta giusta per un aggiornamento di stato, una voce di changelog o un commento che deve accumularsi invece di sovrascrivere ciò che qualcuno ha aggiunto a mano in Notion. `--body-file` e `--append-file` sono mutuamente esclusivi: una singola esecuzione sceglie una strategia per il corpo della pagina o l'altra. Un file vuoto è un errore d'uso (exit code 2), come per un `--body-file` vuoto — non un no-op silenzioso, così uno step di build rotto che produce un file vuoto fallisce rumorosamente invece di non fare nulla e dichiarare successo.
 

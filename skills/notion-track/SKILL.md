@@ -251,7 +251,10 @@ is the safer default because it deletes nothing, so there's no body to inspect
 first and no undo to need.
 
 Adds the file's Markdown (`-` for stdin) to the **end** of the body and deletes
-nothing. Same 1 MiB cap and same `--expand` behavior as `--body-file`. Mutually
+nothing. Same `--expand` behavior as `--body-file`, but a LOWER size cap: 450KB,
+against `--body-file`'s 1 MiB. An append is one payload and Notion caps a
+payload at 500KB, where a body is parsed into blocks and sent in batches. Over
+the cap is exit 2 before any request — split it across two runs. Mutually
 exclusive with `--body-file` — one write picks one strategy.
 
 **Not idempotent.** Running it twice appends the note twice; there is no

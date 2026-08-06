@@ -295,7 +295,9 @@ notion-track upsert --ticket <key> --append-file notes.md
 notion-track set --page-id <id> --append-file -
 ```
 
-Available on both `upsert` and `set`, `--append-file` takes a path to a Markdown file, or `-` for stdin, same as `--body-file`. `--expand` works on it exactly as it does on `--body-file`, and the same 1 MiB cap applies.
+Available on both `upsert` and `set`, `--append-file` takes a path to a Markdown file, or `-` for stdin, same as `--body-file`. `--expand` works on it exactly as it does on `--body-file`.
+
+**The size cap is lower than `--body-file`'s: 450 KB, not 1 MiB.** The two differ because of how the content travels. `--body-file` is parsed into blocks and sent as several batched requests, so its limit is a total. An append is sent verbatim as a single `insert_content` payload, and [Notion caps one payload at 500 KB](https://developers.notion.com/reference/request-limits) — so the file *is* the request, and 450 KB leaves room for the JSON envelope around it. A file over the cap is rejected before any request is made (exit code 2), with a message saying so; split it across two runs, or use `--body-file`.
 
 **Append semantics, not replace.** `--append-file` adds the file's content to the **end** of the page body and deletes nothing — the opposite of `--body-file`'s "make the body equal to this file" rule. That makes it the right choice for a status update, a changelog entry or a comment that should accumulate rather than overwrite whatever a person added by hand in Notion. `--body-file` and `--append-file` are mutually exclusive: a single run picks one page-body strategy or the other. An empty file is a usage error (exit code 2), the same as an empty `--body-file` — not a silent no-op, so a broken build step that produces an empty file fails loudly instead of doing nothing and reporting success.
 

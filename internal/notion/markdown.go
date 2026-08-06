@@ -46,9 +46,24 @@ type pageMarkdownResponse struct {
 // appended:false, permanently, on exactly the append-only pages --append-file
 // exists to grow.
 //
-// 32 MiB is chosen against Notion's own truncation point rather than a guess:
-// it stops rendering around 20,000 blocks, so a page it will still render
-// whole cannot plausibly exceed this. It remains a constant bound per request.
+// Notion documents NO maximum size for this response (checked against both
+// /reference/retrieve-page-markdown and /reference/update-page-markdown: the
+// request-limits page caps payloads at 1000 blocks / 500KB, but that governs
+// what you SEND, not what comes back). So this number cannot be read off the
+// docs; it is derived, and deliberately generous.
+//
+// The one documented bound on the page itself is the record limit: Notion
+// stops loading around 20,000 blocks and sets truncated=true. 20,000 blocks
+// at ~500 bytes of Markdown each — well above a realistic average, since most
+// blocks are a line of prose — puts a fully-rendered page near 10 MB. 32 MiB
+// leaves roughly 3x headroom above that, so the cap is never what a real page
+// hits first; truncated=true is.
+//
+// Erring high is the conservative direction HERE, which is the opposite of the
+// usual instinct. This ceiling does not protect the page from anything: too
+// low, and a legitimate 200 is discarded, which on the PATCH is reported as a
+// failed append (see below). Its only job is to stop an unbounded read, and
+// 32 MiB still does that.
 const maxMarkdownResponseBytes = 32 << 20 // 32 MiB
 
 // maxResponseBytes implements responseLimiter, so both markdown calls get the

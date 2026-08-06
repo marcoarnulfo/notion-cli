@@ -859,7 +859,7 @@ func TestSetAppendFileOverTheLimitMakesNoHTTPCall(t *testing.T) {
 	})
 
 	big := filepath.Join(t.TempDir(), "big.md")
-	if err := os.WriteFile(big, bytes.Repeat([]byte("x"), maxBodyFileBytes+1), 0o600); err != nil {
+	if err := os.WriteFile(big, bytes.Repeat([]byte("x"), maxAppendFileBytes+1), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -869,5 +869,141 @@ func TestSetAppendFileOverTheLimitMakesNoHTTPCall(t *testing.T) {
 	}
 	if n := atomic.LoadInt32(&calls); n != 0 {
 		t.Fatalf("the file must be rejected before any write reaches Notion, got %d calls", n)
+	}
+}
+
+// The append cap is not the body cap, and the difference is load-bearing: an
+// append is one insert_content payload, and Notion caps a payload at 500KB, so
+// a file between the two limits is fine to REPLACE with and refused to APPEND.
+// Pinned because the obvious tidy-up is to collapse them back into one const.
+func TestAppendCapStaysUnderNotionsPayloadLimit(t *testing.T) {
+	const notionPayloadLimit = 500 * 1000 // documented: "1000 block elements and 500KB overall"
+	if maxAppendFileBytes >= notionPayloadLimit {
+		t.Fatalf("maxAppendFileBytes = %d must stay under Notion's %d-byte payload cap, "+
+			"with room for the JSON envelope around the Markdown",
+			maxAppendFileBytes, notionPayloadLimit)
+	}
+	// --body-file is parsed into blocks and batched by splitIntoRequests, so it
+	// is a total rather than a payload and is allowed to be larger.
+	if maxBodyFileBytes <= maxAppendFileBytes {
+		t.Fatalf("maxBodyFileBytes = %d should exceed maxAppendFileBytes = %d: only the body path batches",
+			maxBodyFileBytes, maxAppendFileBytes)
+	}
+}
+
+// A file the append path refuses must still be accepted by --body-file, or the
+// two caps are not really doing different jobs. Inherited gap: --body-file's
+// own limit had no test either.
+func TestSetBodyFileOverTheLimitMakesNoHTTPCall(t *testing.T) {
+	var calls int32
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/data_sources/ds1" {
+			atomic.AddInt32(&calls, 1)
+		}
+		w.Write([]byte(cliSchemaJSON))
+	})
+
+	big := filepath.Join(t.TempDir(), "big.md")
+	if err := os.WriteFile(big, bytes.Repeat([]byte("x"), maxBodyFileBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := executeArgs([]string{"set", "--ticket", "BDF-231",
+		"--body-file", big, "--config", cfg}); code != ExitUsage {
+		t.Fatalf("an oversized body file must exit %d, got %d", ExitUsage, code)
+	}
+	if n := atomic.LoadInt32(&calls); n != 0 {
+		t.Fatalf("the file must be rejected before any write reaches Notion, got %d calls", n)
+	}
+}
+
+// The behaviour the two caps exist to produce: a file between them is a legal
+// --body-file (parsed and batched) and an illegal --append-file (one payload
+// over Notion's 500KB limit). Asserting the constants alone would not catch a
+// wiring mistake that reads the wrong one.
+func TestFileBetweenTheTwoCapsIsBodyOnlyNotAppend(t *testing.T) {
+	between := bytes.Repeat([]byte("x"), maxAppendFileBytes+1)
+	if len(between) > maxBodyFileBytes {
+		t.Fatalf("test premise broken: %d bytes is not between the two caps", len(between))
+	}
+	dir := t.TempDir()
+	file := filepath.Join(dir, "between.md")
+	if err := os.WriteFile(file, between, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Rejected as an append, before any request goes out.
+	var appendCalls int32
+	appendCfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/data_sources/ds1" {
+			atomic.AddInt32(&appendCalls, 1)
+		}
+		w.Write([]byte(cliSchemaJSON))
+	})
+	if code := executeArgs([]string{"set", "--ticket", "BDF-231",
+		"--append-file", file, "--config", appendCfg}); code != ExitUsage {
+		t.Errorf("a file over the append cap must exit %d, got %d", ExitUsage, code)
+	}
+	if n := atomic.LoadInt32(&appendCalls); n != 0 {
+		t.Errorf("nothing should have reached Notion, got %d calls", n)
+	}
+
+	// Accepted as a body: the same bytes, batched rather than sent whole.
+	bodyCfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/data_sources/ds1":
+			w.Write([]byte(cliSchemaJSON))
+		case strings.HasSuffix(r.URL.Path, "/children") && r.Method == http.MethodGet:
+			w.Write([]byte(`{"results":[],"has_more":false}`))
+		case strings.HasSuffix(r.URL.Path, "/children"):
+			w.Write([]byte(`{"results":[],"has_more":false}`))
+		case r.Method == http.MethodPatch:
+			w.Write([]byte(cliRowJSON))
+		default:
+			w.Write([]byte(`{"results":[` + cliRowJSON + `],"has_more":false}`))
+		}
+	})
+	if code := executeArgs([]string{"set", "--ticket", "BDF-231",
+		"--body-file", file, "--config", bodyCfg}); code == ExitUsage {
+		t.Errorf("the same file must be a legal --body-file: got exit %d", code)
+	}
+}
+
+// The unit-level counterpart to TestLoadBodyRejectsFileOverOneMiB, which only
+// ever covered the body path: loadAppendBody enforces the smaller cap, and the
+// message has to explain why it is smaller rather than look like an arbitrary
+// number.
+func TestLoadAppendBodyRejectsFileOverTheAppendCap(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "huge.md")
+	if err := os.WriteFile(p, bytes.Repeat([]byte("a"), maxAppendFileBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := loadAppendBody(p, nil, nil, nil)
+	if err == nil {
+		t.Fatal("want an error for an append file over the cap, got nil")
+	}
+	if exitCodeFor(err) != ExitUsage {
+		t.Fatalf("an over-limit append file must be a usage error, got %v (code %d)", err, exitCodeFor(err))
+	}
+	if !strings.Contains(err.Error(), "500KB") {
+		t.Errorf("the message should say which Notion limit is behind the cap, got: %v", err)
+	}
+}
+
+// A file at exactly the cap is legal: the check is > and not >=, and an
+// off-by-one here would reject content Notion accepts.
+func TestLoadAppendBodyAcceptsFileExactlyAtTheCap(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "atcap.md")
+	if err := os.WriteFile(p, bytes.Repeat([]byte("a"), maxAppendFileBytes), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := loadAppendBody(p, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("a file exactly at the cap must be accepted: %v", err)
+	}
+	if len(req.AppendMarkdown) != maxAppendFileBytes {
+		t.Errorf("content = %d bytes, want %d", len(req.AppendMarkdown), maxAppendFileBytes)
 	}
 }
