@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1193,5 +1194,62 @@ func TestGetBodyRejectsEmptyPageID(t *testing.T) {
 	// api.notion.com — and a laxer check could not tell the two apart.
 	if _, err := svc.GetBody(context.Background(), ""); !errors.Is(err, ErrEmptyPageID) {
 		t.Fatalf("want ErrEmptyPageID, got %v", err)
+	}
+}
+
+// underlyingCause must strip the sentinel's advice from EVERY shape that can
+// carry it, not just the fmt.Errorf("%w: %w", ...) that doRejectRetryable
+// happens to produce today. A single innocuous wrap added anywhere on this
+// path would otherwise silently restore "re-run to converge" -- the one
+// sentence this whole type exists to keep away from an agent.
+func TestUnderlyingCauseStripsSentinelFromEveryWrapShape(t *testing.T) {
+	cause := errors.New("notion: bad_gateway (502): upstream")
+	joined := fmt.Errorf("%w: %w", notion.ErrAmbiguousWrite, cause)
+
+	cases := []struct {
+		name string
+		err  error
+		want string // "" means: any text, as long as the advice is absent
+	}{
+		{"the shape produced today", joined, cause.Error()},
+		{"single wrap around the join", fmt.Errorf("appending: %w", joined), ""},
+		{"two wraps around the join", fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", joined)), ""},
+		{"single wrap whose inner is the bare sentinel",
+			fmt.Errorf("appending: %w", notion.ErrAmbiguousWrite), ""},
+		{"the bare sentinel", notion.ErrAmbiguousWrite, ""},
+		{"join where both halves are the sentinel",
+			fmt.Errorf("%w: %w", notion.ErrAmbiguousWrite, notion.ErrAmbiguousWrite), ""},
+		{"an error that merely quotes the sentence",
+			errors.New("notion: write outcome unknown; re-run to converge"), ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := underlyingCause(tc.err)
+			if strings.Contains(got, "re-run to converge") {
+				t.Fatalf("the sentinel's advice survived: %q", got)
+			}
+			if got == "" {
+				t.Fatal("the message must never be empty")
+			}
+			if tc.want != "" && got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+			// And the full message an agent sees must be clean too.
+			full := (&AmbiguousAppendError{err: tc.err}).Error()
+			if strings.Contains(full, "re-run to converge") {
+				t.Errorf("the assembled message leaks the advice: %q", full)
+			}
+		})
+	}
+}
+
+// Whatever shape it wraps, the sentinel must stay reachable so the exit code
+// does not change.
+func TestAmbiguousAppendErrorUnwrapsThroughExtraWrapping(t *testing.T) {
+	joined := fmt.Errorf("%w: %w", notion.ErrAmbiguousWrite, errors.New("boom"))
+	wrapped := &AmbiguousAppendError{err: fmt.Errorf("appending: %w", joined)}
+	if !errors.Is(wrapped, notion.ErrAmbiguousWrite) {
+		t.Fatal("errors.Is must still reach the sentinel through extra wrapping")
 	}
 }

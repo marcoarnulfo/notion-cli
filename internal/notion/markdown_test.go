@@ -253,11 +253,11 @@ func TestAppendPageMarkdownSucceedsWhenResponseExceedsDefaultCap(t *testing.T) {
 
 	got, err := New("tok", WithBaseURL(srv.URL)).
 		AppendPageMarkdown(context.Background(), "p1", "note")
+	// Stated as the ambiguity check because that is the regression: err is nil
+	// here or not at all, and errors.Is(nil, ...) after a Fatal would be dead.
 	if err != nil {
-		t.Fatalf("an append whose 200 exceeds the default cap must not be reported as failed: %v", err)
-	}
-	if errors.Is(err, ErrAmbiguousWrite) {
-		t.Fatal("a successful append must never be reported as ambiguous")
+		t.Fatalf("an append whose 200 exceeds the default cap must not be reported as failed"+
+			" (ambiguous=%t): %v", errors.Is(err, ErrAmbiguousWrite), err)
 	}
 	if len(got.Markdown) == 0 {
 		t.Fatal("markdown came back empty")

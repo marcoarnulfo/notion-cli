@@ -224,31 +224,60 @@ func (e *AmbiguousAppendError) Unwrap() error { return e.err }
 // underlyingCause renders the cause without notion.ErrAmbiguousWrite's own
 // sentence, so AmbiguousAppendError can state what went wrong without also
 // repeating the advice it exists to override.
+// It descends BOTH wrap forms rather than only the one produced today. The
+// current chain is exactly fmt.Errorf("%w: %w", sentinel, cause) from
+// doRejectRetryable, but a single innocuous fmt.Errorf("...: %w", err) added
+// anywhere on this path would otherwise drop straight to the fallback and put
+// "re-run to converge" back in the message -- defeating this type's entire
+// purpose, silently. The last line is a text-level guard for the same reason:
+// no structural walk can cover an error that merely embeds the sentence.
 func underlyingCause(err error) string {
-	// doRejectRetryable joins with fmt.Errorf("%w: %w", sentinel, cause), which
-	// produces a MULTI-error: it implements Unwrap() []error, and errors.Unwrap
-	// returns nil for it. Checking the multi form first is therefore the whole
-	// point -- reaching for errors.Unwrap alone finds nothing and falls back to
-	// the joined text, which is the contradictory string this exists to avoid.
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		parts := joined.Unwrap()
-		// Keep whichever part is not the sentinel: the 502, the reset
-		// connection -- the half that says what actually went wrong.
+	if cause := causeWithoutSentinel(err); cause != "" {
+		return cause
+	}
+	// Nothing but the sentinel in the chain: say what we know without
+	// borrowing its advice.
+	return "no further detail from Notion"
+}
+
+// causeWithoutSentinel walks err and returns the text of the parts that are not
+// notion.ErrAmbiguousWrite, or "" when there is nothing else to say.
+func causeWithoutSentinel(err error) string {
+	if err == nil || err == notion.ErrAmbiguousWrite {
+		return ""
+	}
+	switch e := err.(type) {
+	case interface{ Unwrap() []error }:
+		// fmt.Errorf with two %w verbs: a multi-error, for which errors.Unwrap
+		// returns nil. Checked first because the single-error case below would
+		// otherwise miss it entirely.
 		var kept []string
-		for _, p := range parts {
-			if p != nil && !errors.Is(p, notion.ErrAmbiguousWrite) {
-				kept = append(kept, p.Error())
+		for _, p := range e.Unwrap() {
+			if s := causeWithoutSentinel(p); s != "" {
+				kept = append(kept, s)
 			}
 		}
-		if len(kept) > 0 {
-			return strings.Join(kept, ": ")
+		return strings.Join(kept, ": ")
+	case interface{ Unwrap() error }:
+		// A single wrap. Descend only when the sentinel is somewhere inside;
+		// otherwise this error's own text is the cause and is safe to use.
+		if errors.Is(err, notion.ErrAmbiguousWrite) {
+			return causeWithoutSentinel(e.Unwrap())
 		}
 	}
-	if inner := errors.Unwrap(err); inner != nil && errors.Is(err, notion.ErrAmbiguousWrite) {
-		return inner.Error()
+	// A leaf, or a wrapper that does not carry the sentinel. Its text is the
+	// cause -- unless it quotes the sentence anyway, which no structural check
+	// can catch.
+	if strings.Contains(err.Error(), sentinelAdvice) {
+		return ""
 	}
 	return err.Error()
 }
+
+// sentinelAdvice is the fragment of notion.ErrAmbiguousWrite's text that must
+// never reach a user through an append: it says to re-run, which on this path
+// duplicates content.
+const sentinelAdvice = "re-run to converge"
 
 // replaceBody makes the page body equal to req.Blocks with replace semantics:
 // snapshot existing children, append the new body at the end, then delete the

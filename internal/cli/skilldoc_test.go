@@ -220,3 +220,48 @@ func exitCodesIn(skill string) map[int]bool {
 	}
 	return out
 }
+
+// The 500KB payload limit is a number an agent acts on: it decides whether to
+// split a note into two runs. Prose alone would let the constant and the docs
+// drift apart silently, so every place that states it is pinned to the code.
+//
+// Deliberately checks the LIMIT, not the implementation: how notion-track
+// measures the payload is free to change, what it tells an agent is not.
+func TestThePayloadLimitTheDocsStateMatchesTheConstant(t *testing.T) {
+	// "500KB" as the docs render it, from the constant, so the two cannot drift.
+	want := strconv.Itoa(maxAppendPayloadBytes/1000) + "KB"
+
+	if !strings.Contains(skillText(t), want) {
+		t.Errorf("SKILL.md must state the %s payload limit an agent has to respect", want)
+	}
+	for _, name := range []string{"README.md", "README.it.md"} {
+		b, err := os.ReadFile(filepath.Join("..", "..", name))
+		if err != nil {
+			t.Fatalf("reading %s: %v", name, err)
+		}
+		// The READMEs write it with a space, as prose does.
+		spaced := strconv.Itoa(maxAppendPayloadBytes/1000) + " KB"
+		if !strings.Contains(string(b), spaced) && !strings.Contains(string(b), want) {
+			t.Errorf("%s must state the %s payload limit", name, spaced)
+		}
+	}
+}
+
+// The docs tell an agent the request is larger than the file. If that ever
+// stopped being true the advice would be noise, so it is pinned to the code
+// that makes it true.
+func TestTheRequestIsReallyLargerThanTheFile(t *testing.T) {
+	const content = "line one\nline two\n"
+	if n := appendPayloadBytes(content); n <= len(content) {
+		t.Fatalf("payload (%d) must exceed the content (%d), or the docs are wrong",
+			n, len(content))
+	}
+	// And newlines specifically must cost more than one byte, which is the
+	// mechanism the docs name.
+	withNewlines := appendPayloadBytes("a\nb\nc\n")
+	withoutNewlines := appendPayloadBytes("a b c ")
+	if withNewlines <= withoutNewlines {
+		t.Errorf("escaping newlines must inflate the payload (%d vs %d): the docs say it does",
+			withNewlines, withoutNewlines)
+	}
+}

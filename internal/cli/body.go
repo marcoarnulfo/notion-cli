@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,18 +27,25 @@ import (
 // request.
 const maxBodyFileBytes = 1 << 20
 
-// maxAppendFileBytes is the cap on a --append-file, and it is NOT the same
-// number, because this path has no splitter: the Markdown is sent verbatim as
-// one insert_content PATCH, so the file IS the request payload. Notion caps a
-// payload at 500KB (documented under Request limits > Size limits), and a file
-// over that is refused by the API after the request goes out.
+// maxAppendPayloadBytes is what Notion actually enforces: one payload may not
+// exceed 500KB (Request limits > Size limits). This path has no splitter — the
+// Markdown is sent verbatim as one insert_content PATCH — so the request is
+// what has to fit, and it is the request we measure.
 //
-// 450KB matches maxBytesPerRequest in the notion package rather than sitting at
-// the 500KB line: the JSON envelope, the escaping of the Markdown into a JSON
-// string, and the header all add to what the file itself weighs, so a file
-// exactly at the cap would serialize to something over it. The margin absorbs
-// that without needing to model it precisely.
-const maxAppendFileBytes = 450 << 10
+// A byte count of the FILE cannot stand in for this. JSON escaping inflates by
+// a proportion, not a constant: every newline in the Markdown becomes two bytes
+// inside the JSON string, so a 450KB file of short lines (a changelog, a bullet
+// list) serializes to ~690KB and is refused by the API — the exact failure a
+// pre-flight cap exists to prevent. appendPayloadBytes measures the real thing
+// instead of guessing a margin.
+const maxAppendPayloadBytes = 500 * 1000
+
+// maxAppendFileBytes is a cheap first gate on the file, before the payload is
+// built. It is NOT the real limit — maxAppendPayloadBytes is — and exists only
+// so an absurdly large file is rejected without serializing it first. It sits
+// at the payload limit because no file smaller than that can ever produce a
+// payload under it, and escaping only ever grows the content.
+const maxAppendFileBytes = maxAppendPayloadBytes
 
 // now is the clock, as a seam: --expand's {{date}} has to be assertable in a
 // test without the test knowing what day it is run on.
@@ -94,11 +102,7 @@ func loadAppendBody(path string, stdin io.Reader, progress io.Writer, vars map[s
 		return nil, Errorf(ExitUsage, "reading append file %s: %v", path, err)
 	}
 	if len(raw) > maxAppendFileBytes {
-		return nil, Errorf(ExitUsage,
-			"append file %s is %d bytes, over the %d-byte limit: an append is sent as a single "+
-				"request and Notion caps one payload at 500KB, so this would be refused by the API. "+
-				"Split it across two runs, or use --body-file, which batches",
-			path, len(raw), maxAppendFileBytes)
+		return nil, Errorf(ExitUsage, "%s", appendTooLargeMessage(path, len(raw)))
 	}
 	if strings.TrimSpace(string(raw)) == "" {
 		return nil, Errorf(ExitUsage, "append file %s is empty", path)
@@ -118,7 +122,51 @@ func loadAppendBody(path string, stdin io.Reader, progress io.Writer, vars map[s
 				"append file %s expands to nothing: every placeholder in it resolved to an empty value", path)
 		}
 	}
+	// Measured on the content that will actually be sent, and AFTER --expand:
+	// expansion only ever grows the text (a 9-byte "{{date}} " becomes 11), so a
+	// file legal on disk can cross the limit here. Checking only before would
+	// declare it legal and let Notion refuse it.
+	if n := appendPayloadBytes(string(raw)); n > maxAppendPayloadBytes {
+		return nil, Errorf(ExitUsage, "%s", appendTooLargeMessage(path, n))
+	}
 	return &service.BodyRequest{AppendMarkdown: string(raw), Progress: progress}, nil
+}
+
+// appendPayloadBytes returns the size of the request body AppendPageMarkdown
+// will build for this content, so the pre-flight check measures what Notion
+// measures rather than the file it came from.
+//
+// It mirrors the body in notion.AppendPageMarkdown. The duplication is
+// deliberate: the alternative is exporting the payload shape from the client
+// package, which would make an internal wire detail part of its API purely to
+// let the CLI count bytes.
+func appendPayloadBytes(content string) int {
+	buf, err := json.Marshal(map[string]any{
+		"type": "insert_content",
+		"insert_content": map[string]any{
+			"content":  content,
+			"position": map[string]string{"type": "end"},
+		},
+	})
+	if err != nil {
+		// Unreachable for a map of strings, and treated as over-limit rather
+		// than under: a size we could not compute must not read as "fits".
+		return maxAppendPayloadBytes + 1
+	}
+	return len(buf)
+}
+
+// appendTooLargeMessage explains the refusal in terms of the limit that causes
+// it, and says what to do instead. The size quoted is the serialized payload,
+// which is what Notion weighs -- so it can legitimately exceed the file on
+// disk, and the wording says so rather than looking like an arithmetic error.
+func appendTooLargeMessage(path string, size int) string {
+	return fmt.Sprintf(
+		"append file %s builds a %d-byte request, over Notion's %d-byte limit for a single payload "+
+			"(the request is larger than the file: Markdown is escaped into JSON, and --expand may "+
+			"have grown it). An append cannot be split, so: send it in two runs, or use --body-file, "+
+			"which is parsed into blocks and batched",
+		path, size, maxAppendPayloadBytes)
 }
 
 // readBodySource reads a body/append source, one byte past the LARGER of the
