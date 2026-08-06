@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/marcoarnulfo/notion-cli/internal/manifest"
 	"github.com/spf13/pflag"
 )
 
@@ -138,6 +139,22 @@ func TestGetJSONFieldsAreDocumented(t *testing.T) {
 	}
 }
 
+// TestApplyManifestRejectsAppendFile pins the skill's claim that apply cannot
+// append: it only replaces a body via body_file. If a future change teaches
+// the manifest format an append_file field, this starts failing, which is the
+// signal to update the skill's "loop over set --append-file instead" advice
+// rather than let it quietly go stale while apply grows the capability it
+// currently lacks.
+func TestApplyManifestRejectsAppendFile(t *testing.T) {
+	_, err := manifest.Parse("manifest.json", []byte(
+		`[{"op":"set","ticket":"TASK-1","append_file":"note.md"}]`))
+	if err == nil {
+		t.Fatal("apply's manifest format now accepts append_file; " +
+			"update the skill's apply section, which tells agents to loop over " +
+			"`set --append-file` because apply itself cannot append")
+	}
+}
+
 // --- helpers -------------------------------------------------------------
 
 // absentByDesign are flags the skill names in order to say they do not exist.
@@ -202,4 +219,92 @@ func exitCodesIn(skill string) map[int]bool {
 		}
 	}
 	return out
+}
+
+// The 500KB payload limit is a number an agent acts on: it decides whether to
+// split a note into two runs. Prose alone would let the constant and the docs
+// drift apart silently, so every place that states it is pinned to the code.
+//
+// Deliberately checks the LIMIT, not the implementation: how notion-track
+// measures the payload is free to change, what it tells an agent is not.
+func TestThePayloadLimitTheDocsStateMatchesTheConstant(t *testing.T) {
+	// "500KB" as the docs render it, from the constant, so the two cannot drift.
+	want := strconv.Itoa(maxAppendPayloadBytes/1000) + "KB"
+
+	if !strings.Contains(skillText(t), want) {
+		t.Errorf("SKILL.md must state the %s payload limit an agent has to respect", want)
+	}
+	for _, name := range []string{"README.md", "README.it.md"} {
+		b, err := os.ReadFile(filepath.Join("..", "..", name))
+		if err != nil {
+			t.Fatalf("reading %s: %v", name, err)
+		}
+		// The READMEs write it with a space, as prose does.
+		spaced := strconv.Itoa(maxAppendPayloadBytes/1000) + " KB"
+		if !strings.Contains(string(b), spaced) && !strings.Contains(string(b), want) {
+			t.Errorf("%s must state the %s payload limit", name, spaced)
+		}
+	}
+}
+
+// The docs tell an agent the request is larger than the file. If that ever
+// stopped being true the advice would be noise, so it is pinned to the code
+// that makes it true.
+func TestTheRequestIsReallyLargerThanTheFile(t *testing.T) {
+	const content = "line one\nline two\n"
+	if n := appendPayloadBytes(content); n <= len(content) {
+		t.Fatalf("payload (%d) must exceed the content (%d), or the docs are wrong",
+			n, len(content))
+	}
+	// And newlines specifically must cost more than one byte, which is the
+	// mechanism the docs name.
+	withNewlines := appendPayloadBytes("a\nb\nc\n")
+	withoutNewlines := appendPayloadBytes("a b c ")
+	if withNewlines <= withoutNewlines {
+		t.Errorf("escaping newlines must inflate the payload (%d vs %d): the docs say it does",
+			withNewlines, withoutNewlines)
+	}
+}
+
+// The body JSON keys are outside TestGetJSONFieldsAreDocumented, which walks
+// pageJSON only. They have functional tests, but those get edited in the same
+// change as a rename — nothing then forces SKILL.md to follow, which is exactly
+// the drift these skilldoc tests exist to catch.
+//
+// bodyJSON's fields are reflected like pageJSON's; the emitWrite keys are
+// literals in a map, so they are listed here and pinned by name.
+func TestBodyJSONFieldsAreDocumented(t *testing.T) {
+	skill := skillText(t)
+
+	// Matched as a quoted JSON key too, not only in backticks: the skill shows
+	// these inside a literal response object, which is the clearer way to
+	// document a nested shape and is what a reader actually pattern-matches.
+	rt := reflect.TypeOf(bodyJSON{})
+	for i := 0; i < rt.NumField(); i++ {
+		tag := strings.Split(rt.Field(i).Tag.Get("json"), ",")[0]
+		if tag == "" || tag == "-" {
+			continue
+		}
+		if !strings.Contains(skill, "`"+tag+"`") && !strings.Contains(skill, `"`+tag+`"`) {
+			t.Errorf("get --body --json returns %q but the skill never documents that field", tag)
+		}
+	}
+
+	// Written by emitWrite (body.go) rather than by a struct, so they cannot be
+	// reflected. An agent branches on both: `appended` for the outcome,
+	// `ambiguous` to tell "refused, safe to re-run" from "unknown, do not".
+	for _, key := range []string{"appended", "ambiguous"} {
+		if !strings.Contains(skill, "`"+key+"`") {
+			t.Errorf("the append JSON reports %q but the skill never documents it", key)
+		}
+	}
+}
+
+// The skill states --body-file's limit as well as the append one. The 500KB
+// figure is already pinned to its constant; this pins the other half, so the
+// pair cannot drift apart in the document an agent executes.
+func TestTheBodyFileLimitTheSkillStatesMatchesTheConstant(t *testing.T) {
+	if want := strconv.Itoa(maxBodyFileBytes>>20) + " MiB"; !strings.Contains(skillText(t), want) {
+		t.Errorf("SKILL.md must state --body-file's %s limit", want)
+	}
 }

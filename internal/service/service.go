@@ -171,6 +171,11 @@ type Result struct {
 type BodyRequest struct {
 	Blocks   []notion.Block
 	Progress io.Writer // optional; ephemeral progress lines go here (stderr)
+	// AppendMarkdown, when non-empty, appends this Markdown to the end of the
+	// page instead of replacing the body: Blocks is ignored and nothing is
+	// deleted. The two modes are mutually exclusive and the CLI enforces that,
+	// so exactly one of Blocks / AppendMarkdown is ever set.
+	AppendMarkdown string
 }
 
 // BodyResult reports what replaceBody did, for --json and stderr warnings.
@@ -178,6 +183,13 @@ type BodyResult struct {
 	BlocksWritten int
 	BlocksDeleted int
 	Warnings      []string // e.g. skipped child_page/child_database
+	// WasAppend records which mode ran, set before the call so it survives a
+	// failure. Appended records whether that append actually landed. Two flags
+	// rather than one because the error path has to answer both questions: a
+	// single false would not distinguish "the append failed" from "this was a
+	// replace", and the two want different counters reported.
+	WasAppend bool
+	Appended  bool
 }
 
 // BodyWriteError marks a failure that happened AFTER the row's properties were
@@ -188,6 +200,84 @@ type BodyWriteError struct{ err error }
 
 func (e *BodyWriteError) Error() string { return e.err.Error() }
 func (e *BodyWriteError) Unwrap() error { return e.err }
+
+// AmbiguousAppendError reports an append whose outcome is unknown.
+//
+// It exists to REPLACE notion.ErrAmbiguousWrite's own wording rather than
+// prepend to it. That sentinel reads "re-run to converge", which is right for
+// the replace path — re-running makes the body equal the file again — and
+// exactly wrong here, where re-running an append that did land adds the
+// content twice. Wrapping with %w would keep both sentences in one string,
+// ending on the one that duplicates; the primary consumer of this CLI is an
+// agent reading that string, so the advice it ends on is the advice it takes.
+//
+// Unwrap still reaches the sentinel, so errors.Is(…, notion.ErrAmbiguousWrite)
+// and the exit code it drives are unchanged — only the text is ours.
+type AmbiguousAppendError struct{ err error }
+
+func (e *AmbiguousAppendError) Error() string {
+	return "the append may or may not have been applied; check the page before re-running, " +
+		"because re-running an append that did land adds the content twice: " + underlyingCause(e.err)
+}
+func (e *AmbiguousAppendError) Unwrap() error { return e.err }
+
+// underlyingCause renders the cause without notion.ErrAmbiguousWrite's own
+// sentence, so AmbiguousAppendError can state what went wrong without also
+// repeating the advice it exists to override.
+// It descends BOTH wrap forms rather than only the one produced today. The
+// current chain is exactly fmt.Errorf("%w: %w", sentinel, cause) from
+// doRejectRetryable, but a single innocuous fmt.Errorf("...: %w", err) added
+// anywhere on this path would otherwise drop straight to the fallback and put
+// "re-run to converge" back in the message -- defeating this type's entire
+// purpose, silently. The last line is a text-level guard for the same reason:
+// no structural walk can cover an error that merely embeds the sentence.
+func underlyingCause(err error) string {
+	if cause := causeWithoutSentinel(err); cause != "" {
+		return cause
+	}
+	// Nothing but the sentinel in the chain: say what we know without
+	// borrowing its advice.
+	return "no further detail from Notion"
+}
+
+// causeWithoutSentinel walks err and returns the text of the parts that are not
+// notion.ErrAmbiguousWrite, or "" when there is nothing else to say.
+func causeWithoutSentinel(err error) string {
+	if err == nil || err == notion.ErrAmbiguousWrite {
+		return ""
+	}
+	switch e := err.(type) {
+	case interface{ Unwrap() []error }:
+		// fmt.Errorf with two %w verbs: a multi-error, for which errors.Unwrap
+		// returns nil. Checked first because the single-error case below would
+		// otherwise miss it entirely.
+		var kept []string
+		for _, p := range e.Unwrap() {
+			if s := causeWithoutSentinel(p); s != "" {
+				kept = append(kept, s)
+			}
+		}
+		return strings.Join(kept, ": ")
+	case interface{ Unwrap() error }:
+		// A single wrap. Descend only when the sentinel is somewhere inside;
+		// otherwise this error's own text is the cause and is safe to use.
+		if errors.Is(err, notion.ErrAmbiguousWrite) {
+			return causeWithoutSentinel(e.Unwrap())
+		}
+	}
+	// A leaf, or a wrapper that does not carry the sentinel. Its text is the
+	// cause -- unless it quotes the sentence anyway, which no structural check
+	// can catch.
+	if strings.Contains(err.Error(), sentinelAdvice) {
+		return ""
+	}
+	return err.Error()
+}
+
+// sentinelAdvice is the fragment of notion.ErrAmbiguousWrite's text that must
+// never reach a user through an append: it says to re-run, which on this path
+// duplicates content.
+const sentinelAdvice = "re-run to converge"
 
 // replaceBody makes the page body equal to req.Blocks with replace semantics:
 // snapshot existing children, append the new body at the end, then delete the
@@ -228,6 +318,49 @@ func (s *Service) replaceBody(ctx context.Context, pageID string, req *BodyReque
 	return res, nil
 }
 
+// appendBody adds req.AppendMarkdown to the end of the page, deleting nothing.
+// Unlike replaceBody it makes exactly one call, so there is no partially
+// applied state to converge: it either appended or it did not.
+func (s *Service) appendBody(ctx context.Context, pageID string, req *BodyRequest) (BodyResult, error) {
+	res := BodyResult{WasAppend: true}
+	progress(req.Progress, "appending to the page body…")
+	page, err := s.client.AppendPageMarkdown(ctx, pageID, req.AppendMarkdown)
+	if err != nil {
+		if errors.Is(err, notion.ErrAmbiguousWrite) {
+			return res, &AmbiguousAppendError{err: err}
+		}
+		return res, err
+	}
+	res.Appended = true
+	// The PATCH describes the page AFTER the append, so these warnings cost no
+	// extra call and are never more relevant than here: appending is what
+	// pushes a page past the point where Notion stops rendering it whole.
+	res.Warnings = append(res.Warnings, markdownWarnings(page)...)
+	return res, nil
+}
+
+// markdownWarnings renders the advisory fields of the PATCH response as facts
+// about the page's state after the append.
+//
+// Deliberately worded differently from the CLI's bodyWarnings, which says "this
+// body is truncated" — true of a body you are reading, misleading about a
+// write. Here nothing was truncated: the append landed in full, and what the
+// flag reports is that the page has now grown past the point where Notion will
+// render it whole, which is a warning about the NEXT read.
+func markdownWarnings(page notion.PageMarkdown) []string {
+	var out []string
+	if page.Truncated {
+		out = append(out, "the append landed, but the page is now large enough that Notion "+
+			"no longer renders it in full: 'get --body' will return a truncated body")
+	}
+	if n := len(page.UnknownBlockIDs); n > 0 {
+		out = append(out, fmt.Sprintf(
+			"%d block(s) on the page have no Markdown representation and read back as <unknown/>; "+
+				"they are unaffected by this append", n))
+	}
+	return out
+}
+
 func progress(w io.Writer, format string, args ...any) {
 	if w != nil {
 		fmt.Fprintf(w, format+"\n", args...)
@@ -241,7 +374,13 @@ func (s *Service) withBody(ctx context.Context, page notion.Page, action string,
 	if body == nil {
 		return res, nil
 	}
-	br, err := s.replaceBody(ctx, page.ID, body)
+	var br BodyResult
+	var err error
+	if body.AppendMarkdown != "" {
+		br, err = s.appendBody(ctx, page.ID, body)
+	} else {
+		br, err = s.replaceBody(ctx, page.ID, body)
+	}
 	res.Body = &br
 	if err != nil {
 		return res, &BodyWriteError{err: err}
@@ -463,7 +602,7 @@ func (s *Service) Upsert(ctx context.Context, f tracker.Fields, body *BodyReques
 		return Result{
 			Action: action,
 			Page:   existing,
-			Plan:   planFor(action, existing.ID, existing.URL, f, s.profile.Properties, blockCount(body)),
+			Plan:   planFor(action, existing.ID, existing.URL, f, s.profile.Properties, blockCount(body), appendCount(body)),
 		}, nil
 	}
 
@@ -520,7 +659,7 @@ func (s *Service) Set(ctx context.Context, f tracker.Fields, body *BodyRequest) 
 		return Result{
 			Action: "updated",
 			Page:   existing,
-			Plan:   planFor("updated", existing.ID, existing.URL, f, s.profile.Properties, blockCount(body)),
+			Plan:   planFor("updated", existing.ID, existing.URL, f, s.profile.Properties, blockCount(body), appendCount(body)),
 		}, nil
 	}
 
@@ -538,6 +677,15 @@ func blockCount(body *BodyRequest) int {
 		return 0
 	}
 	return len(body.Blocks)
+}
+
+// appendCount is blockCount for the append path: bytes of Markdown, since
+// nothing is parsed into blocks there.
+func appendCount(body *BodyRequest) int {
+	if body == nil {
+		return 0
+	}
+	return len(body.AppendMarkdown)
 }
 
 // Get returns the row for a ticket.
@@ -614,6 +762,25 @@ func (s *Service) GetByID(ctx context.Context, pageID string) (notion.Page, erro
 	return s.resolvePage(ctx, pageID, false)
 }
 
+// GetBody returns the page body as Markdown.
+//
+// It takes an already-resolved page id rather than re-running the addressing
+// dance: get's --ticket/--id/--page-id paths each hand back a notion.Page that
+// carries the id, so the caller reuses that instead of paying for a second
+// lookup.
+//
+// It deliberately does NOT call NormalizePageID. That function parses what a
+// *user* typed -- a URL, a bare 32-hex id, a dashed UUID -- and rejects
+// anything else; the id here comes from a page Notion already returned, so it
+// is canonical by construction. Running it through the user-input parser would
+// reject perfectly good ids that simply are not 32 hex characters.
+func (s *Service) GetBody(ctx context.Context, pageID string) (notion.PageMarkdown, error) {
+	if pageID == "" {
+		return notion.PageMarkdown{}, ErrEmptyPageID
+	}
+	return s.client.GetPageMarkdown(ctx, pageID)
+}
+
 // SetByID updates the row with the given Notion page id directly.
 //
 // Unlike Set, it never queries by ticket key: the id alone already
@@ -648,7 +815,7 @@ func (s *Service) SetByID(ctx context.Context, pageID string, f tracker.Fields, 
 		return Result{
 			Action: "updated",
 			Page:   page,
-			Plan:   planFor("updated", page.ID, page.URL, f, s.profile.Properties, blockCount(body)),
+			Plan:   planFor("updated", page.ID, page.URL, f, s.profile.Properties, blockCount(body), appendCount(body)),
 		}, nil
 	}
 

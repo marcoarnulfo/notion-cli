@@ -202,7 +202,7 @@ func TestPlanForAssignee(t *testing.T) {
 
 	t.Run("a set names the column and the canonical value", func(t *testing.T) {
 		plan := planFor("updated", "page-1", "https://notion.so/x",
-			tracker.Fields{Assignee: "Mirko Spinato"}, props, 0)
+			tracker.Fields{Assignee: "Mirko Spinato"}, props, 0, 0)
 
 		var found bool
 		for _, p := range plan.Properties {
@@ -218,7 +218,7 @@ func TestPlanForAssignee(t *testing.T) {
 	t.Run("a clear is reported, not silently dropped", func(t *testing.T) {
 		// Without this the most destructive write in the feature produces an
 		// empty plan: "would update", and nothing else.
-		plan := planFor("updated", "page-1", "", tracker.Fields{Unassign: true}, props, 0)
+		plan := planFor("updated", "page-1", "", tracker.Fields{Unassign: true}, props, 0, 0)
 
 		if len(plan.Cleared) != 1 || plan.Cleared[0] != "Referente" {
 			t.Errorf("Cleared = %#v, want [Referente]", plan.Cleared)
@@ -226,7 +226,7 @@ func TestPlanForAssignee(t *testing.T) {
 	})
 
 	t.Run("nothing cleared when nothing asked", func(t *testing.T) {
-		plan := planFor("updated", "page-1", "", tracker.Fields{Status: "Fatto"}, props, 0)
+		plan := planFor("updated", "page-1", "", tracker.Fields{Status: "Fatto"}, props, 0, 0)
 		if len(plan.Cleared) != 0 {
 			t.Errorf("Cleared = %#v, want empty", plan.Cleared)
 		}
@@ -240,7 +240,7 @@ func TestPlanForPriority(t *testing.T) {
 		Ticket: "Nome task", Title: "Nome task", Status: "Stato",
 		Assignee: "Referente", Priority: "Urgenza",
 	}
-	plan := planFor("updated", "page-1", "", tracker.Fields{Priority: "ALTA"}, props, 0)
+	plan := planFor("updated", "page-1", "", tracker.Fields{Priority: "ALTA"}, props, 0, 0)
 
 	var found bool
 	for _, p := range plan.Properties {

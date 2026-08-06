@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -845,5 +846,220 @@ func TestGetHumanOutputIsUnchangedWithoutTheIDRole(t *testing.T) {
 	want := "BDF-231  Hardening  [Fatto]\n  https://notion.so/page1\n"
 	if out != want {
 		t.Errorf("output = %q, want %q", out, want)
+	}
+}
+
+// stubPageAndMarkdown answers the schema request, the row query and the body
+// read, so a `get --body` run has everything it asks for.
+func stubPageAndMarkdown(t *testing.T, markdown string, truncated bool, unknown []string) string {
+	t.Helper()
+	unknownJSON, err := json.Marshal(unknown)
+	if err != nil {
+		t.Fatalf("marshalling unknown ids: %v", err)
+	}
+	mdJSON, err := json.Marshal(markdown)
+	if err != nil {
+		t.Fatalf("marshalling markdown: %v", err)
+	}
+	return withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/data_sources/ds1":
+			w.Write([]byte(cliSchemaJSON))
+		case strings.HasSuffix(r.URL.Path, "/markdown"):
+			fmt.Fprintf(w, `{"object":"page_markdown","id":"page1","markdown":%s,
+				"truncated":%t,"unknown_block_ids":%s}`, mdJSON, truncated, unknownJSON)
+		default:
+			w.Write([]byte(`{"results":[` + cliRowJSON + `],"has_more":false}`))
+		}
+	})
+}
+
+func TestGetBodyPrintsMarkdownAfterTheRow(t *testing.T) {
+	cfg := stubPageAndMarkdown(t, "# Title\n\nSome body.", false, nil)
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"get", "--ticket", "BDF-231", "--body", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+	if !strings.Contains(out, "Hardening") {
+		t.Errorf("the row line should still be printed, got:\n%s", out)
+	}
+	if !strings.Contains(out, "# Title") {
+		t.Errorf("the body should be printed, got:\n%s", out)
+	}
+}
+
+// --body-only exists so `> notes.md` yields a valid Markdown file: nothing but
+// the body may reach stdout.
+func TestGetBodyOnlyPrintsNothingButTheBody(t *testing.T) {
+	cfg := stubPageAndMarkdown(t, "# Title\n\nSome body.", false, nil)
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"get", "--ticket", "BDF-231", "--body-only", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+	if out != "# Title\n\nSome body.\n" {
+		t.Errorf("stdout must carry the body alone, got:\n%q", out)
+	}
+}
+
+// A truncated page that looks complete is the failure this guards against --
+// and the warning must not land on stdout, which may be redirected to a file.
+func TestGetBodyWarnsAboutTruncationOnStderr(t *testing.T) {
+	cfg := stubPageAndMarkdown(t, "partial", true, []string{"b1"})
+	var out string
+	errOut := captureStderr(t, func() {
+		out = captureStdout(t, func() {
+			if code := executeArgs([]string{"get", "--ticket", "BDF-231", "--body-only", "--config", cfg}); code != ExitOK {
+				t.Fatalf("exit code = %d", code)
+			}
+		})
+	})
+	if !strings.Contains(errOut, "truncated") {
+		t.Errorf("truncation must be warned about on stderr, got:\n%s", errOut)
+	}
+	if strings.Contains(out, "truncated") {
+		t.Errorf("the warning must not pollute stdout, got:\n%s", out)
+	}
+}
+
+func TestGetBodyJSONAddsBodyKeyAndKeepsPageKeys(t *testing.T) {
+	cfg := stubPageAndMarkdown(t, "# Title", false, nil)
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"get", "--ticket", "BDF-231", "--body", "--json", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+	var got struct {
+		Page map[string]any `json:"page"`
+		Body struct {
+			Markdown        string   `json:"markdown"`
+			Truncated       bool     `json:"truncated"`
+			UnknownBlockIDs []string `json:"unknown_block_ids"`
+		} `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("output is not the expected JSON: %v\n%s", err, out)
+	}
+	if got.Body.Markdown != "# Title" {
+		t.Errorf("body.markdown = %q", got.Body.Markdown)
+	}
+	// pageJSON is public API: its keys must survive under "page".
+	for _, k := range []string{"id", "ticket", "title", "status", "page_id", "url"} {
+		if _, ok := got.Page[k]; !ok {
+			t.Errorf("page.%s went missing from --json output", k)
+		}
+	}
+}
+
+// Without --body the JSON shape must be exactly what it was before this
+// feature: pageJSON at the top level, no "page"/"body" wrapper.
+func TestGetWithoutBodyKeepsLegacyJSONShape(t *testing.T) {
+	cfg := stubPageAndMarkdown(t, "unused", false, nil)
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"get", "--ticket", "BDF-231", "--json", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("output is not JSON: %v", err)
+	}
+	if _, wrapped := got["page"]; wrapped {
+		t.Error(`without --body the JSON must stay flat: no "page" wrapper`)
+	}
+	if _, ok := got["ticket"]; !ok {
+		t.Error("ticket must remain a top-level key")
+	}
+}
+
+func TestGetBodyAndBodyOnlyAreMutuallyExclusive(t *testing.T) {
+	cfg := stubPageAndMarkdown(t, "x", false, nil)
+	if code := executeArgs([]string{"get", "--ticket", "BDF-231", "--body", "--body-only", "--config", cfg}); code != ExitUsage {
+		t.Fatalf("--body with --body-only must exit %d, got %d", ExitUsage, code)
+	}
+}
+
+// --body-only means "the body and nothing else" in JSON too: no page wrapper,
+// otherwise the flag silently degrades to --body exactly where a script relies
+// on it.
+func TestGetBodyOnlyJSONOmitsThePageWrapper(t *testing.T) {
+	cfg := stubPageAndMarkdown(t, "# Title", false, nil)
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"get", "--ticket", "BDF-231", "--body-only", "--json", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, out)
+	}
+	if _, wrapped := got["page"]; wrapped {
+		t.Error("--body-only --json must not carry the page wrapper")
+	}
+	if got["markdown"] != "# Title" {
+		t.Errorf("markdown = %v", got["markdown"])
+	}
+}
+
+// A page with no content prints nothing at all -- not a stray blank line.
+func TestGetBodyOnlyOnEmptyPagePrintsNothing(t *testing.T) {
+	cfg := stubPageAndMarkdown(t, "", false, nil)
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"get", "--ticket", "BDF-231", "--body-only", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+	if out != "" {
+		t.Errorf("an empty body must print nothing, got %q", out)
+	}
+}
+
+// A failed markdown GET must not leave a half-written row on stdout: under
+// --json a partial object corrupts whatever is parsing the pipe, which is the
+// whole reason --json exists.
+func TestGetBodyJSONWritesNothingToStdoutWhenTheMarkdownGetFails(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/data_sources/ds1":
+			w.Write([]byte(cliSchemaJSON))
+		case strings.HasSuffix(r.URL.Path, "/markdown"):
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"object":"error","status":500,"code":"internal_server_error","message":"boom"}`))
+		default:
+			w.Write([]byte(`{"results":[` + cliRowJSON + `],"has_more":false}`))
+		}
+	})
+
+	var code int
+	out := captureStdout(t, func() {
+		code = executeArgs([]string{"get", "--ticket", "BDF-231", "--body", "--json", "--config", cfg})
+	})
+
+	if code == ExitOK {
+		t.Fatalf("a failed body read must not exit %d", ExitOK)
+	}
+	if strings.TrimSpace(out) != "" {
+		t.Fatalf("stdout must stay empty rather than emit partial JSON, got:\n%s", out)
+	}
+}
+
+// The same failure without --json: still non-zero, and the row must not be
+// printed as though the read had succeeded.
+func TestGetBodyFailureExitsNonZero(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/data_sources/ds1":
+			w.Write([]byte(cliSchemaJSON))
+		case strings.HasSuffix(r.URL.Path, "/markdown"):
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"object":"error","status":500,"code":"internal_server_error","message":"boom"}`))
+		default:
+			w.Write([]byte(`{"results":[` + cliRowJSON + `],"has_more":false}`))
+		}
+	})
+
+	if code := executeArgs([]string{"get", "--ticket", "BDF-231", "--body-only", "--config", cfg}); code == ExitOK {
+		t.Fatalf("a failed body read must not exit %d", ExitOK)
 	}
 }

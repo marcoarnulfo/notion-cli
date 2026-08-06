@@ -18,12 +18,36 @@ import (
 )
 
 // maxResponseBodyBytes caps how much of any Notion response we buffer in
-// memory. Real Notion payloads, including error bodies, are a few KB at
+// memory. Paginated Notion payloads, including error bodies, are a few KB at
 // most; this ceiling exists so a misbehaving proxy or WAF sitting in front
 // of the API can't force us to hold megabytes of data just to produce one
-// error line. 1 MiB is comfortably above any legitimate response while
-// still bounding the worst case to a constant, small cost per request.
+// error line. 1 MiB is comfortably above any legitimate paginated response
+// while still bounding the worst case to a constant, small cost per request.
+//
+// It is the DEFAULT, not the only cap: an endpoint that returns a whole
+// object in one unpaginated response needs its own ceiling, which it declares
+// by implementing responseLimiter. See maxMarkdownResponseBytes.
 const maxResponseBodyBytes = 1 << 20 // 1 MiB
+
+// responseLimiter is implemented by a destination type that knows the
+// responses decoded into it can legitimately exceed maxResponseBodyBytes.
+//
+// The limit belongs to the shape being decoded rather than to a parameter
+// threaded through do/doNonRetryable/doRejectRetryable: every one of those
+// already carries `out`, and a per-call argument would have to be passed
+// correctly at each call site to matter, where an unpaginated response type
+// carries its own ceiling everywhere it is used.
+type responseLimiter interface {
+	maxResponseBytes() int64
+}
+
+// responseLimitFor returns the cap that applies when decoding into out.
+func responseLimitFor(out any) int64 {
+	if rl, ok := out.(responseLimiter); ok {
+		return rl.maxResponseBytes()
+	}
+	return maxResponseBodyBytes
+}
 
 // maxErrorMessageBytes caps how much of a non-JSON error body is quoted
 // verbatim in APIError.Message. It only needs to be long enough for a human
@@ -174,7 +198,8 @@ func (c *Client) doOnce(ctx context.Context, method, path string, body, out any)
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
+	limit := responseLimitFor(out)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if err != nil {
 		return fmt.Errorf("notion: reading response: %w", err)
 	}
@@ -216,8 +241,8 @@ func (c *Client) doOnce(ctx context.Context, method, path string, body, out any)
 	// this accepts — a genuine response whose size lands on exactly the cap
 	// — is an acceptable trade for not misreporting the far more likely
 	// oversized case as a decoding bug.
-	if len(raw) == maxResponseBodyBytes {
-		return fmt.Errorf("notion: response exceeds maximum size of %d bytes", maxResponseBodyBytes)
+	if int64(len(raw)) == limit {
+		return fmt.Errorf("notion: response exceeds maximum size of %d bytes", limit)
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
 		return fmt.Errorf("notion: decoding response: %w", err)

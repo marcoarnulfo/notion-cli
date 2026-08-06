@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1032,5 +1034,222 @@ func TestSetByUniqueIDFailsBeforeWritingWhenTheIDIsUnknown(t *testing.T) {
 			t.Errorf("requests = %v, want no write after failing to resolve the id", seen)
 			break
 		}
+	}
+}
+
+func TestGetBodyReturnsPageMarkdown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/pages/abc/markdown" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"object":"page_markdown","id":"abc","markdown":"# Hi",
+			"truncated":false,"unknown_block_ids":[]}`))
+	}))
+	defer srv.Close()
+
+	svc := New(notion.New("tok", notion.WithBaseURL(srv.URL)), config.Profile{})
+	got, err := svc.GetBody(context.Background(), "abc")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Markdown != "# Hi" {
+		t.Errorf("markdown = %q", got.Markdown)
+	}
+}
+
+// An append must never delete: the whole point of the mode.
+func TestWithBodyAppendsWithoutDeletingAnything(t *testing.T) {
+	var deletes, patches int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete:
+			atomic.AddInt32(&deletes, 1)
+			_, _ = w.Write([]byte(`{}`))
+		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/markdown"):
+			atomic.AddInt32(&patches, 1)
+			_, _ = w.Write([]byte(`{"object":"page_markdown","id":"p1","markdown":"old\nnew",
+				"truncated":false,"unknown_block_ids":[]}`))
+		default:
+			t.Errorf("unexpected call %s %s", r.Method, r.URL.Path)
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer srv.Close()
+
+	svc := New(notion.New("tok", notion.WithBaseURL(srv.URL)), config.Profile{})
+	res, err := svc.withBody(context.Background(), notion.Page{ID: "p1"}, "updated",
+		&BodyRequest{AppendMarkdown: "new"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if atomic.LoadInt32(&patches) != 1 {
+		t.Errorf("want exactly 1 append call, got %d", patches)
+	}
+	if n := atomic.LoadInt32(&deletes); n != 0 {
+		t.Fatalf("an append must delete nothing, got %d DELETEs", n)
+	}
+	if res.Body == nil || !res.Body.Appended {
+		t.Error("the result must report that an append happened")
+	}
+}
+
+// A failed append still went out after the properties were written, so it must
+// surface as a BodyWriteError like the replace path does.
+func TestWithBodyAppendFailureIsABodyWriteError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"object":"error","status":500,"code":"internal_server_error","message":"boom"}`))
+	}))
+	defer srv.Close()
+
+	svc := New(notion.New("tok", notion.WithBaseURL(srv.URL)), config.Profile{})
+	_, err := svc.withBody(context.Background(), notion.Page{ID: "p1"}, "updated",
+		&BodyRequest{AppendMarkdown: "new"})
+	var bwe *BodyWriteError
+	if !errors.As(err, &bwe) {
+		t.Fatalf("want *BodyWriteError, got %v", err)
+	}
+	if !errors.Is(err, notion.ErrAmbiguousWrite) {
+		t.Errorf("the ambiguity must stay reachable through the wrapper: %v", err)
+	}
+	// "re-run to converge" is right for a replace and dangerous for an append:
+	// re-running one that did land duplicates the note.
+	if !strings.Contains(err.Error(), "check the page before re-running") {
+		t.Errorf("an ambiguous append must warn against blind re-running, got: %v", err)
+	}
+	// And the sentinel's own wording must NOT come along for the ride. Wrapping
+	// with %w used to append "re-run to converge" after the warning above,
+	// leaving one string that says both and ends on the advice that
+	// duplicates -- for an audience (an agent following SKILL.md) that acts on
+	// what it reads last.
+	if strings.Contains(err.Error(), "re-run to converge") {
+		t.Errorf("the sentinel's contradictory advice must not reach the message, got: %v", err)
+	}
+	// The underlying cause still has to be visible, or the message says what
+	// not to do without saying what went wrong.
+	if !strings.Contains(err.Error(), "internal_server_error") {
+		t.Errorf("the cause must survive into the message, got: %v", err)
+	}
+}
+
+// An ambiguous append is reported through a type of its own so callers can
+// branch on it, and the exit code that ErrAmbiguousWrite drives is unchanged.
+func TestAmbiguousAppendErrorKeepsSentinelReachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"object":"error","status":502,"code":"bad_gateway","message":"upstream"}`))
+	}))
+	defer srv.Close()
+
+	svc := New(notion.New("tok", notion.WithBaseURL(srv.URL)), config.Profile{})
+	_, err := svc.appendBody(context.Background(), "p1", &BodyRequest{AppendMarkdown: "new"})
+	var aae *AmbiguousAppendError
+	if !errors.As(err, &aae) {
+		t.Fatalf("want *AmbiguousAppendError, got %T: %v", err, err)
+	}
+	if !errors.Is(err, notion.ErrAmbiguousWrite) {
+		t.Error("errors.Is must still reach the sentinel, or the exit code changes")
+	}
+	if strings.Contains(err.Error(), "re-run to converge") {
+		t.Errorf("got the sentinel's wording: %v", err)
+	}
+}
+
+// The PATCH describes the page after the append, and those advisory fields are
+// the reason the response is decoded at all rather than discarded.
+func TestAppendSurfacesPostAppendWarnings(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"object":"page_markdown","id":"p1","markdown":"body",
+			"truncated":true,"unknown_block_ids":["b1","b2"]}`))
+	}))
+	defer srv.Close()
+
+	svc := New(notion.New("tok", notion.WithBaseURL(srv.URL)), config.Profile{})
+	res, err := svc.appendBody(context.Background(), "p1", &BodyRequest{AppendMarkdown: "new"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.Appended {
+		t.Fatal("the append landed and must be reported as such")
+	}
+	if len(res.Warnings) != 2 {
+		t.Fatalf("want a warning for each of truncated and unknown blocks, got %v", res.Warnings)
+	}
+	joined := strings.Join(res.Warnings, "\n")
+	// Worded as the state of the page, not as "this body is truncated": nothing
+	// about the append was truncated, and the reader is being warned about the
+	// next read.
+	if !strings.Contains(joined, "the append landed") {
+		t.Errorf("truncation after an append must not read as a failed write: %v", res.Warnings)
+	}
+	if !strings.Contains(joined, "2 block(s)") {
+		t.Errorf("want the unknown-block count, got %v", res.Warnings)
+	}
+}
+
+func TestGetBodyRejectsEmptyPageID(t *testing.T) {
+	svc := New(notion.New("tok"), config.Profile{})
+	// errors.Is rather than err != nil: the client here has no test server, so
+	// a missing guard would still fail — on a network error against the real
+	// api.notion.com — and a laxer check could not tell the two apart.
+	if _, err := svc.GetBody(context.Background(), ""); !errors.Is(err, ErrEmptyPageID) {
+		t.Fatalf("want ErrEmptyPageID, got %v", err)
+	}
+}
+
+// underlyingCause must strip the sentinel's advice from EVERY shape that can
+// carry it, not just the fmt.Errorf("%w: %w", ...) that doRejectRetryable
+// happens to produce today. A single innocuous wrap added anywhere on this
+// path would otherwise silently restore "re-run to converge" -- the one
+// sentence this whole type exists to keep away from an agent.
+func TestUnderlyingCauseStripsSentinelFromEveryWrapShape(t *testing.T) {
+	cause := errors.New("notion: bad_gateway (502): upstream")
+	joined := fmt.Errorf("%w: %w", notion.ErrAmbiguousWrite, cause)
+
+	cases := []struct {
+		name string
+		err  error
+		want string // "" means: any text, as long as the advice is absent
+	}{
+		{"the shape produced today", joined, cause.Error()},
+		{"single wrap around the join", fmt.Errorf("appending: %w", joined), ""},
+		{"two wraps around the join", fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", joined)), ""},
+		{"single wrap whose inner is the bare sentinel",
+			fmt.Errorf("appending: %w", notion.ErrAmbiguousWrite), ""},
+		{"the bare sentinel", notion.ErrAmbiguousWrite, ""},
+		{"join where both halves are the sentinel",
+			fmt.Errorf("%w: %w", notion.ErrAmbiguousWrite, notion.ErrAmbiguousWrite), ""},
+		{"an error that merely quotes the sentence",
+			errors.New("notion: write outcome unknown; re-run to converge"), ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := underlyingCause(tc.err)
+			if strings.Contains(got, "re-run to converge") {
+				t.Fatalf("the sentinel's advice survived: %q", got)
+			}
+			if got == "" {
+				t.Fatal("the message must never be empty")
+			}
+			if tc.want != "" && got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+			// And the full message an agent sees must be clean too.
+			full := (&AmbiguousAppendError{err: tc.err}).Error()
+			if strings.Contains(full, "re-run to converge") {
+				t.Errorf("the assembled message leaks the advice: %q", full)
+			}
+		})
+	}
+}
+
+// Whatever shape it wraps, the sentinel must stay reachable so the exit code
+// does not change.
+func TestAmbiguousAppendErrorUnwrapsThroughExtraWrapping(t *testing.T) {
+	joined := fmt.Errorf("%w: %w", notion.ErrAmbiguousWrite, errors.New("boom"))
+	wrapped := &AmbiguousAppendError{err: fmt.Errorf("appending: %w", joined)}
+	if !errors.Is(wrapped, notion.ErrAmbiguousWrite) {
+		t.Fatal("errors.Is must still reach the sentinel through extra wrapping")
 	}
 }

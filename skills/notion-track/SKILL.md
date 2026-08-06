@@ -3,11 +3,13 @@ name: notion-track
 description: >-
   Use when the user wants to touch a task on their Notion board — create one,
   change its status, assign it, set its priority, look one up, list what's in a
-  given state, or apply many changes at once. Often phrased in Italian ("segna
-  come fatto", "mettilo in corso", "crea un task", "che task ho da fare",
-  "assegna a Sam", "prendi in carico", "è urgente", "cosa faccio prima") or in
-  English ("mark done", "what's on my plate", "who owns X", "what's urgent").
-  Drives the installed notion-track CLI.
+  given state, apply many changes at once, read a task's page body, or add to
+  or replace one. Often phrased in Italian ("segna come fatto", "mettilo in
+  corso", "crea un task", "che task ho da fare", "assegna a Sam", "prendi in
+  carico", "è urgente", "cosa faccio prima", "leggi la pagina", "cosa c'è
+  scritto nel ticket", "aggiungi una nota") or in English ("mark done", "what's
+  on my plate", "who owns X", "what's urgent", "read the page", "what's on the
+  ticket", "append a note"). Drives the installed notion-track CLI.
 ---
 
 # notion-track — managing Notion tasks from the CLI
@@ -72,8 +74,9 @@ the board — so a value the board rejects fails on the dry run. But:
 - **`--due` is not validated at all.** The date string is passed through to
   Notion untouched, so `--due "domani"` passes the dry run and fails the real
   write. Send `YYYY-MM-DD` and nothing else.
-- **The body is not sent to Notion.** A `--body-file` problem can still surface
-  on the real write, *after* the properties have been written.
+- **The body is not sent to Notion.** A `--body-file` or `--append-file`
+  problem can still surface on the real write, *after* the properties have
+  been written.
 - **In `apply`, each entry is checked against the board as it is now**, not
   against what earlier entries would have created. A `set` that depends on an
   `upsert` higher in the same manifest fails the dry run with exit 3. That is an
@@ -202,12 +205,20 @@ say it has to be done in Notion rather than reaching for a flag.
 A Markdown file (`-` for stdin) that becomes the page body.
 
 **It owns the body: every run makes the body exactly equal to the file**,
-deleting whatever was there, hand-written content included.
+deleting whatever was there, hand-written content included, and there is no
+undo.
 
-**You cannot see what you are about to delete** — `get` returns properties
-only, and no command in this tool reads a page body. So: use `--body-file`
-freely on pages this workflow created, and on any pre-existing row **ask the
-user before overwriting**. "I ran `get` first" is not a check on the body.
+**Read the body before you replace it.** Rule 2 above ("read before you
+write") applies here: before a `--body-file` run against any pre-existing
+page, inspect the current body with `get --ticket <key> --body` (or
+`--page-id`/`--id`, whichever addresses the row). "I ran `get --body` first"
+**is** the check — that's what closes the gap the rule leaves open for a body
+you haven't seen. Only skip it on a page this workflow just created, where
+there is nothing yet to lose.
+
+If the intent is to *add* rather than replace — a progress note, a CI result —
+reach for `--append-file` instead (below): it doesn't delete anything, so
+there's nothing to inspect first.
 
 Sub-pages and child databases are preserved **only at the top level of the
 body**. One nested inside a toggle, a column or a callout is deleted along with
@@ -225,10 +236,57 @@ error naming the line — never invent placeholder names. Note that with
 `--page-id` or `--id` addressing there is no ticket in the invocation, so
 `{{ticket}}` expands to an empty string.
 
+### `--append-file` — adding to the page body without replacing it (on `upsert`, `set`)
+
+```sh
+notion-track set --ticket "<name>" --append-file note.md
+notion-track set --page-id <id> --append-file - --expand   # stdin, with {{ticket}}/{{date}}
+```
+
+**Default to this, not `--body-file`, whenever the intent is to add** — a
+progress note, a CI result, a status update — rather than to make the page say
+only this. Reach for `--body-file` only when the user actually wants "this
+file is now the whole page"; if they haven't asked for that, `--append-file`
+is the safer default because it deletes nothing, so there's no body to inspect
+first and no undo to need.
+
+Adds the file's Markdown (`-` for stdin) to the **end** of the body and deletes
+nothing. Same `--expand` behavior as `--body-file`, but the size limit is on the
+REQUEST, not the file: an append is one payload and Notion caps a payload at
+500KB, and the serialized request is always bigger than the file (Markdown is
+escaped into JSON, so every newline costs two bytes, and `--expand` runs first).
+A 450KB file of short lines can exceed it. Over the limit is exit 2 before any
+request, with the request size named — an append cannot be split, so send it in
+two runs or use `--body-file`, which is batched and allows 1 MiB. Mutually
+exclusive with `--body-file` — one write picks one strategy.
+
+**Not idempotent.** Running it twice appends the note twice; there is no
+"already there" check. Don't retry a successful append, and don't wire it into
+a loop that might re-run the same entry.
+
+An empty file is a usage error (exit 2), not a silent no-op. An ambiguous
+failure (a transport error, or a 500/502/504) does not auto-retry, since
+retrying an append that actually landed would duplicate it — check with
+`get --body` before re-running by hand. A 429/503/529 is different: Notion
+refused the request without applying it, so it is retried automatically and
+never reaches you as ambiguous.
+
+`--json` adds `body:{appended:true}` on success — a different shape from
+`--body-file`'s `blocks_written`/`blocks_deleted`, since an append either
+landed or it didn't.
+
+On failure it reports `appended:false`, plus `ambiguous:true` when the outcome
+is unknown. Branch on `ambiguous`, not on `appended` alone: `appended:false`
+also covers a clean refusal where nothing was written, which IS safe to
+re-run. With `ambiguous:true`, do not re-run — read the page with
+`get --body` first and decide from what is actually there.
+
 ### `get` — read one task
 
 ```sh
 notion-track get --ticket "<name>" [--json]     # or --id / --page-id
+notion-track get --ticket "<name>" --body               # row, then the body as Markdown
+notion-track get --page-id <id> --body-only > notes.md  # body only — valid Markdown, nothing glued on top
 ```
 
 `--json` fields, a stable schema safe to parse: `id`, `ticket`, `title`,
@@ -236,6 +294,42 @@ notion-track get --ticket "<name>" [--json]     # or --id / --page-id
 keys are always present; `id`, `assignee` and `priority` are empty **both**
 when the row carries no value and when the board doesn't map the role, so check
 for an empty string rather than a missing key.
+
+**`--body` / `--body-only` — reading the page body.** This is the check on
+what a `--body-file` write is about to delete: run `get --ticket <key> --body`
+(or `--id`/`--page-id`) before replacing a body that might hold real content.
+`--body` prints the row as usual with the body underneath; `--body-only`
+prints **the body alone**, so redirecting it (`> notes.md`) yields a clean
+Markdown file. The two are mutually exclusive.
+
+**Exit 3 here does not mean the row is missing.** With `--body`/`--body-only`,
+the row lookup and the body read are two separate calls to Notion, and either
+one 404ing produces the same exit 3 — the row can exist and still surface exit
+3 because its body wasn't readable. Do not read exit 3 from this command as
+"the ticket doesn't exist" and do not follow it with an `upsert`: that would
+create a duplicate of a row that is actually still there. Re-run `get` on the
+same key without `--body` first — if that resolves, the row exists and only
+the body read failed; ask the user rather than guessing what to do next.
+
+With `--json`, `--body` nests the row under `page` and adds `body`:
+`{"page": {...}, "body": {"markdown": "...", "truncated": false,
+"unknown_block_ids": []}}`. `--body-only --json` prints that `body` object
+alone, unwrapped. Without `--body`/`--body-only`, `get --json`'s shape is
+unchanged — still flat, no wrapper.
+
+**`<unknown/>` in the Markdown means "block with no Markdown form" — a
+bookmark, an embed, a link preview, a template button — not lost content.**
+The block is still on the page; only its text export doesn't exist. Never
+treat `<unknown/>` as damage to "repair" by overwriting the page with
+`--body-file`: doing so would destroy real content to fix nothing. The same
+goes for `truncated:true` (Notion cut the Markdown off around 20,000 blocks) —
+real but incomplete, not corrupt. Both surface as a warning on stderr, never
+on stdout, so `--body-only > notes.md` stays clean.
+
+Reading is for inspection, not a round trip: pre-signed file/image URLs in the
+Markdown expire, and an `<unknown/>` block has nothing to write back. Don't
+download a body, edit it, and feed it back through `--body-file` as a general
+workflow.
 
 ### `list` — many tasks
 
@@ -269,6 +363,14 @@ Fields: `op` (`upsert` or `set`), `ticket` (required), `title`, `status`,
 `due`, `body_file`, `assignee`, `unassign`, `priority`. Unknown fields are
 errors, so spell them exactly. `body_file` is resolved relative to the
 manifest. Format comes from the extension; a CSV needs a header row.
+
+**There is no `append_file` field — `apply` cannot append.** It only ever
+replaces a body, via `body_file`, with the same destructive semantics as
+`--body-file` above. To add a note to several tickets without wiping their
+bodies, loop over `set --append-file` by hand instead — the one case where a
+loop is correct over `apply`, despite "use `apply` instead of looping"
+elsewhere in this file. Do not paper over the gap by writing `body_file` into
+a manifest meant to append; that replaces every body it touches.
 
 **Write `"op":"set"` on every entry that updates an existing task.** `op`
 defaults to `upsert`, so an entry with a typo — or a stray trailing space, which
@@ -312,20 +414,33 @@ the warning as it stands, token rotation included.
 | 0 | success | proceed |
 | 1 | other error, including an `--assignee`, `--priority` or `--due` role not mapped on this board | report it; for an unmapped role say so and point at `init` rather than retrying (unmapped **id** is the exception — it's exit 2) |
 | 2 | bad usage: missing or invalid flag, unknown status, malformed `--page-id`/`--id`, an unknown or ambiguous `--assignee`/`--priority`, an empty value for either, `--assignee` with `--unassign`, `--assignee me` with no identity, `--id` on a board with no id column, or a `--page-id` belonging to another data source | fix the invocation; a rejected value means it isn't one the board allows — read the options the error lists rather than guessing again |
-| 3 | task not found | the ticket, board id or page id matches no row — don't retry as `upsert` without asking the user |
+| 3 | task not found | the ticket, board id or page id matches no row — don't retry as `upsert` without asking the user. **Exception: `get --body`/`--body-only`.** The row can resolve fine and exit 3 still happen, because the body-rendering call is a second lookup that can 404 on its own. Exit 3 there means "row not found *or* its body couldn't be read" — indistinguishable from the outside. Never treat it as proof the row is missing; re-run `get` without `--body` to check the row alone before concluding anything, and never follow it with an `upsert` |
 | 4 | duplicate key | more than one row has that key and the tool refuses to guess; surface it and run `doctor` to list them |
 | 5 | auth failure | token missing or invalid — tell the user to run `notion-track init`. Also what `--assignee me` gives when the credentials file can't be read, where the fix is that file |
 
 ## When a write fails halfway
 
-- **Body failed after properties** (exit 1, `body.written:false`): the page may
-  hold old and new blocks together — the new body is appended before the old is
-  deleted. Re-run the same command; it converges.
+- **Body failed after properties** (exit 1, `body.written:false`): what
+  happened, and whether re-running is safe, depends on which flag was used.
+  - `--body-file`: the page may hold old and new blocks together — the new
+    body is appended before the old is deleted. Re-run the same command; it
+    converges.
+  - `--append-file`: an append makes one API call, so a failure here means
+    that call's own outcome is uncertain, not partially applied — it may have
+    landed anyway (a timeout after Notion received it) or not at all. Check
+    the page with `get --body` before re-running; re-running one that already
+    landed duplicates the note. See `--append-file` above.
 - **`apply` stopped mid-run**: fix the entry it named and re-run the whole
   manifest — entries are idempotent — or resume from the reported index (1-based).
   The exception is `--expand` with `{{date}}`, which changes across midnight.
-- **"write outcome unknown; re-run to converge"**: a timeout or 5xx left the
-  result unknown. Re-run the same command once, then confirm with `get`.
+- **"write outcome unknown; re-run to converge"**: a transport error or a
+  500/502/504 (NOT a 429/503/529, which are retried for you) left the
+  result unknown. For properties and `--body-file`, re-run the same command
+  once, then confirm with `get`. **Never for `--append-file`** — the message
+  itself says so on that path ("check the page before re-running, because
+  re-running an append that did land adds the content twice"): check with
+  `get --body` first, and only re-run if the note is missing. See
+  `--append-file` above.
 
 ## Over MCP instead of the shell
 
@@ -349,8 +464,8 @@ Three differences matter:
 ## Out of scope
 
 - Comments, arbitrary Notion pages and other databases: `notion-track` only
-  touches this one board. Page bodies are writable, with the replace semantics
-  above.
+  touches this one board. Page bodies are readable and writable, with the
+  replace (`--body-file`) and append (`--append-file`) semantics above.
 - The assignee is a `select` value, not Notion's "person" type: no teams, no
   multi-assignment, no lookup against workspace members. Don't try to resolve a
   Notion user id or invent a name the column hasn't offered.
