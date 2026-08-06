@@ -265,3 +265,46 @@ func TestTheRequestIsReallyLargerThanTheFile(t *testing.T) {
 			withNewlines, withoutNewlines)
 	}
 }
+
+// The body JSON keys are outside TestGetJSONFieldsAreDocumented, which walks
+// pageJSON only. They have functional tests, but those get edited in the same
+// change as a rename — nothing then forces SKILL.md to follow, which is exactly
+// the drift these skilldoc tests exist to catch.
+//
+// bodyJSON's fields are reflected like pageJSON's; the emitWrite keys are
+// literals in a map, so they are listed here and pinned by name.
+func TestBodyJSONFieldsAreDocumented(t *testing.T) {
+	skill := skillText(t)
+
+	// Matched as a quoted JSON key too, not only in backticks: the skill shows
+	// these inside a literal response object, which is the clearer way to
+	// document a nested shape and is what a reader actually pattern-matches.
+	rt := reflect.TypeOf(bodyJSON{})
+	for i := 0; i < rt.NumField(); i++ {
+		tag := strings.Split(rt.Field(i).Tag.Get("json"), ",")[0]
+		if tag == "" || tag == "-" {
+			continue
+		}
+		if !strings.Contains(skill, "`"+tag+"`") && !strings.Contains(skill, `"`+tag+`"`) {
+			t.Errorf("get --body --json returns %q but the skill never documents that field", tag)
+		}
+	}
+
+	// Written by emitWrite (body.go) rather than by a struct, so they cannot be
+	// reflected. An agent branches on both: `appended` for the outcome,
+	// `ambiguous` to tell "refused, safe to re-run" from "unknown, do not".
+	for _, key := range []string{"appended", "ambiguous"} {
+		if !strings.Contains(skill, "`"+key+"`") {
+			t.Errorf("the append JSON reports %q but the skill never documents it", key)
+		}
+	}
+}
+
+// The skill states --body-file's limit as well as the append one. The 500KB
+// figure is already pinned to its constant; this pins the other half, so the
+// pair cannot drift apart in the document an agent executes.
+func TestTheBodyFileLimitTheSkillStatesMatchesTheConstant(t *testing.T) {
+	if want := strconv.Itoa(maxBodyFileBytes>>20) + " MiB"; !strings.Contains(skillText(t), want) {
+		t.Errorf("SKILL.md must state --body-file's %s limit", want)
+	}
+}

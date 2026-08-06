@@ -1,5 +1,14 @@
 # notion-track — Accesso al contenuto della pagina (`get --body`, `--append-file`) — Design doc
 
+> **Superato in alcuni punti da ciò che è stato implementato.** Questo documento
+> resta come registro del design, non come descrizione del codice: dove i due
+> divergono, valgono il codice e `README.md`. Divergenze note: il limite di
+> `--append-file` si misura sulla richiesta serializzata contro i 500.000 byte
+> di payload di Notion (`maxAppendPayloadBytes`), non riusando il 1 MiB di
+> `--body-file`; il JSON di fallimento espone anche `ambiguous`; le risposte
+> `/markdown` hanno un tetto proprio di 32 MiB; e `GetBody` riceve un page id
+> già risolto.
+
 > Data: 2026-08-04 · Stato: approvato in brainstorming, API verificata sul campo (§10), da implementare
 > Repo: `notion-cli` · Modulo: `github.com/marcoarnulfo/notion-cli` · Binario: `notion-track`
 > Estende `2026-07-23-notion-track-markdown-body-design.md` (`--body-file`), che resta

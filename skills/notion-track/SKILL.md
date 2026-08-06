@@ -265,9 +265,11 @@ exclusive with `--body-file` — one write picks one strategy.
 a loop that might re-run the same entry.
 
 An empty file is a usage error (exit 2), not a silent no-op. An ambiguous
-failure (a timeout or 5xx) does not auto-retry, since retrying an append that
-actually landed would duplicate it — check with `get --body` before re-running
-by hand.
+failure (a transport error, or a 500/502/504) does not auto-retry, since
+retrying an append that actually landed would duplicate it — check with
+`get --body` before re-running by hand. A 429/503/529 is different: Notion
+refused the request without applying it, so it is retried automatically and
+never reaches you as ambiguous.
 
 `--json` adds `body:{appended:true}` on success — a different shape from
 `--body-file`'s `blocks_written`/`blocks_deleted`, since an append either
@@ -431,7 +433,8 @@ the warning as it stands, token rotation included.
 - **`apply` stopped mid-run**: fix the entry it named and re-run the whole
   manifest — entries are idempotent — or resume from the reported index (1-based).
   The exception is `--expand` with `{{date}}`, which changes across midnight.
-- **"write outcome unknown; re-run to converge"**: a timeout or 5xx left the
+- **"write outcome unknown; re-run to converge"**: a transport error or a
+  500/502/504 (NOT a 429/503/529, which are retried for you) left the
   result unknown. For properties and `--body-file`, re-run the same command
   once, then confirm with `get`. **Never for `--append-file`** — the message
   itself says so on that path ("check the page before re-running, because

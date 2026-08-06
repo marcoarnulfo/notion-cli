@@ -42,9 +42,20 @@ const maxAppendPayloadBytes = 500 * 1000
 
 // maxAppendFileBytes is a cheap first gate on the file, before the payload is
 // built. It is NOT the real limit — maxAppendPayloadBytes is — and exists only
-// so an absurdly large file is rejected without serializing it first. It sits
-// at the payload limit because no file smaller than that can ever produce a
-// payload under it, and escaping only ever grows the content.
+// so an absurdly large file is rejected without serializing it first.
+//
+// It sits ON the payload limit, and that is deliberately conservative rather
+// than exact. Escaping only grows the content, so no file under this can be
+// wrongly let through; but --expand runs AFTER this gate and can SHRINK the
+// text ({{ticket}} resolves to nothing when the row was addressed by
+// --page-id, the same case the re-check after expansion exists for). So a
+// file of placeholders just over the limit is refused here even though it
+// would have built a payload of a few dozen KB.
+//
+// Accepted rather than fixed by moving the gate after expansion: expanding a
+// file we already know is absurdly large is the work this gate exists to
+// avoid, and a Markdown file that is mostly unresolved placeholders is not
+// a case worth reordering the function for.
 const maxAppendFileBytes = maxAppendPayloadBytes
 
 // now is the clock, as a seam: --expand's {{date}} has to be assertable in a
@@ -102,9 +113,19 @@ func loadAppendBody(path string, stdin io.Reader, progress io.Writer, vars map[s
 		return nil, Errorf(ExitUsage, "reading append file %s: %v", path, err)
 	}
 	if len(raw) > maxAppendFileBytes {
-		return nil, Errorf(ExitUsage, "%s", appendTooLargeMessage(path, len(raw)))
+		// Its own sentence, in FILE terms. appendTooLargeMessage speaks of the
+		// request it measured, and there is nothing measured here: readBodySource
+		// stops one byte past the larger cap, so len(raw) is the read ceiling
+		// rather than the file whenever the file is bigger still. Quoting it as
+		// "builds an N-byte request" would name a number that is neither, and an
+		// agent halving it would produce two more refusals.
+		return nil, Errorf(ExitUsage,
+			"append file %s is at least %d bytes, so the request it builds cannot fit Notion's "+
+				"%d-byte limit for a single payload. An append cannot be split, so: send it in two "+
+				"runs, or use --body-file, which is parsed into blocks and batched",
+			path, len(raw), maxAppendPayloadBytes)
 	}
-	if strings.TrimSpace(string(raw)) == "" {
+	if isBlank(string(raw)) {
 		return nil, Errorf(ExitUsage, "append file %s is empty", path)
 	}
 	if vars != nil {
@@ -117,7 +138,7 @@ func loadAppendBody(path string, stdin io.Reader, progress io.Writer, vars map[s
 		// "{{ticket}}" is non-empty on disk but expands to nothing when the row
 		// was addressed by --page-id or --id, and would reach Notion as the
 		// silent no-op the first check exists to prevent.
-		if strings.TrimSpace(string(raw)) == "" {
+		if isBlank(string(raw)) {
 			return nil, Errorf(ExitUsage,
 				"append file %s expands to nothing: every placeholder in it resolved to an empty value", path)
 		}
@@ -131,6 +152,34 @@ func loadAppendBody(path string, stdin io.Reader, progress io.Writer, vars map[s
 	}
 	return &service.BodyRequest{AppendMarkdown: string(raw), Progress: progress}, nil
 }
+
+// isBlank reports whether s carries no content Notion would render.
+//
+// strings.TrimSpace is not enough on its own: U+FEFF (the byte-order mark) left
+// White_Space in Unicode 6.3, so unicode.IsSpace excludes it and a file holding
+// nothing but a BOM reads as non-empty. That is what an editor on Windows
+// writes when you save an empty file as UTF-8-with-BOM — and it would reach
+// Notion as content, which answers 200 and does nothing, reporting
+// appended:true for a page that did not change. Exactly the silent success the
+// empty guard exists to prevent, arriving through the guard.
+//
+// U+200B (zero-width space) has the same property and is stripped for the same
+// reason. Cut everywhere rather than only at the front: a file can carry a BOM
+// per concatenated part, and --expand can leave one stranded when the text
+// around it resolves to nothing.
+func isBlank(s string) bool {
+	return strings.TrimSpace(invisibleCutter.Replace(s)) == ""
+}
+
+// Written as escapes rather than literals: Go rejects a source file containing
+// a literal U+FEFF, and a literal U+200B would be invisible to anyone reading
+// this line.
+const (
+	byteOrderMark  = "\ufeff"
+	zeroWidthSpace = "\u200b"
+)
+
+var invisibleCutter = strings.NewReplacer(byteOrderMark, "", zeroWidthSpace, "")
 
 // appendPayloadBytes returns the size of the request body AppendPageMarkdown
 // will build for this content, so the pre-flight check measures what Notion

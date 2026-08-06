@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1086,5 +1087,102 @@ func TestLoadAppendBodyAcceptsContentAtExactlyThePayloadLimit(t *testing.T) {
 	}
 	if _, err := loadAppendBody(p2, nil, nil, nil); err == nil {
 		t.Error("one byte past the limit must be refused")
+	}
+}
+
+// A BOM-only file is what an editor on Windows writes for an empty file saved
+// as UTF-8-with-BOM. U+FEFF left Unicode's White_Space in 6.3, so TrimSpace
+// keeps it and the file reads as content — which Notion answers 200 to and does
+// nothing about, reporting a success for a page that did not change. The silent
+// no-op the empty guard exists to prevent, arriving through the guard.
+func TestAppendRejectsAFileHoldingOnlyInvisibleCharacters(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"a bare BOM", "\ufeff"},
+		{"a BOM with whitespace", "\ufeff  \n\t\n"},
+		{"a zero-width space", "\u200b"},
+		{"several BOMs, as concatenation leaves", "\ufeff\ufeff\ufeff"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "blank.md")
+			if err := os.WriteFile(p, []byte(tc.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := loadAppendBody(p, nil, nil, nil)
+			if err == nil {
+				t.Fatal("accepted as content; Notion would 200 and change nothing")
+			}
+			if exitCodeFor(err) != ExitUsage {
+				t.Fatalf("want a usage error, got %v (code %d)", err, exitCodeFor(err))
+			}
+		})
+	}
+}
+
+// The same guard after --expand: a BOM can be left stranded once the text
+// around it resolves to nothing.
+func TestAppendRejectsContentThatExpandsToOnlyABOM(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "expand.md")
+	if err := os.WriteFile(p, []byte("\ufeff{{ticket}}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := loadAppendBody(p, nil, nil, map[string]string{"ticket": ""})
+	if err == nil {
+		t.Fatal("content that expands to nothing but a BOM must be refused")
+	}
+	if exitCodeFor(err) != ExitUsage {
+		t.Fatalf("want a usage error, got %v (code %d)", err, exitCodeFor(err))
+	}
+}
+
+// A BOM in front of real content is normal and must not be mistaken for blank.
+func TestAppendKeepsAFileWhoseBOMPrefixesRealContent(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "bom-content.md")
+	if err := os.WriteFile(p, []byte("\ufeff## Progress\nShipped.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := loadAppendBody(p, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("a BOM before real content must not make the file blank: %v", err)
+	}
+	// The BOM is not stripped from what gets sent: only the emptiness TEST
+	// ignores it. Notion renders the content either way, and rewriting a user's
+	// bytes is not this function's job.
+	if !strings.Contains(req.AppendMarkdown, "## Progress") {
+		t.Errorf("content = %q", req.AppendMarkdown)
+	}
+}
+
+// The cheap pre-gate speaks in FILE terms, because it has measured no request.
+// readBodySource stops one byte past the larger cap, so for a file bigger than
+// that len(raw) is the read ceiling — neither the file nor the request. Quoting
+// it as "builds an N-byte request" names a number that is neither, and an agent
+// halving it gets two more refusals.
+func TestPreGateMessageDoesNotClaimAMeasuredRequestSize(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "huge.md")
+	if err := os.WriteFile(p, bytes.Repeat([]byte("a"), 2<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := loadAppendBody(p, nil, nil, nil)
+	if err == nil {
+		t.Fatal("a 2 MiB append file must be refused")
+	}
+	msg := err.Error()
+	// The read ceiling must never be presented as a size of anything real.
+	if strings.Contains(msg, "builds a 1048577-byte request") {
+		t.Errorf("quotes the read ceiling as a request size: %v", err)
+	}
+	// It must still say the file is too large and name the real limit.
+	if !strings.Contains(msg, "at least") {
+		t.Errorf("the pre-gate should hedge the size it did not measure, got: %v", err)
+	}
+	if !strings.Contains(msg, strconv.Itoa(maxAppendPayloadBytes)) {
+		t.Errorf("the message should name Notion's limit, got: %v", err)
 	}
 }

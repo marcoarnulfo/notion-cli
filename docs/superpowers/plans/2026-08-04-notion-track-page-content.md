@@ -1,5 +1,13 @@
 # notion-track — Page content (`get --body`, `--append-file`) Implementation Plan
 
+> **Superseded in places by what shipped.** This plan is kept as the record of
+> how the work was planned, not as a description of the code. Where the two
+> disagree, the code and `README.md` win. Known divergences: `--append-file` is
+> capped by measuring the serialized request against Notion's 500,000-byte
+> payload limit (`maxAppendPayloadBytes`), not by reusing `--body-file`'s 1 MiB;
+> the failure JSON also carries `ambiguous`; the `/markdown` responses have
+> their own 32 MiB ceiling; and `GetBody` takes an already-resolved page id.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let `notion-track` read a page body back as Markdown (`get --body`) and append to one without destroying what is already there (`--append-file`), closing the read/write asymmetry the tool ships with today.
