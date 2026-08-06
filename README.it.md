@@ -303,7 +303,9 @@ Disponibile sia su `upsert` sia su `set`, `--append-file` accetta il percorso di
 
 **I fallimenti ambigui non vengono ritentati da soli.** Un append fa esattamente una chiamata API, quindi non c'è uno stato parzialmente applicato da far convergere come per una sostituzione fallita. Ma se quella chiamata stessa fallisce in modo ambiguo (un errore di trasporto, un 502/504), `notion-track` non può sapere se Notion l'ha applicata prima di fallire. In quel caso esce riportando l'esito come sconosciuto e lo dice esplicitamente — **non** ritenta automaticamente, perché ritentare un append che è già andato a buon fine duplicherebbe il contenuto. Controlla la pagina (`get --body` è un modo) prima di rilanciare.
 
-Con `--json`, un append riuscito aggiunge `body: {"appended": true}` — una forma diversa da `blocks_written`/`blocks_deleted` di `--body-file`, dato che un append o è andato a buon fine o no; non c'è un conteggio per blocco da riportare. Sul percorso di fallimento ambiguo descritto sopra, `--json` riporta `body: {"appended": false}`.
+Con `--json`, un append riuscito aggiunge `body: {"appended": true}` — una forma diversa da `blocks_written`/`blocks_deleted` di `--body-file`, dato che un append o è andato a buon fine o no; non c'è un conteggio per blocco da riportare.
+
+In caso di fallimento `--json` riporta `body: {"appended": false}`, e sul percorso ambiguo descritto sopra aggiunge `"ambiguous": true`. Ramifica su quella chiave invece che sul solo `appended`: `appended: false` copre sia «Notion ha rifiutato, non è cambiato nulla» sia «l'esito è sconosciuto», e i due casi vogliono risposte opposte — il primo si può rilanciare senza rischi, il secondo è quello che duplica.
 
 ### `get` — legge una riga
 

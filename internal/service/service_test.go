@@ -1116,6 +1116,74 @@ func TestWithBodyAppendFailureIsABodyWriteError(t *testing.T) {
 	if !strings.Contains(err.Error(), "check the page before re-running") {
 		t.Errorf("an ambiguous append must warn against blind re-running, got: %v", err)
 	}
+	// And the sentinel's own wording must NOT come along for the ride. Wrapping
+	// with %w used to append "re-run to converge" after the warning above,
+	// leaving one string that says both and ends on the advice that
+	// duplicates -- for an audience (an agent following SKILL.md) that acts on
+	// what it reads last.
+	if strings.Contains(err.Error(), "re-run to converge") {
+		t.Errorf("the sentinel's contradictory advice must not reach the message, got: %v", err)
+	}
+	// The underlying cause still has to be visible, or the message says what
+	// not to do without saying what went wrong.
+	if !strings.Contains(err.Error(), "internal_server_error") {
+		t.Errorf("the cause must survive into the message, got: %v", err)
+	}
+}
+
+// An ambiguous append is reported through a type of its own so callers can
+// branch on it, and the exit code that ErrAmbiguousWrite drives is unchanged.
+func TestAmbiguousAppendErrorKeepsSentinelReachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"object":"error","status":502,"code":"bad_gateway","message":"upstream"}`))
+	}))
+	defer srv.Close()
+
+	svc := New(notion.New("tok", notion.WithBaseURL(srv.URL)), config.Profile{})
+	_, err := svc.appendBody(context.Background(), "p1", &BodyRequest{AppendMarkdown: "new"})
+	var aae *AmbiguousAppendError
+	if !errors.As(err, &aae) {
+		t.Fatalf("want *AmbiguousAppendError, got %T: %v", err, err)
+	}
+	if !errors.Is(err, notion.ErrAmbiguousWrite) {
+		t.Error("errors.Is must still reach the sentinel, or the exit code changes")
+	}
+	if strings.Contains(err.Error(), "re-run to converge") {
+		t.Errorf("got the sentinel's wording: %v", err)
+	}
+}
+
+// The PATCH describes the page after the append, and those advisory fields are
+// the reason the response is decoded at all rather than discarded.
+func TestAppendSurfacesPostAppendWarnings(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"object":"page_markdown","id":"p1","markdown":"body",
+			"truncated":true,"unknown_block_ids":["b1","b2"]}`))
+	}))
+	defer srv.Close()
+
+	svc := New(notion.New("tok", notion.WithBaseURL(srv.URL)), config.Profile{})
+	res, err := svc.appendBody(context.Background(), "p1", &BodyRequest{AppendMarkdown: "new"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.Appended {
+		t.Fatal("the append landed and must be reported as such")
+	}
+	if len(res.Warnings) != 2 {
+		t.Fatalf("want a warning for each of truncated and unknown blocks, got %v", res.Warnings)
+	}
+	joined := strings.Join(res.Warnings, "\n")
+	// Worded as the state of the page, not as "this body is truncated": nothing
+	// about the append was truncated, and the reader is being warned about the
+	// next read.
+	if !strings.Contains(joined, "the append landed") {
+		t.Errorf("truncation after an append must not read as a failed write: %v", res.Warnings)
+	}
+	if !strings.Contains(joined, "2 block(s)") {
+		t.Errorf("want the unknown-block count, got %v", res.Warnings)
+	}
 }
 
 func TestGetBodyRejectsEmptyPageID(t *testing.T) {

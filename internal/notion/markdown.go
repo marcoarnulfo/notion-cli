@@ -33,6 +33,28 @@ type pageMarkdownResponse struct {
 	RequestID       string   `json:"request_id"`
 }
 
+// maxMarkdownResponseBytes caps the two /markdown responses, which are the
+// only unpaginated ones this client makes: both GET and PATCH answer with the
+// page's ENTIRE body in a single response, so the default 1 MiB ceiling —
+// sized for paginated payloads of a few KB — is a limit on how large a page
+// notion-track can handle at all, not a guard against a misbehaving proxy.
+//
+// On the PATCH the consequence is worse than a failed read. An oversized 200
+// is discarded for size and surfaces as a non-*APIError, which
+// doRejectRetryable cannot distinguish from a transport failure and so joins
+// with ErrAmbiguousWrite: an append that DID land is reported as
+// appended:false, permanently, on exactly the append-only pages --append-file
+// exists to grow.
+//
+// 32 MiB is chosen against Notion's own truncation point rather than a guess:
+// it stops rendering around 20,000 blocks, so a page it will still render
+// whole cannot plausibly exceed this. It remains a constant bound per request.
+const maxMarkdownResponseBytes = 32 << 20 // 32 MiB
+
+// maxResponseBytes implements responseLimiter, so both markdown calls get the
+// larger ceiling wherever they are made.
+func (r *pageMarkdownResponse) maxResponseBytes() int64 { return maxMarkdownResponseBytes }
+
 // toPageMarkdown converts the wire shape to the exported one. The two differ
 // only in their JSON tags, which Go ignores when converting between otherwise
 // identical struct types — so this stays a conversion rather than a
@@ -61,7 +83,10 @@ func (c *Client) GetPageMarkdown(ctx context.Context, pageID string) (PageMarkdo
 //
 // It returns the resulting page: the PATCH answers with the full updated
 // Markdown rather than an acknowledgement, so a caller that gets a response
-// knows exactly what the page now holds, with no follow-up GET.
+// knows exactly what the page now holds, with no follow-up GET. Truncated and
+// UnknownBlockIDs describe the page AFTER the append, which is the moment
+// worth warning about: appending is what pushes a page past the ~20,000-block
+// limit, and this is the only response that can say so without a second call.
 //
 // PATCH here is NOT idempotent -- running it twice appends twice -- so it uses
 // doRejectRetryable, which retries only the statuses where Notion certainly

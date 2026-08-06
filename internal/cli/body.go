@@ -185,6 +185,13 @@ func emitWrite(cmd *cobra.Command, props config.Properties, res service.Result, 
 					// claim "0 blocks written" about an operation that never
 					// counted blocks.
 					body["appended"] = res.Body.Appended
+					// appended:false alone flattens "did not happen" into the
+					// same value as "outcome unknown", leaving the difference
+					// only in the prose of error -- and a caller branching on
+					// the boolean would re-run, which is what duplicates.
+					if errors.Is(err, notion.ErrAmbiguousWrite) {
+						body["ambiguous"] = true
+					}
 				} else {
 					// Real counts of what happened before the failure: crucial in the
 					// dual case (append ok, a DELETE failed) where the body WAS written

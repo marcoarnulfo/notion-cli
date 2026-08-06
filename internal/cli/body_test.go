@@ -628,8 +628,57 @@ func TestSetAppendPartialFailureReportsAppendedFalse(t *testing.T) {
 	if _, present := body["blocks_written"]; present {
 		t.Error("a failed append must not report blocks_written")
 	}
+	// A 500 on a non-idempotent write is ambiguous, not a clean failure: the
+	// append may have landed. appended:false alone cannot say that, and a
+	// caller that reads it as "nothing happened" re-runs and duplicates.
+	if body["ambiguous"] != true {
+		t.Errorf(`body.ambiguous = %v, want true: appended:false must not read as "nothing happened"`,
+			body["ambiguous"])
+	}
+	// The prose must not carry the sentinel's own contradicting advice.
+	if msg, _ := body["error"].(string); strings.Contains(msg, "re-run to converge") {
+		t.Errorf("the error must not tell an agent to re-run an append: %q", msg)
+	}
 	if got["page"] == nil {
 		t.Error("page (applied properties) must still be present")
+	}
+}
+
+// The counterpart: a 400 is a clean refusal, so there is no ambiguity to
+// report and the flag must stay absent rather than always being emitted.
+func TestSetAppendCleanRejectionIsNotAmbiguous(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/data_sources/ds1":
+			w.Write([]byte(cliSchemaJSON))
+		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/markdown"):
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"object":"error","status":400,"code":"validation_error","message":"nope"}`))
+		case r.Method == http.MethodPatch:
+			w.Write([]byte(cliRowJSON))
+		default:
+			w.Write([]byte(`{"results":[` + cliRowJSON + `],"has_more":false}`))
+		}
+	})
+	note := filepath.Join(t.TempDir(), "note.md")
+	if err := os.WriteFile(note, []byte("## Progress\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		executeArgs([]string{"set", "--ticket", "BDF-231",
+			"--append-file", note, "--json", "--config", cfg})
+	})
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("stdout must stay parsable JSON: %v\n%s", err, out)
+	}
+	body, ok := got["body"].(map[string]any)
+	if !ok {
+		t.Fatalf("body missing: %v", got)
+	}
+	if _, present := body["ambiguous"]; present {
+		t.Errorf("a 400 is a clean refusal: ambiguous must be absent, got %v", body)
 	}
 }
 
@@ -694,5 +743,131 @@ func TestSetAppendFileEndToEnd(t *testing.T) {
 	}
 	if got.Body["appended"] != true {
 		t.Errorf("--json should report the append, got:\n%s", out)
+	}
+}
+
+// Every other append test drives `set`, so the create->append path never ran
+// through a real command: upsert creates the row with POST /v1/pages and only
+// then appends, and nothing pinned that the append still reaches Notion once a
+// creation precedes it.
+func TestUpsertAppendFileOnACreatedRowEndToEnd(t *testing.T) {
+	var created bool
+	var patched map[string]any
+	var deletes int32
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/data_sources/ds1":
+			w.Write([]byte(cliSchemaJSON))
+		case r.URL.Path == "/v1/data_sources/ds1/query":
+			// No match: upsert must create rather than update.
+			w.Write([]byte(`{"results":[],"has_more":false}`))
+		case r.URL.Path == "/v1/pages" && r.Method == http.MethodPost:
+			created = true
+			w.Write([]byte(cliRowJSON))
+		case r.Method == http.MethodDelete:
+			atomic.AddInt32(&deletes, 1)
+			fmt.Fprint(w, `{}`)
+		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/markdown"):
+			_ = json.NewDecoder(r.Body).Decode(&patched)
+			fmt.Fprint(w, `{"object":"page_markdown","id":"page1","markdown":"note",
+				"truncated":false,"unknown_block_ids":[]}`)
+		default:
+			w.Write([]byte(cliRowJSON))
+		}
+	})
+
+	note := filepath.Join(t.TempDir(), "note.md")
+	if err := os.WriteFile(note, []byte("## Progress\nCreated then appended."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"upsert", "--ticket", "BDF-231",
+			"--append-file", note, "--json", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+
+	if !created {
+		t.Fatal("upsert did not create the row")
+	}
+	if patched == nil {
+		t.Fatal("the append never reached Notion after the create")
+	}
+	if patched["type"] != "insert_content" {
+		t.Errorf(`type = %v, want "insert_content"`, patched["type"])
+	}
+	if n := atomic.LoadInt32(&deletes); n != 0 {
+		t.Fatalf("an append must delete nothing, got %d DELETEs", n)
+	}
+	var got struct {
+		Body map[string]any `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, out)
+	}
+	if got.Body["appended"] != true {
+		t.Errorf("--json must report the append, got:\n%s", out)
+	}
+}
+
+// append_bytes is public API -- scripts read it out of --json --dry-run -- and
+// was only ever asserted through the human-readable line, which is free to be
+// reworded.
+func TestUpsertDryRunJSONExposesAppendBytes(t *testing.T) {
+	cfg := withStubbedAPI(t, dryRunAPI(t, cliRowJSON))
+	note := filepath.Join(t.TempDir(), "note.md")
+	const content = "Ticket closed."
+	if err := os.WriteFile(note, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		if code := executeArgs([]string{"upsert", "--ticket", "BDF-231",
+			"--append-file", note, "--dry-run", "--json", "--config", cfg}); code != ExitOK {
+			t.Fatalf("exit code = %d", code)
+		}
+	})
+
+	var got struct {
+		DryRun bool `json:"dry_run"`
+		Plan   struct {
+			AppendBytes int `json:"append_bytes"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, out)
+	}
+	if !got.DryRun {
+		t.Errorf("dry_run must be true, got:\n%s", out)
+	}
+	if got.Plan.AppendBytes != len(content) {
+		t.Errorf("plan.append_bytes = %d, want %d (the bytes that would be appended):\n%s",
+			got.Plan.AppendBytes, len(content), out)
+	}
+}
+
+// The pre-flight cap on --append-file, which had no test at all: without it an
+// oversized file is only refused by Notion, after the request goes out.
+func TestSetAppendFileOverTheLimitMakesNoHTTPCall(t *testing.T) {
+	var calls int32
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/data_sources/ds1" {
+			atomic.AddInt32(&calls, 1)
+		}
+		w.Write([]byte(cliSchemaJSON))
+	})
+
+	big := filepath.Join(t.TempDir(), "big.md")
+	if err := os.WriteFile(big, bytes.Repeat([]byte("x"), maxBodyFileBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := executeArgs([]string{"set", "--ticket", "BDF-231",
+		"--append-file", big, "--config", cfg}); code != ExitUsage {
+		t.Fatalf("an oversized append file must exit %d, got %d", ExitUsage, code)
+	}
+	if n := atomic.LoadInt32(&calls); n != 0 {
+		t.Fatalf("the file must be rejected before any write reaches Notion, got %d calls", n)
 	}
 }

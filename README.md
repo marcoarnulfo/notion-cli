@@ -303,7 +303,9 @@ Available on both `upsert` and `set`, `--append-file` takes a path to a Markdown
 
 **Ambiguous failures do not retry themselves.** An append makes exactly one API call, so there is no partially-applied state to converge the way a failed replace has. But if that call itself fails ambiguously (a transport error, a 502/504), `notion-track` cannot tell whether Notion applied it before failing. In that case it exits with the outcome reported as unknown and says so — it does **not** retry automatically, because retrying an append that did land duplicates the content. Check the page (`get --body` is one way) before re-running.
 
-With `--json`, a successful append adds `body: {"appended": true}` — a different shape from `--body-file`'s `blocks_written`/`blocks_deleted`, since an append either landed or it did not; there is no per-block count to report. On the ambiguous-failure path above, `--json` reports `body: {"appended": false}`.
+With `--json`, a successful append adds `body: {"appended": true}` — a different shape from `--body-file`'s `blocks_written`/`blocks_deleted`, since an append either landed or it did not; there is no per-block count to report.
+
+On failure `--json` reports `body: {"appended": false}`, and on the ambiguous path above it adds `"ambiguous": true`. Branch on that key rather than on `appended` alone: `appended: false` covers both "Notion refused it, nothing changed" and "the outcome is unknown", and those want opposite responses — the first is safe to re-run, the second is the one that duplicates.
 
 ### `get` — read one row
 

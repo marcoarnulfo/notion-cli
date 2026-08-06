@@ -267,6 +267,12 @@ by hand.
 `--body-file`'s `blocks_written`/`blocks_deleted`, since an append either
 landed or it didn't.
 
+On failure it reports `appended:false`, plus `ambiguous:true` when the outcome
+is unknown. Branch on `ambiguous`, not on `appended` alone: `appended:false`
+also covers a clean refusal where nothing was written, which IS safe to
+re-run. With `ambiguous:true`, do not re-run — read the page with
+`get --body` first and decide from what is actually there.
+
 ### `get` — read one task
 
 ```sh

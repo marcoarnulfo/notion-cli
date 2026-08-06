@@ -1014,3 +1014,52 @@ func TestGetBodyOnlyOnEmptyPagePrintsNothing(t *testing.T) {
 		t.Errorf("an empty body must print nothing, got %q", out)
 	}
 }
+
+// A failed markdown GET must not leave a half-written row on stdout: under
+// --json a partial object corrupts whatever is parsing the pipe, which is the
+// whole reason --json exists.
+func TestGetBodyJSONWritesNothingToStdoutWhenTheMarkdownGetFails(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/data_sources/ds1":
+			w.Write([]byte(cliSchemaJSON))
+		case strings.HasSuffix(r.URL.Path, "/markdown"):
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"object":"error","status":500,"code":"internal_server_error","message":"boom"}`))
+		default:
+			w.Write([]byte(`{"results":[` + cliRowJSON + `],"has_more":false}`))
+		}
+	})
+
+	var code int
+	out := captureStdout(t, func() {
+		code = executeArgs([]string{"get", "--ticket", "BDF-231", "--body", "--json", "--config", cfg})
+	})
+
+	if code == ExitOK {
+		t.Fatalf("a failed body read must not exit %d", ExitOK)
+	}
+	if strings.TrimSpace(out) != "" {
+		t.Fatalf("stdout must stay empty rather than emit partial JSON, got:\n%s", out)
+	}
+}
+
+// The same failure without --json: still non-zero, and the row must not be
+// printed as though the read had succeeded.
+func TestGetBodyFailureExitsNonZero(t *testing.T) {
+	cfg := withStubbedAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/data_sources/ds1":
+			w.Write([]byte(cliSchemaJSON))
+		case strings.HasSuffix(r.URL.Path, "/markdown"):
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"object":"error","status":500,"code":"internal_server_error","message":"boom"}`))
+		default:
+			w.Write([]byte(`{"results":[` + cliRowJSON + `],"has_more":false}`))
+		}
+	})
+
+	if code := executeArgs([]string{"get", "--ticket", "BDF-231", "--body-only", "--config", cfg}); code == ExitOK {
+		t.Fatalf("a failed body read must not exit %d", ExitOK)
+	}
+}

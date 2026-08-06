@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -200,5 +202,88 @@ func TestAppendPageMarkdownRetriesRateLimit(t *testing.T) {
 	}
 	if n := atomic.LoadInt32(&calls); n != 2 {
 		t.Fatalf("want 2 calls (429 then success), got %d", n)
+	}
+}
+
+// bigMarkdownPage returns a /markdown response whose JSON is at least n bytes,
+// built from one long markdown string so the shape stays realistic.
+func bigMarkdownPage(n int) []byte {
+	body := strings.Repeat("word ", n/5+1)
+	page, err := json.Marshal(map[string]any{
+		"object": "page_markdown", "id": "p1", "markdown": body,
+		"truncated": false, "unknown_block_ids": []string{},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return page
+}
+
+// A page larger than the default 1 MiB cap must still be readable: this
+// endpoint is unpaginated, so that cap would otherwise be a hard ceiling on
+// how large a page 'get --body' can read at all.
+func TestGetPageMarkdownReadsPageOverDefaultCap(t *testing.T) {
+	page := bigMarkdownPage(maxResponseBodyBytes + (1 << 16))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(page)
+	}))
+	defer srv.Close()
+
+	got, err := New("tok", WithBaseURL(srv.URL)).GetPageMarkdown(context.Background(), "p1")
+	if err != nil {
+		t.Fatalf("a page over 1 MiB must still be readable: %v", err)
+	}
+	if len(got.Markdown) == 0 {
+		t.Fatal("markdown came back empty")
+	}
+}
+
+// The regression the reviewer found: the PATCH answers with the WHOLE updated
+// page, so once a page passes the default cap the 200 was discarded for size
+// and surfaced as a non-*APIError, which doRejectRetryable cannot tell from a
+// transport failure -> ErrAmbiguousWrite on an append that actually landed.
+// Permanent on append-only pages, and the advice it produced was the one that
+// duplicates.
+func TestAppendPageMarkdownSucceedsWhenResponseExceedsDefaultCap(t *testing.T) {
+	page := bigMarkdownPage(maxResponseBodyBytes + (1 << 16))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(page)
+	}))
+	defer srv.Close()
+
+	got, err := New("tok", WithBaseURL(srv.URL)).
+		AppendPageMarkdown(context.Background(), "p1", "note")
+	if err != nil {
+		t.Fatalf("an append whose 200 exceeds the default cap must not be reported as failed: %v", err)
+	}
+	if errors.Is(err, ErrAmbiguousWrite) {
+		t.Fatal("a successful append must never be reported as ambiguous")
+	}
+	if len(got.Markdown) == 0 {
+		t.Fatal("markdown came back empty")
+	}
+}
+
+// The larger ceiling is still a ceiling: past it the response is refused
+// rather than decoded from a body we already know is cut off.
+func TestMarkdownResponseStillCapped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Stream past the cap without allocating it all at once.
+		chunk := strings.Repeat("x", 1<<20)
+		for written := 0; written <= maxMarkdownResponseBytes; written += len(chunk) {
+			if _, err := io.WriteString(w, chunk); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	_, err := New("tok", WithBaseURL(srv.URL)).GetPageMarkdown(context.Background(), "p1")
+	if err == nil {
+		t.Fatal("a response past the markdown cap must be refused, not decoded")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("want a size error, got %v", err)
 	}
 }

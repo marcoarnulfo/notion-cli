@@ -201,6 +201,55 @@ type BodyWriteError struct{ err error }
 func (e *BodyWriteError) Error() string { return e.err.Error() }
 func (e *BodyWriteError) Unwrap() error { return e.err }
 
+// AmbiguousAppendError reports an append whose outcome is unknown.
+//
+// It exists to REPLACE notion.ErrAmbiguousWrite's own wording rather than
+// prepend to it. That sentinel reads "re-run to converge", which is right for
+// the replace path — re-running makes the body equal the file again — and
+// exactly wrong here, where re-running an append that did land adds the
+// content twice. Wrapping with %w would keep both sentences in one string,
+// ending on the one that duplicates; the primary consumer of this CLI is an
+// agent reading that string, so the advice it ends on is the advice it takes.
+//
+// Unwrap still reaches the sentinel, so errors.Is(…, notion.ErrAmbiguousWrite)
+// and the exit code it drives are unchanged — only the text is ours.
+type AmbiguousAppendError struct{ err error }
+
+func (e *AmbiguousAppendError) Error() string {
+	return "the append may or may not have been applied; check the page before re-running, " +
+		"because re-running an append that did land adds the content twice: " + underlyingCause(e.err)
+}
+func (e *AmbiguousAppendError) Unwrap() error { return e.err }
+
+// underlyingCause renders the cause without notion.ErrAmbiguousWrite's own
+// sentence, so AmbiguousAppendError can state what went wrong without also
+// repeating the advice it exists to override.
+func underlyingCause(err error) string {
+	// doRejectRetryable joins with fmt.Errorf("%w: %w", sentinel, cause), which
+	// produces a MULTI-error: it implements Unwrap() []error, and errors.Unwrap
+	// returns nil for it. Checking the multi form first is therefore the whole
+	// point -- reaching for errors.Unwrap alone finds nothing and falls back to
+	// the joined text, which is the contradictory string this exists to avoid.
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		parts := joined.Unwrap()
+		// Keep whichever part is not the sentinel: the 502, the reset
+		// connection -- the half that says what actually went wrong.
+		var kept []string
+		for _, p := range parts {
+			if p != nil && !errors.Is(p, notion.ErrAmbiguousWrite) {
+				kept = append(kept, p.Error())
+			}
+		}
+		if len(kept) > 0 {
+			return strings.Join(kept, ": ")
+		}
+	}
+	if inner := errors.Unwrap(err); inner != nil && errors.Is(err, notion.ErrAmbiguousWrite) {
+		return inner.Error()
+	}
+	return err.Error()
+}
+
 // replaceBody makes the page body equal to req.Blocks with replace semantics:
 // snapshot existing children, append the new body at the end, then delete the
 // snapshotted children — skipping child_page/child_database so sub-pages are
@@ -246,21 +295,41 @@ func (s *Service) replaceBody(ctx context.Context, pageID string, req *BodyReque
 func (s *Service) appendBody(ctx context.Context, pageID string, req *BodyRequest) (BodyResult, error) {
 	res := BodyResult{WasAppend: true}
 	progress(req.Progress, "appending to the page body…")
-	if _, err := s.client.AppendPageMarkdown(ctx, pageID, req.AppendMarkdown); err != nil {
-		// ErrAmbiguousWrite reads "re-run to converge", which is sound advice
-		// for the replace path -- re-running it makes the body equal the file
-		// again -- and the wrong advice here: re-running an append that did
-		// land appends the note twice. Say so, rather than let the generic
-		// wording send someone to duplicate their own content.
+	page, err := s.client.AppendPageMarkdown(ctx, pageID, req.AppendMarkdown)
+	if err != nil {
 		if errors.Is(err, notion.ErrAmbiguousWrite) {
-			return res, fmt.Errorf(
-				"the append may or may not have been applied; check the page before re-running, "+
-					"because re-running an append that did land adds the content twice: %w", err)
+			return res, &AmbiguousAppendError{err: err}
 		}
 		return res, err
 	}
 	res.Appended = true
+	// The PATCH describes the page AFTER the append, so these warnings cost no
+	// extra call and are never more relevant than here: appending is what
+	// pushes a page past the point where Notion stops rendering it whole.
+	res.Warnings = append(res.Warnings, markdownWarnings(page)...)
 	return res, nil
+}
+
+// markdownWarnings renders the advisory fields of the PATCH response as facts
+// about the page's state after the append.
+//
+// Deliberately worded differently from the CLI's bodyWarnings, which says "this
+// body is truncated" — true of a body you are reading, misleading about a
+// write. Here nothing was truncated: the append landed in full, and what the
+// flag reports is that the page has now grown past the point where Notion will
+// render it whole, which is a warning about the NEXT read.
+func markdownWarnings(page notion.PageMarkdown) []string {
+	var out []string
+	if page.Truncated {
+		out = append(out, "the append landed, but the page is now large enough that Notion "+
+			"no longer renders it in full: 'get --body' will return a truncated body")
+	}
+	if n := len(page.UnknownBlockIDs); n > 0 {
+		out = append(out, fmt.Sprintf(
+			"%d block(s) on the page have no Markdown representation and read back as <unknown/>; "+
+				"they are unaffected by this append", n))
+	}
+	return out
 }
 
 func progress(w io.Writer, format string, args ...any) {
