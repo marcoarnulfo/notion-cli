@@ -256,8 +256,10 @@ REQUEST, not the file: an append is one payload and Notion caps a payload at
 500KB, and the serialized request is always bigger than the file (Markdown is
 escaped into JSON, so every newline costs two bytes, and `--expand` runs first).
 A 450KB file of short lines can exceed it. Over the limit is exit 2 before any
-request, with the request size named — an append cannot be split, so send it in
-two runs or use `--body-file`, which is batched and allows 1 MiB. Mutually
+request. The message names the request size when it built one, and a floor on
+the file size (`is at least N bytes`) when the file alone is already too big to
+be worth serializing — an append cannot be split, so send it in two runs or use
+`--body-file`, which is batched and allows 1 MiB. Mutually
 exclusive with `--body-file` — one write picks one strategy.
 
 **Not idempotent.** Running it twice appends the note twice; there is no

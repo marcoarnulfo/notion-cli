@@ -75,7 +75,10 @@ func loadBody(path string, stdin io.Reader, progress io.Writer, vars map[string]
 	if len(raw) > maxBodyFileBytes {
 		return nil, nil, Errorf(ExitUsage, "body file %s is over the %d-byte limit", path, maxBodyFileBytes)
 	}
-	if strings.TrimSpace(string(raw)) == "" {
+	// isBlank rather than TrimSpace: this guard is what stands between a file
+	// with no content and a wiped page, since a replace deletes the old body
+	// whether or not the new one parsed to anything.
+	if isBlank(string(raw)) {
 		return nil, nil, Errorf(ExitUsage, "body file %s is empty", path)
 	}
 	// Before parsing, not after: the expanded text is what the author meant to
@@ -88,6 +91,13 @@ func loadBody(path string, stdin io.Reader, progress io.Writer, vars map[string]
 			return nil, nil, Errorf(ExitUsage, "%s: %v", path, err)
 		}
 		raw = []byte(expanded)
+		// Checked again after expanding, as the append path does: a file of
+		// nothing but "{{ticket}}" is content on disk and expands to nothing
+		// when the row was addressed by --page-id or --id.
+		if isBlank(string(raw)) {
+			return nil, nil, Errorf(ExitUsage,
+				"body file %s expands to nothing: every placeholder in it resolved to an empty value", path)
+		}
 	}
 	blocks, warnings, err := markdown.ToBlocks(raw)
 	if err != nil {
